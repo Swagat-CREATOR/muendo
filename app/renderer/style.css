@@ -56,6 +56,10 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   background: #333; color: #fff; }
 
 .banner { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.mono, pre { font-family: ui-monospace, monospace; font-size: 12px; }
+pre { max-height: 260px; overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#agents.running { font-weight: 600; color: var(--bad); }
+#hooks-dialog { max-width: 680px; }
 
 /* One-key undo window */
 body.undo { padding: 14px 18px; border: 2px solid var(--accent); height: 100vh; overflow: hidden; }

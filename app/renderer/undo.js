@@ -48,7 +48,7 @@ async function load() {
   show([
     ['Save point', new Date(sp.createdAt).toLocaleString()],
     sp.label && ['Label', sp.label],
-    sp.agent && ['Agent', sp.agent],
+    sp.agent && ['Agent', `${sp.agent}${sp.agentLikely ? ' (likely)' : ''}`],
     [null, t.summary, 'summary'],
     t.note && [null, t.note, 'muted'],
   ].filter(Boolean));

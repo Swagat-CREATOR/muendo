@@ -81,7 +81,7 @@ test('journal: deleting 23 files alerts once with the real numbers; a deleted fo
     for (const f of files) fs.rmSync(f); // 10 files
     fs.rmSync(path.join(root, 'd1'), { recursive: true }); // a folder holding 13 files: 23 file deletions
     await j.sync();
-    assert.deepStrictEqual(bursts, [{ deleted: 23, changed: 23 }]);
+    assert.deepStrictEqual(bursts, [{ deleted: 23, changed: 23, agent: null }]);
     fs.rmSync(path.join(root, 'd2'), { recursive: true });
     await j.sync();
     assert.strictEqual(bursts.length, 1, 'same burst, no second alert');
@@ -136,6 +136,6 @@ test('mewndo: forwards bursts with the folder, but not while protection is pause
     await mewndo.resumeProtection();
     fs.rmSync(path.join(root, 'd1'), { recursive: true }); // 20 more
     await j.sync();
-    assert.deepStrictEqual(bursts, [[fs.realpathSync(root), { deleted: 20, changed: 20 }]]);
+    assert.deepStrictEqual(bursts, [[fs.realpathSync(root), { deleted: 20, changed: 20, agent: null }]]);
   } finally { await mewndo.stop(); }
 });

@@ -73,6 +73,7 @@ function onEngineMessage(msg) {
     case 'retry': send('retry', { root: a, ...b }); break;
     case 'burst': burstAlert(a, b).catch(() => {}); break;
     case 'folders-changed': storage.at = 0; stateChanged(); break;
+    case 'agents-changed': stateChanged(); break;
     case 'pruned': storage.at = 0; break;
     case 'warning': notify('Mewndo', a.message); send('toast', a.message); break;
     default: break;
@@ -166,13 +167,17 @@ async function suggestions(folders) {
 }
 
 async function state() {
-  const [folders, pausedUntil, report] = await Promise.all([call('folders'), call('pausedUntil'), storageReport().catch(() => null)]);
+  const [folders, pausedUntil, report, agents, hookProblem] = await Promise.all([
+    call('folders'), call('pausedUntil'), storageReport().catch(() => null), call('agents'), call('hookServerProblem'),
+  ]);
   const bytes = new Map((report?.folders ?? []).map((f) => [f.folder, f.bytes]));
   return {
     setupDone: settings.setupDone,
     openAtLogin: settings.openAtLogin,
     loginSupported: process.platform !== 'linux',
     shortcutProblem,
+    agents,
+    hookProblem,
     windows: process.platform === 'win32',
     pausedUntil,
     suggestions: settings.setupDone ? [] : await suggestions(folders),
@@ -290,11 +295,13 @@ function urgentToast(title, body) {
 </toast>`;
 }
 
-// "40 files deleted in Documents by Claude Code in the last minute. Put them back?" The agent's name comes
-// from the most recent save point an agent (or its hook) made in the last hour, if any.
-async function burstAlert(root, { deleted, changed }) {
+// "40 files deleted in Documents by Claude Code in the last minute. Put them back?" The agent's name: one that
+// reported itself through its hook in the last 10 minutes, or else the likely one (the running agent that
+// started most recently), labelled as likely.
+async function burstAlert(root, { deleted, changed, agent: likely }) {
   const savePoints = await call('journal.listSavePoints', root).catch(() => []);
-  const agent = savePoints.filter((sp) => sp.agent && Date.now() - Date.parse(sp.createdAt) < 60 * 60 * 1000).at(-1)?.agent;
+  const exact = savePoints.filter((sp) => sp.trigger === 'hook' && sp.agent && Date.now() - Date.parse(sp.createdAt) < 10 * 60 * 1000).at(-1)?.agent;
+  const agent = exact ?? (likely ? `${likely} (likely)` : null);
   const other = changed - deleted;
   const s = (n) => (n === 1 ? '' : 's');
   const what = deleted && other ? `${deleted} file${s(deleted)} deleted and ${other} changed`
@@ -498,6 +505,8 @@ const handlers = {
     const err = await shell.openPath(p);
     if (err) throw new Error(err);
   },
+  claudeHooksPlan: () => call('claudeHooksPlan'),
+  claudeHooksInstall: () => call('claudeHooksInstall'),
   // A round trip to the engine process and back; the responsiveness check uses it.
   ping: () => call('ping'),
 };

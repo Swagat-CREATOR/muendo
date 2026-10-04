@@ -2,13 +2,16 @@
 // folders are protected, and keeps storage in check: retention pruning, a storage budget, free disk space.
 // Events: 'pruned' prune result · 'folders-changed' · 'warning' { code: 'over-budget' | 'low-disk' |
 //   'folder-unavailable' | 'journal' | 'prune-failed', message, ... } · and from each journal, as (root, payload):
-//   'progress', 'savepoint', 'restored', 'retry', 'change', 'burst' (not while protection is paused).
+//   'progress', 'savepoint', 'restored', 'retry', 'change', 'burst' (not while protection is paused) ·
+//   'agents-changed' [{ name, since }] when AI agents start or stop.
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createStore, writeFileAtomic, isInside } = require('./store');
 const { createJournal, folderId } = require('./journal');
 const { folderSize, DEFAULT_IGNORE } = require('./scanner');
+const { createAgentWatcher } = require('./agents');
+const { startHookServer } = require('./hook-server');
 
 const FORWARDED = ['progress', 'savepoint', 'restored', 'retry', 'change'];
 
@@ -72,6 +75,8 @@ function createMewndo({
   maxFolderBytes = 20 * GB, // larger folders are refused
   now = Date.now,
   journalOptions = {}, // passed to every journal (timings in tests)
+  agents = null, // { intervalMs, saveEveryMs, listProcesses } turns on AI agent awareness (off in tests by default)
+  hookServer = null, // { port } turns on the exact-save-point server for agent hooks (off in tests by default)
 }) {
   const mewndo = new EventEmitter();
   const store = createStore(path.join(dataDir, 'store'));
@@ -82,6 +87,15 @@ function createMewndo({
   let pruning = null;
   let pausedUntil = null;
   let resumeTimer = null;
+  const ready = new Map(); // root -> resolves when its first or catch-up scan is over
+  const runningAgents = new Map(); // agent name -> since (ms)
+  let agentWatcher = null;
+  let agentTimer = null;
+  let hookServerHandle = null;
+  let hookServerProblem = null;
+
+  // The agent most likely making changes: the most recently started one still running. A guess, shown as such.
+  const likelyAgent = () => [...runningAgents].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
   const warn = (code, message, extra = {}) => mewndo.emit('warning', { code, message, ...extra });
   const settingsFile = (dir) => path.join(dir, 'settings.json');
@@ -136,7 +150,7 @@ function createMewndo({
     // Remember it before the first scan, so a restart mid-scan still protects it.
     const dir = path.join(await realData(), 'folders', folderId(real));
     await writeFileAtomic(settingsFile(dir), JSON.stringify({ root: real, retentionDays, protected: true }));
-    const journal = createJournal({ ...journalOptions, root: real, dataDir, store });
+    const journal = createJournal({ ...journalOptions, root: real, dataDir, store, likelyAgent });
     for (const ev of FORWARDED) journal.on(ev, (payload) => mewndo.emit(ev, real, payload));
     journal.on('burst', (payload) => { if (!pausedUntil) mewndo.emit('burst', real, payload); }); // not while paused
     journal.on('warning', (e) => warn('journal', e.message, { folder: real }));
@@ -148,6 +162,7 @@ function createMewndo({
       await writeFileAtomic(settingsFile(dir), JSON.stringify({ root: real, retentionDays, protected: false }));
       throw e;
     }).finally(() => { starting.delete(real); changed(); });
+    ready.set(real, started.then(() => {}, () => {}));
     if (!background) return started;
     started.catch((e) => warn('folder-unavailable', `Can't protect ${real}: ${e.message}`, { root: real }));
     return journal;
@@ -394,6 +409,55 @@ function createMewndo({
     };
   };
 
+  // --- AI agents ------------------------------------------------------------------------------------------------
+
+  mewndo.agents = () => [...runningAgents].map(([name, since]) => ({ name, since })).sort((a, b) => a.since - b.since);
+
+  // A save point in every protected folder; folders still in their first scan get it as soon as that's over.
+  function savePointEverywhere(options) {
+    for (const [root, j] of journals) {
+      (ready.get(root) ?? Promise.resolve())
+        .then(() => (journals.get(root) === j ? j.createSavePoint(options) : null))
+        .catch((e) => warn('journal', e.message, { folder: root }));
+    }
+  }
+
+  // An agent started: save every protected folder, so whatever it does next can be undone.
+  function onAgents({ started, stopped }) {
+    for (const name of stopped) runningAgents.delete(name);
+    for (const name of started) {
+      runningAgents.set(name, now());
+      savePointEverywhere({ trigger: 'agent', agent: name, label: `${name} started` });
+    }
+    mewndo.emit('agents-changed', mewndo.agents());
+  }
+
+  // While agents run: every saveEveryMs, a save point in each folder that changed since its newest one.
+  function agentTick() {
+    const agent = likelyAgent();
+    if (agent) savePointEverywhere({ trigger: 'agent', agent, agentLikely: true, label: `While ${agent} was running`, onlyIfChanged: true });
+  }
+
+  // An agent's hook asked for a save point (hook-server.js), in the protected folder the agent works in.
+  async function hookSavePoint({ agent, event, cwd, command }) {
+    const real = await fsp.realpath(cwd || '.').catch(() => path.resolve(cwd || '.'));
+    const root = [...journals.keys()].find((r) => samePath(r, real) || isInside(real, r));
+    if (!root) return { savePoint: null, reason: 'not in a protected folder' };
+    await ready.get(root);
+    const j = journals.get(root);
+    if (!j) return { savePoint: null, reason: 'no longer protected' };
+    const oneLine = command.replace(/\s+/g, ' ').trim();
+    const label = event === 'SessionStart' ? `${agent} session started`
+      : oneLine ? `Before ${agent} runs: ${oneLine.length > 100 ? `${oneLine.slice(0, 100)}…` : oneLine}`
+        : `${agent}${event ? `: ${event}` : ''}`;
+    // Before every command: only when something changed since the newest save point, or they'd pile up.
+    const savePoint = await j.createSavePoint({ trigger: 'hook', agent, label, onlyIfChanged: event !== 'SessionStart' });
+    return { folder: root, savePoint };
+  }
+
+  // null, or why exact save points for agents aren't available.
+  mewndo.hookServerProblem = () => hookServerProblem;
+
   // At launch: clean temp files, protect the remembered folders again (catch-up scans run in the
   // background), prune, then prune once a day.
   mewndo.start = async () => {
@@ -411,11 +475,36 @@ function createMewndo({
     await mewndo.prune();
     timer = setInterval(() => mewndo.prune().catch((e) => warn('prune-failed', e.message)), pruneEveryMs);
     timer.unref();
+    if (agents) {
+      agentWatcher = createAgentWatcher({
+        agentsFile: path.join(dataDir, 'agents.json'), intervalMs: agents.intervalMs, listProcesses: agents.listProcesses,
+        onChange: onAgents, onError: (e) => warn('agents', e.message),
+      });
+      await agentWatcher.start();
+      agentTimer = setInterval(agentTick, agents.saveEveryMs ?? 10 * 60 * 1000);
+      agentTimer.unref();
+    }
+    if (hookServer) {
+      try {
+        hookServerHandle = await startHookServer({ dataDir, port: hookServer.port, onSavePoint: hookSavePoint });
+        hookServerProblem = null;
+      } catch (e) {
+        hookServerProblem = e.code === 'EADDRINUSE'
+          ? `Exact save points for AI agents are off: port ${hookServer.port} is already used by another program.`
+          : `Exact save points for AI agents are off: ${e.message}`;
+        warn('hook-server', hookServerProblem);
+      }
+    }
   };
 
   mewndo.stop = async () => {
     clearInterval(timer);
     clearTimeout(resumeTimer);
+    clearInterval(agentTimer);
+    agentWatcher?.stop();
+    runningAgents.clear();
+    await hookServerHandle?.close();
+    hookServerHandle = null;
     await pruning;
     for (const j of mewndo.journals()) await j.stop();
     journals.clear();

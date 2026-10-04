@@ -79,6 +79,7 @@ function createJournal({
   writeFinishMs = 2000, // a file must stop changing this long before it is captured
   watcher: watchMode = process.platform === 'win32' || process.platform === 'darwin' ? 'native' : 'chokidar',
   burst: burstOptions, // thresholds for burst alerts, see burst.js
+  likelyAgent = () => null, // the AI agent most likely making changes right now, if any (see agents.js)
 }) {
   const journal = new EventEmitter();
   let realRoot, indexFile, savePointDir, closeWatcher, timer;
@@ -90,6 +91,7 @@ function createJournal({
   let restoring = false;
   let catchingUp = false; // the scan at start: those changes happened while Mewndo wasn't watching
   let watching = false; // false while stopped or paused: changes then don't count toward burst alerts
+  let savedJson = null; // the index as of the newest save point made since start, for onlyIfChanged
   const burst = createBurstDetector(burstOptions);
   let queue = Promise.resolve();
 
@@ -115,7 +117,8 @@ function createJournal({
     const changes = index ? diff(index, next) : [];
     if (changes.length && !restoring) {
       if (Date.now() - lastChangeAt >= quietMs) {
-        await writeSavePoint(index, { trigger: 'activity', label: 'Before changes' });
+        const agent = likelyAgent();
+        await writeSavePoint(index, { trigger: 'activity', label: 'Before changes', agent, agentLikely: !!agent }, indexJson);
       }
       lastChangeAt = Date.now();
     }
@@ -128,19 +131,22 @@ function createJournal({
       // Files and links only: a deleted folder of 30 files is 30 files, not 31 changes.
       const entry = (c) => (c.type === 'deleted' ? index0 : next)[c.path];
       const alert = burst.record(changes.filter((c) => entry(c)?.type !== 'directory'));
-      if (alert) journal.emit('burst', alert);
+      if (alert) journal.emit('burst', { ...alert, agent: likelyAgent() }); // agent: a guess, shown as likely
     }
   }
 
   // ponytail: each save point is a full copy of the index; share unchanged entries between save points
   // if save point files get too big for very large folders.
-  async function writeSavePoint(snapshot, { label, trigger, agent }) {
+  // agentLikely: the agent name is a guess (the agent that was running), not reported by the agent itself.
+  async function writeSavePoint(snapshot, { label, trigger, agent, agentLikely }, snapshotJson) {
     lastSavePointAt = Math.max(Date.now(), lastSavePointAt + 1); // keeps createdAt strictly ordered
     const meta = {
       id: crypto.randomUUID(), createdAt: new Date(lastSavePointAt).toISOString(),
-      label: label ?? '', trigger, agent: agent ?? null,
+      label: label ?? '', trigger, agent: agent ? String(agent).slice(0, 60) : null,
+      ...(agent && agentLikely ? { agentLikely: true } : {}),
     };
     await writeFileAtomic(path.join(savePointDir, `${meta.id}.json`), JSON.stringify({ ...meta, index: snapshot }));
+    savedJson = snapshotJson;
     journal.emit('savepoint', meta);
     return meta;
   }
@@ -205,11 +211,14 @@ function createJournal({
     scanAbort = new AbortController(); // save points and restores still scan after a stop (e.g. while paused)
   };
 
-  journal.createSavePoint = async ({ label, trigger = 'manual', agent } = {}) => {
+  // onlyIfChanged: skip it (resolving null) when nothing changed since the newest save point made since start,
+  // e.g. for a hook that asks before every command an agent runs.
+  journal.createSavePoint = async ({ label, trigger = 'manual', agent, agentLikely, onlyIfChanged = false } = {}) => {
     if (!TRIGGERS.includes(trigger)) throw new Error(`unknown trigger: ${trigger}`);
     return enqueue(async () => {
       await sync(); // catch anything the watcher hasn't reported yet
-      return writeSavePoint(index, { label, trigger, agent });
+      if (onlyIfChanged && indexJson === savedJson) return null;
+      return writeSavePoint(index, { label, trigger, agent, agentLikely }, indexJson);
     });
   };
 

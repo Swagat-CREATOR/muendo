@@ -2,13 +2,15 @@
 // big JSON indexes, pruning) can ever freeze the window. The main process talks to it with messages:
 //   main -> engine  { id, method, args }        engine -> main  { id, result } or { id, error, code }
 //   engine -> main  { event, args }             (progress, save points, restores, warnings...)
-const { createMewndo } = require('../engine');
+const { createMewndo, HOOK_PORT, planClaudeHooks, installClaudeHooks } = require('../engine');
 
 const port = process.parentPort;
 let mewndo = null;
 
 // Engine methods the main process may call. 'journal.X' calls journal X on the folder given as first argument.
-const MEWNDO = new Set(['unprotect', 'folders', 'pausedUntil', 'pauseProtection', 'resumeProtection', 'storageReport', 'prune']);
+const MEWNDO = new Set([
+  'unprotect', 'folders', 'pausedUntil', 'pauseProtection', 'resumeProtection', 'storageReport', 'prune', 'agents', 'hookServerProblem',
+]);
 const JOURNAL = new Set(['listSavePoints', 'createSavePoint', 'diffSince', 'planRestore', 'restore', 'listRestores']);
 
 const emit = (event, ...args) => port.postMessage({ event, args });
@@ -29,15 +31,27 @@ const methods = {
   ping: () => 'pong',
 
   async start(options) {
-    mewndo = createMewndo(options);
+    // The app turns on agent awareness (checks every 5 s, a save point every 10 min while agents run) and the
+    // exact-save-point server for agent hooks.
+    mewndo = createMewndo({ ...options, agents: { intervalMs: 5000, saveEveryMs: 10 * 60 * 1000 }, hookServer: { port: HOOK_PORT } });
     mewndo.on('progress', (root, p) => throttled('progress', root, p, 150));
     mewndo.on('change', (root, c) => throttled('change', root, c, 1000));
     for (const event of ['savepoint', 'restored', 'retry', 'burst']) mewndo.on(event, (root, payload) => emit(event, root, payload));
-    for (const event of ['warning', 'folders-changed', 'pruned']) mewndo.on(event, (payload) => emit(event, payload ?? null));
+    for (const event of ['warning', 'folders-changed', 'pruned', 'agents-changed']) mewndo.on(event, (payload) => emit(event, payload ?? null));
     await mewndo.start();
   },
 
   stop: () => mewndo?.stop(),
+
+  // What installing the Claude Code hooks would add (shown to the user first), and installing them.
+  async claudeHooksPlan() {
+    const { merged, ...plan } = await planClaudeHooks();
+    return plan;
+  },
+  async claudeHooksInstall() {
+    const { merged, ...result } = await installClaudeHooks();
+    return result;
+  },
 
   // The journal itself can't cross processes; the main process only needs to know it was accepted.
   async protect(root, options) {

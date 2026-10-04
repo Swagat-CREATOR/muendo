@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('mewndo', {
   undoRestore: call('undoRestore'),
   openPath: call('openPath'),
   ping: call('ping'),
+  claudeHooksPlan: call('claudeHooksPlan'),
+  claudeHooksInstall: call('claudeHooksInstall'),
   on(event, fn) {
     if (!EVENTS.has(event)) throw new Error(`unknown event: ${event}`);
     const listener = (_e, payload) => fn(payload);

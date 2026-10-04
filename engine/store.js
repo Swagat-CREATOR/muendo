@@ -242,11 +242,12 @@ async function removeStaleTemp(dir, maxAgeMs = TEMP_MAX_AGE_MS) {
 }
 
 // Write a file via temp file + rename so a crash leaves either the old or the new version, never half of one.
-async function writeFileAtomic(file, text) {
+// mode: permissions for the new file, e.g. 0o600 for secrets (ignored on Windows).
+async function writeFileAtomic(file, text, mode) {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${crypto.randomUUID()}${TEMP_SUFFIX}`;
   try {
-    await fsp.writeFile(tmp, text, { flag: 'wx', flush: true });
+    await fsp.writeFile(tmp, text, { flag: 'wx', flush: true, ...(mode ? { mode } : {}) });
     await fsp.rename(tmp, file);
   } finally {
     await fsp.rm(tmp, { force: true });

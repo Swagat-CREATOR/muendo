@@ -23,17 +23,23 @@
   <main id="main" hidden>
     <header>
       <h1>Mewndo</h1>
+      <span id="agents"></span>
       <span id="pause-status" class="muted"></span>
       <button id="pause">Pause protection for 1 hour</button>
       <label id="login-wrap"><input type="checkbox" id="login"> Start at sign-in</label>
     </header>
     <p id="shortcut-problem" class="error banner" role="alert" hidden></p>
+    <p id="hook-problem" class="error banner" role="alert" hidden></p>
     <div class="columns">
       <nav aria-label="Protected folders">
         <h2>Protected folders</h2>
         <ul id="folders" class="plain"></ul>
         <button id="add-folder">Add folder…</button>
         <p id="storage-summary" class="muted"></p>
+        <h2>Claude Code</h2>
+        <p class="muted">Exact save points: one when a session starts and one right before every command Claude Code runs.</p>
+        <button id="claude-hooks">Set up Claude Code save points…</button>
+        <p id="claude-hooks-status" class="muted"></p>
       </nav>
 
       <section id="detail">
@@ -98,6 +104,23 @@
       <menu>
         <button value="cancel">Cancel</button>
         <button value="ok" class="primary">Stop protecting</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="hooks-dialog">
+    <form method="dialog">
+      <h2>Add Mewndo to Claude Code?</h2>
+      <p>Claude Code will run Mewndo's save point script when a session starts and right before every Bash command.
+        The script finishes in under a second, prints nothing, and never stops Claude Code, even when Mewndo isn't running.</p>
+      <p><strong>File:</strong> <span id="hooks-path" class="mono"></span></p>
+      <p id="hooks-note"></p>
+      <p><strong>Exactly this will be added:</strong></p>
+      <pre id="hooks-preview"></pre>
+      <p id="hooks-error" class="error" role="alert"></p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" id="hooks-ok" class="primary">Add the hooks</button>
       </menu>
     </form>
   </dialog>

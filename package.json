@@ -4,6 +4,9 @@
   "description": "Undo what AI agents did to your files.",
   "private": true,
   "main": "app/main.js",
+  "bin": {
+    "mewndo-savepoint": "bin/mewndo-savepoint.js"
+  },
   "scripts": {
     "start": "electron .",
     "test": "node --test \"test/**/*.test.js\"",

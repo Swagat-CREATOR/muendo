@@ -30,6 +30,9 @@ function size(bytes) {
   while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
   return `${i ? bytes.toFixed(1) : bytes} ${units[i]}`;
 }
+// "Claude Code", or "Claude Code (likely)" when Mewndo guessed it from the running agents.
+const agentText = (sp) => (sp.agent ? `${sp.agent}${sp.agentLikely ? ' (likely)' : ''}` : '');
+
 const TRIGGERS = {
   manual: 'Manual', brief: 'Brief', activity: 'Automatic', agent: 'Agent', hook: 'Hook', 'before-undo': 'Before undo',
 };
@@ -185,6 +188,11 @@ function renderHeader() {
   $('login-wrap').hidden = !state.loginSupported;
   $('shortcut-problem').hidden = !state.shortcutProblem;
   $('shortcut-problem').textContent = state.shortcutProblem ?? '';
+  $('hook-problem').hidden = !state.hookProblem;
+  $('hook-problem').textContent = state.hookProblem ?? '';
+  const names = (state.agents ?? []).map((a) => a.name);
+  $('agents').textContent = names.length ? `AI agents running: ${names.join(', ')}` : 'No AI agents running';
+  $('agents').className = names.length ? 'running' : 'muted';
   $('login').checked = state.openAtLogin;
 }
 
@@ -237,7 +245,7 @@ const loadSavePoints = guard(async () => {
     onkeydown: (e) => { if (e.key === 'Enter') showDiff(sp); },
   },
   h('td', {}, when(sp.createdAt)), h('td', {}, sp.label || ''), h('td', {}, TRIGGERS[sp.trigger] ?? sp.trigger),
-  h('td', {}, sp.agent || ''))));
+  h('td', {}, agentText(sp)))));
 });
 
 $('create-sp').onclick = guard(async () => {
@@ -419,10 +427,52 @@ async function undoRestore(r) {
   await runRestore(() => api.undoRestore(selected, r.id));
 }
 
+// --- Claude Code hooks -----------------------------------------------------------------------------------------
+
+async function loadHookStatus() {
+  try {
+    const plan = await api.claudeHooksPlan();
+    $('claude-hooks-status').textContent = plan.installed ? 'Set up: Claude Code sessions make exact save points.' : 'Not set up yet.';
+    $('claude-hooks').textContent = plan.installed ? 'Show Claude Code setup…' : 'Set up Claude Code save points…';
+  } catch (e) {
+    $('claude-hooks-status').textContent = e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  }
+}
+
+$('claude-hooks').onclick = guard(async () => {
+  $('hooks-error').textContent = '';
+  let plan;
+  try {
+    plan = await api.claudeHooksPlan();
+  } catch (e) {
+    $('hooks-path').textContent = '';
+    $('hooks-note').textContent = '';
+    $('hooks-preview').textContent = '';
+    $('hooks-error').textContent = e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+    $('hooks-ok').disabled = true;
+    await ask($('hooks-dialog'));
+    $('hooks-ok').disabled = false;
+    return;
+  }
+  $('hooks-path').textContent = plan.settingsPath;
+  $('hooks-note').textContent = plan.installed ? 'These hooks are already set up; nothing needs to change.'
+    : plan.exists ? 'Everything already in this file stays as it is. A backup of the current file is saved next to it first.'
+      : 'This file does not exist yet and will be created.';
+  $('hooks-preview').textContent = plan.preview;
+  $('hooks-ok').disabled = plan.installed;
+  if ((await ask($('hooks-dialog'))) !== 'ok') return;
+  const result = await api.claudeHooksInstall();
+  toast(result.backup ? `Added. The previous settings were saved to ${result.backup}. New Claude Code sessions make exact save points.`
+    : 'Added. New Claude Code sessions make exact save points.');
+  await loadHookStatus();
+});
+
 // --- Keeping up to date ----------------------------------------------------------------------------------------
 
+let hookStatusLoaded = false;
 async function refresh() {
   state = await api.state();
+  if (state.setupDone && !hookStatusLoaded) { hookStatusLoaded = true; loadHookStatus(); }
   $('setup').hidden = state.setupDone;
   $('main').hidden = !state.setupDone;
   if (!state.setupDone) return showSetup();
