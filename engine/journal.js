@@ -1,0 +1,189 @@
+// Journal: one per protected folder. Keeps the folder's current index (a scanner manifest whose file
+// contents are all in the store), watches for changes, and writes save points. Events:
+//   'progress' scan progress · 'change' { path, type: added|changed|deleted } · 'savepoint' metadata ·
+//   'warning' Error from background work (watcher or sync) that did not stop the journal.
+const fsp = require('node:fs/promises');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { EventEmitter } = require('node:events');
+const { watch } = require('chokidar');
+const { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE } = require('./scanner');
+const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
+
+const TRIGGERS = ['manual', 'activity', 'agent-hook', 'before-undo'];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+async function readJson(file) {
+  try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+}
+
+// Same content as far as undo cares. mtime only matters when there is no hash (skipped files).
+function sameEntry(a, b) {
+  return a.type === b.type && a.hash === b.hash && a.target === b.target && a.size === b.size
+    && a.skipped === b.skipped && (a.hash !== undefined || a.mtimeMs === b.mtimeMs);
+}
+
+function diff(before, after) {
+  const changes = [];
+  for (const [p, e] of Object.entries(after)) {
+    if (!before[p]) changes.push({ path: p, type: 'added' });
+    else if (!sameEntry(before[p], e)) changes.push({ path: p, type: 'changed' });
+  }
+  for (const p of Object.keys(before)) if (!after[p]) changes.push({ path: p, type: 'deleted' });
+  return changes;
+}
+
+function folderId(realRoot) {
+  const key = process.platform === 'win32' ? realRoot.toLowerCase() : realRoot;
+  return crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
+}
+
+// Chokidar ignore: anything under an ignored folder, or an ignored folder itself.
+function ignoreFn(root, names) {
+  return (p, stats) => {
+    const parts = path.relative(root, p).split(path.sep);
+    if (parts.slice(0, -1).some((s) => names.has(s))) return true;
+    return names.has(parts.at(-1)) && !!stats?.isDirectory();
+  };
+}
+
+function createJournal({
+  root,
+  dataDir,
+  store,
+  ignore = DEFAULT_IGNORE,
+  maxFileSize = DEFAULT_MAX_FILE_SIZE,
+  concurrency,
+  quietMs = 30_000, // an activity save point is made when changes start after this much quiet
+  debounceMs = 300, // batch watcher events into one sync
+  writeFinishMs = 2000, // a file must stop changing this long before the watcher reports it
+}) {
+  const journal = new EventEmitter();
+  let realRoot, indexFile, savePointDir, watcher, timer;
+  let index = null;
+  let indexJson = null;
+  let lastChangeAt = -Infinity;
+  let lastSavePointAt = 0;
+  let restoring = false;
+  let queue = Promise.resolve();
+
+  // All work on the index runs one task at a time.
+  function enqueue(fn) {
+    const p = queue.then(fn);
+    queue = p.catch(() => {});
+    return p;
+  }
+  const warn = (e) => journal.emit('warning', e);
+
+  // Scan against the index (only changed files are rehashed and stored), then record the result.
+  async function sync() {
+    const next = await scan(realRoot, {
+      previous: index ?? {}, ignore, maxFileSize, concurrency,
+      hash: store.put,
+      onProgress: (p) => journal.emit('progress', p),
+    });
+    const changes = index ? diff(index, next) : [];
+    if (changes.length && !restoring) {
+      if (Date.now() - lastChangeAt >= quietMs) {
+        await writeSavePoint(index, { trigger: 'activity', label: 'Before changes' });
+      }
+      lastChangeAt = Date.now();
+    }
+    const json = JSON.stringify(next);
+    if (json !== indexJson) await writeFileAtomic(indexFile, JSON.stringify({ root: realRoot, index: next }));
+    index = next;
+    indexJson = json;
+    for (const c of changes) journal.emit('change', c);
+  }
+
+  // ponytail: each save point is a full copy of the index; share unchanged entries between save points
+  // if save point files get too big for very large folders.
+  async function writeSavePoint(snapshot, { label, trigger, agent }) {
+    lastSavePointAt = Math.max(Date.now(), lastSavePointAt + 1); // keeps createdAt strictly ordered
+    const meta = {
+      id: crypto.randomUUID(), createdAt: new Date(lastSavePointAt).toISOString(),
+      label: label ?? '', trigger, agent: agent ?? null,
+    };
+    await writeFileAtomic(path.join(savePointDir, `${meta.id}.json`), JSON.stringify({ ...meta, index: snapshot }));
+    journal.emit('savepoint', meta);
+    return meta;
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(() => enqueue(sync).catch(warn), debounceMs);
+  }
+
+  // Protect the folder: catch up with (or, the first time, capture) its contents, then watch it.
+  journal.start = async () => {
+    realRoot = await fsp.realpath(root);
+    await fsp.mkdir(dataDir, { recursive: true });
+    const realData = await fsp.realpath(dataDir);
+    if (realData === realRoot || isInside(realData, realRoot)) {
+      throw new Error(`Muendo's data folder must not be inside a protected folder: ${realData}`);
+    }
+    const dir = path.join(realData, 'folders', folderId(realRoot));
+    indexFile = path.join(dir, 'index.json');
+    savePointDir = path.join(dir, 'savepoints');
+    await removeStaleTemp(dir);
+    await removeStaleTemp(savePointDir);
+
+    index = (await readJson(indexFile))?.index ?? null;
+    indexJson = index && JSON.stringify(index);
+
+    // Watch first, so nothing that changes during the initial scan is missed.
+    watcher = watch(realRoot, {
+      ignoreInitial: true,
+      followSymlinks: false,
+      ignored: ignoreFn(realRoot, new Set(ignore)),
+      awaitWriteFinish: { stabilityThreshold: writeFinishMs, pollInterval: Math.min(100, writeFinishMs / 2) },
+    });
+    watcher.on('all', schedule).on('error', warn);
+    await new Promise((resolve) => watcher.once('ready', resolve));
+    await enqueue(sync);
+  };
+
+  journal.stop = async () => {
+    clearTimeout(timer);
+    await watcher?.close();
+    await queue;
+  };
+
+  journal.createSavePoint = async ({ label, trigger = 'manual', agent } = {}) => {
+    if (!TRIGGERS.includes(trigger)) throw new Error(`unknown trigger: ${trigger}`);
+    return enqueue(async () => {
+      await sync(); // catch anything the watcher hasn't reported yet
+      return writeSavePoint(index, { label, trigger, agent });
+    });
+  };
+
+  // ponytail: reads every save point file to list them; keep a small metadata file if this gets slow.
+  journal.listSavePoints = async () => {
+    let names;
+    try { names = await fsp.readdir(savePointDir); } catch (e) { if (e.code === 'ENOENT') return []; throw e; }
+    const list = [];
+    for (const name of names.filter((n) => n.endsWith('.json'))) {
+      const { index: _, ...meta } = await readJson(path.join(savePointDir, name));
+      list.push(meta);
+    }
+    return list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  };
+
+  journal.getSavePoint = async (id) => {
+    if (!UUID.test(id)) throw new Error(`invalid save point id: ${id}`);
+    return readJson(path.join(savePointDir, `${id}.json`));
+  };
+
+  // While restoring, the index still follows the folder but no activity save points are made.
+  // Turning it off first syncs, so the restore's own writes are absorbed while still flagged.
+  journal.setRestoring = (on) => enqueue(async () => {
+    if (!on) await sync();
+    restoring = on;
+  });
+
+  journal.getIndex = () => index;
+
+  return journal;
+}
+
+module.exports = { createJournal, TRIGGERS };

@@ -158,25 +158,42 @@ function createStore(dir) {
     return total;
   }
 
-  // Run at startup: delete leftover temp files older than maxAgeMs. Only touches *.muendo-tmp files
-  // directly inside the store's tmp folder, never objects. Returns how many were removed.
-  async function cleanTemp(maxAgeMs = TEMP_MAX_AGE_MS) {
-    let names;
-    try { names = await fsp.readdir(tmpDir); } catch (e) { if (e.code === 'ENOENT') return 0; throw e; }
-    let removed = 0;
-    for (const name of names) {
-      if (!name.endsWith(TEMP_SUFFIX)) continue;
-      const p = path.join(tmpDir, name);
-      const st = await fsp.lstat(p).catch(() => null);
-      if (st?.isFile() && Date.now() - st.mtimeMs > maxAgeMs) {
-        await fsp.rm(p, { force: true });
-        removed++;
-      }
-    }
-    return removed;
-  }
+  // Run at startup. Never touches objects.
+  const cleanTemp = (maxAgeMs) => removeStaleTemp(tmpDir, maxAgeMs);
 
   return { put, has, copyOut, usage, cleanTemp };
 }
 
-module.exports = { createStore, hashFile, readStable, CHANGED, TEMP_SUFFIX };
+// Delete *.muendo-tmp files older than maxAgeMs directly inside dir (Muendo's own folders only).
+// Returns how many were removed.
+async function removeStaleTemp(dir, maxAgeMs = TEMP_MAX_AGE_MS) {
+  let names;
+  try { names = await fsp.readdir(dir); } catch (e) { if (e.code === 'ENOENT') return 0; throw e; }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.endsWith(TEMP_SUFFIX)) continue;
+    const p = path.join(dir, name);
+    const st = await fsp.lstat(p).catch(() => null);
+    if (st?.isFile() && Date.now() - st.mtimeMs > maxAgeMs) {
+      await fsp.rm(p, { force: true });
+      removed++;
+    }
+  }
+  return removed;
+}
+
+// Write a file via temp file + rename so a crash leaves either the old or the new version, never half of one.
+async function writeFileAtomic(file, text) {
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${crypto.randomUUID()}${TEMP_SUFFIX}`;
+  try {
+    await fsp.writeFile(tmp, text, { flag: 'wx', flush: true });
+    await fsp.rename(tmp, file);
+  } finally {
+    await fsp.rm(tmp, { force: true });
+  }
+}
+
+module.exports = {
+  createStore, hashFile, readStable, removeStaleTemp, writeFileAtomic, isInside, CHANGED, TEMP_SUFFIX,
+};

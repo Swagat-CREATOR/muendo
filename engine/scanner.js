@@ -2,7 +2,7 @@
 // Paths use '/' on every platform. Links and junctions are recorded, never entered.
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { hashFile, CHANGED } = require('./store');
+const { hashFile, CHANGED, TEMP_SUFFIX } = require('./store');
 
 const DEFAULT_IGNORE = [
   'node_modules', '.venv', 'dist', 'build',
@@ -55,6 +55,7 @@ async function scan(root, {
         manifest[rel] = { type: 'directory' };
         dirs.push(rel);
       } else if (st.isFile()) {
+        if (name.endsWith(TEMP_SUFFIX)) continue; // Muendo's own in-progress restore writes
         const entry = { type: 'file', size: st.size, mtimeMs: st.mtimeMs };
         manifest[rel] = entry;
         const prev = previous[rel];

@@ -6,6 +6,8 @@
   against the file's SHA-256 before it is put in place.
 - Restore symbolic links and junctions as links. Muendo records where a link points but never follows it.
 - Keep several protected folders at once, each with its own history.
+- Pick up changes made while Muendo was closed. The folder as it was when Muendo last saw it is kept as a
+  save point.
 - Protect the `.git` folder, so an agent's damage to your repository history can be undone too.
 
 ## Can't
