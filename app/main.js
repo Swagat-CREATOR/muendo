@@ -80,7 +80,11 @@ function onEngineMessage(msg) {
 // Start the engine process. If it ever dies, everything it was doing fails cleanly and it is started again
 // (its own startup finishes interrupted restores). Three crashes within a minute: stop and tell the user.
 function startEngine() {
-  engine = utilityProcess.fork(path.join(__dirname, 'engine-host.js'), [], { serviceName: 'Mewndo engine', stdio: 'inherit' });
+  // All file work in the engine shares one pool of threads (4 by default). A slow scan (antivirus checking every
+  // file, OneDrive, network drives) can fill it, making quick work like checking a new folder wait minutes.
+  engine = utilityProcess.fork(path.join(__dirname, 'engine-host.js'), [], {
+    serviceName: 'Mewndo engine', stdio: 'inherit', env: { ...process.env, UV_THREADPOOL_SIZE: '16' },
+  });
   engine.on('message', onEngineMessage);
   engine.on('exit', (code) => {
     engine = null;

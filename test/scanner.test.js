@@ -141,3 +141,18 @@ test('a file that changes while being read is recorded as skipped, not hashed', 
   assert.strictEqual(m['a.txt'].hash, undefined);
   assert.ok(m['docs/b.txt'].hash);
 });
+
+test('online-only cloud files (size but no disk space) are recorded as skipped, never opened', async () => {
+  const root = tempDir();
+  fs.writeFileSync(path.join(root, 'local.txt'), 'x'.repeat(10_000));
+  fs.writeFileSync(path.join(root, 'tiny.txt'), 'small files can use no blocks of their own');
+  fs.closeSync(fs.openSync(path.join(root, 'cloud.docx'), 'w'));
+  fs.truncateSync(path.join(root, 'cloud.docx'), 1_000_000); // sparse: has a size, takes no space, like a placeholder
+  if (fs.lstatSync(path.join(root, 'cloud.docx')).blocks !== 0) return; // filesystem without sparse files
+  const opened = [];
+  const m = await scan(root, { skipOnlineOnly: true, hash: (f) => { opened.push(path.basename(f)); return hashFile(f); } });
+  assert.strictEqual(m['cloud.docx'].skipped, 'online-only');
+  assert.strictEqual(m['cloud.docx'].hash, undefined);
+  assert.deepStrictEqual(opened.sort(), ['local.txt', 'tiny.txt']);
+  assert.ok(m['local.txt'].hash && m['tiny.txt'].hash);
+});

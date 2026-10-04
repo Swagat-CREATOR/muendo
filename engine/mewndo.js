@@ -120,7 +120,11 @@ function createMewndo({
       if (isInside(real, other) || isInside(other, real)) throw new Error(`This folder overlaps ${other}, which is already protected.`);
     }
     if (resuming) return real;
-    const size = await folderSize(real, { ignore: journalOptions.ignore ?? DEFAULT_IGNORE, stopAboveBytes: maxFolderBytes });
+    const size = await folderSize(real, {
+      ignore: journalOptions.ignore ?? DEFAULT_IGNORE,
+      stopAboveBytes: maxFolderBytes,
+      onProgress: (p) => mewndo.emit('progress', real, { phase: 'checking', ...p }),
+    });
     if (size.over) throw new Error(`This folder is larger than ${gb(maxFolderBytes)}. Choose a smaller folder, like one project.`);
     return real;
   };
@@ -155,12 +159,11 @@ function createMewndo({
     const found = await find(root);
     if (!found) throw new Error(`not protected: ${root}`);
     const { journal } = found;
-    if (starting.has(found.root)) throw new Error('This folder is still being scanned. Try again when it is done.');
     if (journal.isRestoring()) throw new Error('a restore is running for this folder');
-    await journal.stop();
+    await journal.stop(); // also cancels a first scan that is still running
     journals.delete(found.root);
     changed();
-    const dir = journal.folderDir;
+    const dir = path.join(await realData(), 'folders', folderId(found.root));
     if (keepHistory) {
       const settings = await readJson(settingsFile(dir));
       await writeFileAtomic(settingsFile(dir), JSON.stringify({ ...settings, protected: false }));

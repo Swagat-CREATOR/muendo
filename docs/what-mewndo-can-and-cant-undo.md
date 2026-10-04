@@ -19,6 +19,8 @@
 ## Can't
 
 - **Files over 50 MB** are skipped by default. Mewndo records that they were skipped, so you can see it.
+- **Online-only OneDrive files** (and other cloud placeholders that aren't on this PC) are skipped and recorded,
+  because reading them would download them. Files kept on this device are protected normally.
 - **Ignored folders** (`node_modules`, `.venv`, `dist`, `build`, cache folders) are not saved. They can
   normally be rebuilt.
 - **Files that change while Mewndo reads them** are skipped for that save point and recorded as

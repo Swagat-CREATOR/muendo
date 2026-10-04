@@ -10,6 +10,12 @@ const DEFAULT_IGNORE = [
 ];
 const DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024;
 
+// An online-only cloud file (OneDrive "Files On-Demand" and similar): it has a size but takes no disk space.
+// Opening it would download it, so it is recorded as skipped instead. Tiny files can live inside the file table
+// with no space of their own, hence the 4 KB floor.
+// ponytail: inferred from space used; read the file's RECALL_ON_DATA_ACCESS attribute if Node ever exposes it.
+const isOnlineOnly = (st) => st.size > 4096 && st.blocks === 0;
+
 async function scan(root, {
   previous = {},
   ignore = DEFAULT_IGNORE,
@@ -18,6 +24,7 @@ async function scan(root, {
   hash = hashFile, // (file, realRoot); a store's put() can go here to hash and store in one read
   onProgress = () => {},
   signal, // an AbortSignal: stops the scan between files with an AbortError
+  skipOnlineOnly = process.platform === 'win32',
 } = {}) {
   const realRoot = await fsp.realpath(root);
   const ignored = new Set(ignore);
@@ -62,6 +69,7 @@ async function scan(root, {
         manifest[rel] = entry;
         const prev = previous[rel];
         if (st.size > maxFileSize) entry.skipped = 'too-large';
+        else if (skipOnlineOnly && isOnlineOnly(st)) entry.skipped = 'online-only';
         else if (prev?.type === 'file' && prev.hash && prev.size === st.size && prev.mtimeMs === st.mtimeMs) entry.hash = prev.hash;
         else toHash.push(rel);
       } // ponytail: sockets, FIFOs and devices are not user files; skipped
@@ -97,7 +105,7 @@ async function scan(root, {
 
 // Total size of the files in a folder, with the scan's ignore rules and never entering links. Stops early
 // once over stopAboveBytes. Returns { bytes, files, over }.
-async function folderSize(root, { ignore = DEFAULT_IGNORE, stopAboveBytes = Infinity } = {}) {
+async function folderSize(root, { ignore = DEFAULT_IGNORE, stopAboveBytes = Infinity, onProgress = () => {} } = {}) {
   const ignored = new Set(ignore);
   let bytes = 0;
   let files = 0;
@@ -113,6 +121,7 @@ async function folderSize(root, { ignore = DEFAULT_IGNORE, stopAboveBytes = Infi
         bytes += st.size;
         files++;
         if (bytes > stopAboveBytes) return { bytes, files, over: true };
+        if (files % 500 === 0) onProgress({ files, bytes });
       }
     }
   }

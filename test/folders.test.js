@@ -131,3 +131,26 @@ test('stopping during a first scan cancels it quickly, keeps the folder protecte
     assert.strictEqual(again.folders()[0].files, 3000);
   } finally { await again.stop(); }
 });
+
+test('a folder can be unprotected while its first scan is still running', async () => {
+  const base = tempDir();
+  const files = {};
+  for (let i = 0; i < 2000; i++) files[`d${i % 20}/f${i}.txt`] = `file ${i}`;
+  const root = folder(base, 'project', files);
+  const dataDir = path.join(base, 'data');
+  const mewndo = createMewndo({ dataDir, journalOptions });
+  try {
+    await mewndo.protect(root, { background: true });
+    await sleep(300);
+    assert.strictEqual(mewndo.folders()[0].status, 'scanning');
+    const t = Date.now();
+    await mewndo.unprotect(root, { keepHistory: true });
+    assert.ok(Date.now() - t < 3000, `unprotect took ${Date.now() - t} ms`);
+    assert.deepStrictEqual(mewndo.folders(), []);
+  } finally { await mewndo.stop(); }
+  const again = createMewndo({ dataDir, journalOptions });
+  await again.start();
+  try {
+    assert.deepStrictEqual(again.folders(), [], 'stays unprotected after a restart');
+  } finally { await again.stop(); }
+});

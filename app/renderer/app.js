@@ -54,19 +54,38 @@ const guard = (fn) => async (...args) => {
 
 // --- First run -------------------------------------------------------------------------------------------------
 
-const setupFolders = []; // { path, checked, error }
+// { path, checked, error, already }. `already`: Mewndo is protecting it from an earlier, unfinished setup.
+const setupFolders = [];
 
 function renderSetup() {
   const list = $('setup-folders');
   list.replaceChildren(...setupFolders.map((f) => h('li', {},
     h('label', {}, h('input', { type: 'checkbox', checked: f.checked, onchange: (e) => { f.checked = e.target.checked; } }), ` ${f.path}`),
+    f.already && h('div', { class: 'muted' }, f.checked
+      ? `Already being protected (${f.already}). Untick to stop protecting it.`
+      : 'Mewndo will stop protecting this folder.'),
     f.error && h('div', { class: 'error' }, f.error))));
 }
 
 function showSetup() {
-  if (!setupFolders.length) for (const p of state.suggestions) setupFolders.push({ path: p, checked: true, error: null });
+  // Folders already protected (from an earlier attempt) are shown first, so nothing runs out of sight.
+  let changed = false;
+  for (const f of state.folders) {
+    const known = setupFolders.find((x) => x.path === f.root);
+    if (known) {
+      if (known.already && known.already !== f.status) { known.already = f.status; changed = true; }
+    } else {
+      setupFolders.unshift({ path: f.root, checked: true, error: null, already: f.status });
+      changed = true;
+    }
+  }
+  if (!setupFolders.some((f) => !f.already)) {
+    for (const p of state.suggestions) {
+      if (!setupFolders.some((f) => f.path === p)) { setupFolders.push({ path: p, checked: true, error: null }); changed = true; }
+    }
+  }
   $('setup-login-wrap').hidden = !state.loginSupported;
-  renderSetup();
+  if (changed || !$('setup-folders').children.length) renderSetup();
 }
 
 $('setup-add').onclick = guard(async () => {
@@ -77,20 +96,29 @@ $('setup-add').onclick = guard(async () => {
 });
 
 $('setup-start').onclick = guard(async () => {
-  const chosen = setupFolders.filter((f) => f.checked);
-  $('setup-error').textContent = chosen.length ? '' : 'Choose at least one folder to protect.';
-  if (!chosen.length) return;
+  const toProtect = setupFolders.filter((f) => f.checked && !f.already);
+  const toStop = setupFolders.filter((f) => !f.checked && f.already);
+  const kept = setupFolders.filter((f) => f.checked && f.already);
+  if (!toProtect.length && !kept.length) {
+    $('setup-error').textContent = 'Choose at least one folder to protect.';
+    return;
+  }
   $('setup-start').disabled = true;
-  $('setup-error').textContent = 'Checking folders…';
   try {
-    const results = await api.protect(chosen.map((f) => f.path));
+    for (const f of toStop) {
+      $('setup-error').textContent = `Stopping protection of ${f.path}…`;
+      await api.unprotect(f.path, true);
+      setupFolders.splice(setupFolders.indexOf(f), 1);
+    }
+    $('setup-error').textContent = toProtect.length ? 'Checking folders…' : '';
+    const results = toProtect.length ? await api.protect(toProtect.map((f) => f.path)) : [];
     for (const r of results) {
       const f = setupFolders.find((x) => x.path === r.root);
       f.error = r.ok ? null : r.error;
       if (r.ok) f.checked = false; // done; don't protect twice
     }
     renderSetup();
-    if (!results.some((r) => r.ok)) {
+    if (!kept.length && !results.some((r) => r.ok)) {
       $('setup-error').textContent = 'None of the chosen folders can be protected. Choose others.';
       return;
     }
@@ -402,6 +430,12 @@ async function refresh() {
 
 api.on('state-changed', guard(refresh));
 api.on('progress', (p) => {
+  if (p.phase === 'checking') { // measuring a folder before protecting it
+    const text = `Checking ${p.root}: ${p.files.toLocaleString()} files so far…`;
+    if (state && !state.setupDone) $('setup-error').textContent = text;
+    else toast(text);
+    return;
+  }
   progress.set(p.root, p);
   if (state?.setupDone) renderFolders();
   if (p.phase === 'done') guard(refresh)();
