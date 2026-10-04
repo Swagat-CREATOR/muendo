@@ -1,0 +1,2 @@
+# muendo
+ai smart
