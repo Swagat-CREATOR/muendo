@@ -183,6 +183,8 @@ function renderHeader() {
   $('pause-status').textContent = until ? `Protection paused until ${new Date(until).toLocaleTimeString()}` : '';
   $('pause').textContent = until ? 'Resume protection' : 'Pause protection for 1 hour';
   $('login-wrap').hidden = !state.loginSupported;
+  $('shortcut-problem').hidden = !state.shortcutProblem;
+  $('shortcut-problem').textContent = state.shortcutProblem ?? '';
   $('login').checked = state.openAtLogin;
 }
 

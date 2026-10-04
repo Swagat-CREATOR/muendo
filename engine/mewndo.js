@@ -177,11 +177,12 @@ function createMewndo({
 
   mewndo.journals = () => [...journals.values()];
 
-  // Protected folders for display: [{ root, status: scanning|restoring|paused|protected, files }].
+  // Protected folders for display: [{ root, status: scanning|restoring|paused|protected, files, lastChangeAt }].
   mewndo.folders = () => [...journals].map(([root, j]) => ({
     root,
     status: starting.has(root) ? 'scanning' : j.isRestoring() ? 'restoring' : pausedUntil ? 'paused' : 'protected',
     files: Object.values(j.getIndex() ?? {}).filter((e) => e.type === 'file').length,
+    lastChangeAt: j.lastChangeAt(),
   }));
 
   // Stop watching every folder for ms, then catch up on what changed. Save points and restores still work.

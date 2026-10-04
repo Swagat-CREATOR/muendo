@@ -54,3 +54,14 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 #confirm-list { max-height: 160px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
 #toast { position: fixed; bottom: 16px; right: 16px; max-width: 420px; padding: 10px 14px; border-radius: 4px;
   background: #333; color: #fff; }
+
+.banner { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+
+/* One-key undo window */
+body.undo { padding: 14px 18px; border: 2px solid var(--accent); height: 100vh; overflow: hidden; }
+body.undo h1 { font-size: 16px; }
+body.undo .folder { font-size: 18px; font-weight: 600; margin: 8px 0 4px; }
+body.undo #details p { margin: 3px 0; }
+body.undo .summary { margin-top: 8px !important; font-weight: 600; }
+body.undo .warning { color: var(--bad); margin: 10px 0 4px; }
+body.undo .keys { margin-top: 10px; }

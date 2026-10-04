@@ -228,6 +228,8 @@ function createJournal({
   });
 
   journal.getIndex = () => index;
+  // When files last changed (not counting restores), or null if nothing has changed since start.
+  journal.lastChangeAt = () => (lastChangeAt === -Infinity ? null : lastChangeAt);
 
   // Scan now and return the up-to-date index.
   journal.sync = () => enqueue(sync).then(() => index);

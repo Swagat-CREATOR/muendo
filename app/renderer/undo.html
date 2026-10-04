@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <title>Mewndo: undo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="undo">
+  <h1>Undo to the latest save point</h1>
+  <p id="folder" class="folder"></p>
+  <div id="details"></div>
+  <p class="warning">Stop the AI agent first, or it may keep changing files while Mewndo puts them back.</p>
+  <p id="status" role="status"></p>
+  <div class="row keys">
+    <button id="confirm" class="primary">Undo (Enter)</button>
+    <button id="cancel">Cancel (Esc)</button>
+    <span id="switch" class="muted"></span>
+  </div>
+  <script src="undo.js"></script>
+</body>
+</html>

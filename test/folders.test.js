@@ -58,7 +58,7 @@ test('background protect shows the folder while its first scan runs, with progre
     await mewndo.protect(root, { background: true });
     assert.deepStrictEqual(mewndo.folders().map((f) => f.status), ['scanning']);
     while (mewndo.folders()[0].status === 'scanning') await sleep(20);
-    assert.deepStrictEqual(mewndo.folders()[0], { root: fs.realpathSync(root), status: 'protected', files: 300 });
+    assert.deepStrictEqual(mewndo.folders()[0], { root: fs.realpathSync(root), status: 'protected', files: 300, lastChangeAt: null });
     assert.ok(progress.some(([r, phase]) => r === fs.realpathSync(root) && phase === 'hashing'));
     assert.ok(progress.some(([, phase]) => phase === 'done'));
   } finally { await mewndo.stop(); }
@@ -153,4 +153,18 @@ test('a folder can be unprotected while its first scan is still running', async 
   try {
     assert.deepStrictEqual(again.folders(), [], 'stays unprotected after a restart');
   } finally { await again.stop(); }
+});
+
+test('folders report when their files last changed', async () => {
+  const base = tempDir();
+  const root = folder(base, 'project', { 'a.txt': 'A' });
+  const mewndo = createMewndo({ dataDir: path.join(base, 'data'), journalOptions });
+  try {
+    const journal = await mewndo.protect(root);
+    assert.strictEqual(mewndo.folders()[0].lastChangeAt, null);
+    const before = Date.now();
+    fs.writeFileSync(path.join(root, 'a.txt'), 'changed');
+    await journal.sync();
+    assert.ok(mewndo.folders()[0].lastChangeAt >= before);
+  } finally { await mewndo.stop(); }
 });

@@ -5,7 +5,9 @@
 const path = require('node:path');
 const fsp = require('node:fs/promises');
 const crypto = require('node:crypto');
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess } = require('electron');
+const {
+  app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut,
+} = require('electron');
 
 const APP_ID = 'com.mewndo.app';
 const HOUR = 60 * 60 * 1000;
@@ -19,7 +21,6 @@ let quitting = false;
 let stopped = false;
 let settings = { setupDone: false, openAtLogin: true };
 const progress = new Map(); // folder -> latest scan/restore progress
-const lastChange = new Map(); // folder -> when it last changed
 const openable = new Set(); // paths the window may ask to open: restore targets and trash folders
 let storage = { at: 0, report: null };
 
@@ -67,7 +68,6 @@ function onEngineMessage(msg) {
   const [a, b] = msg.args;
   switch (msg.event) {
     case 'progress': progress.set(a, b); send('progress', { root: a, ...b }); break;
-    case 'change': lastChange.set(a, Date.now()); break;
     case 'savepoint': storage.at = 0; send('savepoints-changed', a); break;
     case 'restored': send('restores-changed', a); break;
     case 'retry': send('retry', { root: a, ...b }); break;
@@ -171,6 +171,7 @@ async function state() {
     setupDone: settings.setupDone,
     openAtLogin: settings.openAtLogin,
     loginSupported: process.platform !== 'linux',
+    shortcutProblem,
     windows: process.platform === 'win32',
     pausedUntil,
     suggestions: settings.setupDone ? [] : await suggestions(folders),
@@ -197,26 +198,92 @@ async function createSavePointEverywhere() {
   notify('Save point created', `${folders.length} folder${folders.length > 1 ? 's' : ''}: ${folders.map((f) => folderName(f.root)).join(', ')}`);
 }
 
-// Undo Last: put the folder that changed most recently back to its latest save point, after asking.
-async function undoLast() {
+// --- One-key undo (Ctrl+Alt+Z, and the tray's Undo Last) --------------------------------------------------
+
+const DEFAULT_UNDO_SHORTCUT = 'Control+Alt+Z';
+let undoWin = null;
+let shortcutProblem = null; // shown in the main window when the shortcut couldn't be registered
+
+const nothingChanged = (d) => !d.deleted.length && !d.edited.length && !d.moved.length && !d.created.length;
+const prettyShortcut = (accel) => accel.replace('Control', 'Ctrl').replace('CommandOrControl', 'Ctrl');
+
+// Folders to offer, most recent activity first: the ones that changed, or all when none did.
+async function undoFolders() {
   const folders = (await call('folders')).filter((f) => f.status === 'protected' || f.status === 'paused');
-  const root = folders.map((f) => f.root).sort((a, b) => (lastChange.get(b) ?? 0) - (lastChange.get(a) ?? 0))[0];
-  if (!root) return notify('Mewndo', 'Nothing to undo: no folders are protected yet.');
-  const latest = (await call('journal.listSavePoints', root)).at(-1);
-  if (!latest) return notify('Mewndo', `Nothing to undo in ${folderName(root)} yet.`);
-  const diff = await call('journal.diffSince', root, latest.id);
-  if (!diff.deleted.length && !diff.edited.length && !diff.moved.length && !diff.created.length) {
-    return notify('Mewndo', `Nothing changed in ${folderName(root)} since the last save point.`);
-  }
-  const plan = await call('journal.planRestore', root, latest.id);
-  const { response } = await dialog.showMessageBox({
-    type: 'question', buttons: ['Undo', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Undo last changes',
-    message: `Undo the changes in ${folderName(root)} since ${new Date(latest.createdAt).toLocaleString()}?`,
-    detail: `${diff.summary}\n\n${confirmText(plan)}`,
-  });
-  if (response !== 0) return;
-  await reportRestore(root, await call('journal.restore', root, latest.id));
+  const active = folders.filter((f) => f.lastChangeAt).sort((a, b) => b.lastChangeAt - a.lastChangeAt);
+  return (active.length ? active : folders).map((f) => ({ root: f.root, name: folderName(f.root) }));
 }
+
+// What Enter would undo in one folder: its latest save point, ignoring before-undo ones (going back to those
+// is "undo the undo", which Recent Restores offers). If nothing changed since it, the one before it.
+async function undoTarget(root) {
+  const savePoints = (await call('journal.listSavePoints', root)).filter((sp) => sp.trigger !== 'before-undo');
+  const latest = savePoints.at(-1);
+  if (!latest) return { root, nothing: 'There are no save points for this folder yet.' };
+  const diff = await call('journal.diffSince', root, latest.id);
+  if (!nothingChanged(diff)) return { root, savePoint: latest, summary: diff.summary };
+  const previous = savePoints.at(-2);
+  if (!previous) return { root, nothing: 'Nothing changed since the latest save point.' };
+  const older = await call('journal.diffSince', root, previous.id);
+  if (nothingChanged(older)) return { root, nothing: 'Nothing changed since the latest save points.' };
+  return {
+    root, savePoint: previous, summary: older.summary,
+    note: 'Nothing changed since the latest save point, so this goes back to the one before it.',
+  };
+}
+
+function createUndoWindow() {
+  undoWin = new BrowserWindow({
+    width: 500, height: 340, show: false, frame: false, resizable: false, minimizable: false, maximizable: false,
+    fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, title: 'Mewndo: undo', icon: icon(),
+    webPreferences: { preload: path.join(__dirname, 'undo-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  undoWin.setAlwaysOnTop(true, 'floating');
+  undoWin.loadFile(path.join(__dirname, 'renderer', 'undo.html'));
+  undoWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  undoWin.webContents.on('will-navigate', (e) => e.preventDefault());
+  undoWin.on('close', (e) => { if (!quitting) { e.preventDefault(); undoWin.hide(); } });
+}
+
+// Show the undo window; it asks for the folders and the target itself (see renderer/undo.js).
+function openUndo() {
+  if (!undoWin || undoWin.isDestroyed()) createUndoWindow();
+  else undoWin.webContents.send('undo:open');
+  undoWin.center();
+  undoWin.show();
+  // Again once it is on screen: some Linux window managers ignore it until the window has appeared.
+  undoWin.setAlwaysOnTop(true, 'floating');
+  setTimeout(() => { if (!undoWin.isDestroyed() && undoWin.isVisible()) undoWin.setAlwaysOnTop(true, 'floating'); }, 150);
+  undoWin.focus();
+}
+
+// Ctrl+Alt+Z by default. If another app already has it, say so; a setting to pick another comes later.
+function registerUndoShortcut() {
+  const accel = settings.undoShortcut ?? DEFAULT_UNDO_SHORTCUT;
+  let ok = false;
+  try { ok = globalShortcut.register(accel, openUndo); } catch { ok = false; }
+  shortcutProblem = ok ? null
+    : `${prettyShortcut(accel)} is already used by another app, so one-key undo has no shortcut. `
+      + "You'll be able to choose a different shortcut in Settings. Meanwhile, use Undo Last in the tray menu.";
+  if (shortcutProblem) notify('Mewndo', shortcutProblem);
+}
+
+const undoHandlers = {
+  undoFolders,
+  async undoTarget(root) {
+    if (!(await undoFolders()).some((f) => f.root === root)) throw new Error('not a protected folder');
+    return undoTarget(root);
+  },
+  // Only ever restores to the target this folder offers right now, the whole folder, in place.
+  async undoRun(root, savePointId) {
+    if (!(await undoFolders()).some((f) => f.root === root)) throw new Error('not a protected folder');
+    const target = await undoTarget(root);
+    if (target.savePoint?.id !== savePointId) throw new Error('Something changed meanwhile. Press Ctrl+Alt+Z again to see the latest.');
+    const r = await reportRestore(root, await call('journal.restore', root, savePointId));
+    return { verified: r.verified, written: r.counts.written, trashed: r.counts.trashed, problems: r.failures.length + r.mismatches.length };
+  },
+  undoHide() { undoWin?.hide(); },
+};
 
 function confirmText(plan) {
   const back = plan.write.length + plan.links.length;
@@ -276,7 +343,7 @@ async function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Window', click: showWindow },
     { label: 'Create Save Point', click: run(createSavePointEverywhere) },
-    { label: 'Undo Last', click: run(undoLast) },
+    { label: 'Undo Last', click: openUndo },
     { label: until ? 'Resume Protection' : 'Pause Protection for 1 Hour', click: run(togglePause) },
     { type: 'separator' },
     { label: 'Quit', click: () => quit() },
@@ -404,6 +471,14 @@ if (!app.requestSingleInstanceLock()) {
         return fn(...args);
       });
     }
+    for (const [name, fn] of Object.entries(undoHandlers)) {
+      ipcMain.handle(name, (event, ...args) => {
+        if (event.sender !== undoWin?.webContents) throw new Error('unknown sender');
+        return fn(...args);
+      });
+    }
+    registerUndoShortcut();
+    app.on('will-quit', () => globalShortcut.unregisterAll());
 
     tray = new Tray(icon().resize({ width: 16, height: 16 }));
     tray.on('click', showWindow);
