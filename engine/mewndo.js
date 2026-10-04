@@ -1,12 +1,16 @@
 // Mewndo: the top level. Owns the shared content store and one journal per protected folder, remembers which
 // folders are protected, and keeps storage in check: retention pruning, a storage budget, free disk space.
-// Events: 'pruned' prune result · 'warning' { code: 'over-budget' | 'low-disk' | 'folder-unavailable' |
-//   'prune-failed', message, ... }
+// Events: 'pruned' prune result · 'folders-changed' · 'warning' { code: 'over-budget' | 'low-disk' |
+//   'folder-unavailable' | 'journal' | 'prune-failed', message, ... } · and from each journal, as (root, payload):
+//   'progress', 'savepoint', 'restored', 'retry', 'change'.
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { createStore, writeFileAtomic } = require('./store');
-const { createJournal } = require('./journal');
+const { createStore, writeFileAtomic, isInside } = require('./store');
+const { createJournal, folderId } = require('./journal');
+const { folderSize, DEFAULT_IGNORE } = require('./scanner');
+
+const FORWARDED = ['progress', 'savepoint', 'restored', 'retry', 'change'];
 
 const DAY = 24 * 60 * 60 * 1000;
 const GB = 1024 ** 3;
@@ -65,31 +69,82 @@ function createMewndo({
   budgetBytes = 10 * GB,
   lowDiskBytes = 2 * GB,
   pruneEveryMs = DAY,
+  maxFolderBytes = 20 * GB, // larger folders are refused
   now = Date.now,
   journalOptions = {}, // passed to every journal (timings in tests)
 }) {
   const mewndo = new EventEmitter();
   const store = createStore(path.join(dataDir, 'store'));
   const foldersDir = path.join(dataDir, 'folders');
-  const journals = new Map(); // folder data dir -> journal
+  const journals = new Map(); // real root -> journal
+  const starting = new Set(); // roots whose first or catch-up scan is running
   let timer = null;
   let pruning = null;
+  let pausedUntil = null;
+  let resumeTimer = null;
 
   const warn = (code, message, extra = {}) => mewndo.emit('warning', { code, message, ...extra });
   const settingsFile = (dir) => path.join(dir, 'settings.json');
+  const changed = () => mewndo.emit('folders-changed');
+
+  async function realData() {
+    await fsp.mkdir(dataDir, { recursive: true });
+    return fsp.realpath(dataDir);
+  }
 
   async function find(root) {
     const real = await fsp.realpath(root).catch(() => path.resolve(root));
-    return [...journals.values()].find((j) => samePath(j.root, real));
+    const key = [...journals.keys()].find((r) => samePath(r, real));
+    return key && { root: key, journal: journals.get(key) };
   }
 
-  // Start protecting a folder (or resume protecting it). Returns its journal.
-  mewndo.protect = async (root, { retentionDays = 30 } = {}) => {
-    if (await find(root)) throw new Error(`already protected: ${root}`);
-    const journal = createJournal({ ...journalOptions, root, dataDir, store });
-    await journal.start();
-    journals.set(journal.folderDir, journal);
-    await writeFileAtomic(settingsFile(journal.folderDir), JSON.stringify({ root: journal.root, retentionDays, protected: true }));
+  // The journal for a protected folder; throws for anything else (callers pass roots from the UI).
+  mewndo.journalFor = (root) => {
+    const key = [...journals.keys()].find((r) => samePath(r, root));
+    if (!key) throw new Error(`not a protected folder: ${root}`);
+    return journals.get(key);
+  };
+
+  // Why a folder can't be protected, as a thrown Error with a plain message.
+  // resuming: a folder protected before may have grown past the size limit; keep protecting it.
+  mewndo.checkFolder = async (root, { resuming = false } = {}) => {
+    const real = await fsp.realpath(root);
+    if (!(await fsp.stat(real)).isDirectory()) throw new Error('This is not a folder.');
+    const data = await realData();
+    if (samePath(real, data) || isInside(data, real)) {
+      throw new Error("This folder contains Mewndo's own data folder, so it can't be protected.");
+    }
+    if (isInside(real, data)) throw new Error("This folder is inside Mewndo's own data folder.");
+    for (const other of journals.keys()) {
+      if (samePath(other, real)) throw new Error('This folder is already protected.');
+      if (isInside(real, other) || isInside(other, real)) throw new Error(`This folder overlaps ${other}, which is already protected.`);
+    }
+    if (resuming) return real;
+    const size = await folderSize(real, { ignore: journalOptions.ignore ?? DEFAULT_IGNORE, stopAboveBytes: maxFolderBytes });
+    if (size.over) throw new Error(`This folder is larger than ${gb(maxFolderBytes)}. Choose a smaller folder, like one project.`);
+    return real;
+  };
+
+  // Start protecting a folder (or resume protecting it). Returns its journal once the first scan is done,
+  // or, with background: true, as soon as the folder is accepted (the scan's errors become warnings).
+  mewndo.protect = async (root, { retentionDays = 30, background = false, resuming = false } = {}) => {
+    const real = await mewndo.checkFolder(root, { resuming });
+    // Remember it before the first scan, so a restart mid-scan still protects it.
+    const dir = path.join(await realData(), 'folders', folderId(real));
+    await writeFileAtomic(settingsFile(dir), JSON.stringify({ root: real, retentionDays, protected: true }));
+    const journal = createJournal({ ...journalOptions, root: real, dataDir, store });
+    for (const ev of FORWARDED) journal.on(ev, (payload) => mewndo.emit(ev, real, payload));
+    journal.on('warning', (e) => warn('journal', e.message, { folder: real }));
+    journals.set(real, journal);
+    starting.add(real);
+    changed();
+    const started = journal.start().then(() => journal, async (e) => {
+      journals.delete(real);
+      await writeFileAtomic(settingsFile(dir), JSON.stringify({ root: real, retentionDays, protected: false }));
+      throw e;
+    }).finally(() => { starting.delete(real); changed(); });
+    if (!background) return started;
+    started.catch((e) => warn('folder-unavailable', `Can't protect ${real}: ${e.message}`, { root: real }));
     return journal;
   };
 
@@ -97,11 +152,14 @@ function createMewndo({
   // Otherwise its index, save points and restore logs are deleted. Its trash is kept either way: it holds
   // user files that restores moved aside, and Mewndo never permanently deletes user files.
   mewndo.unprotect = async (root, { keepHistory = true } = {}) => {
-    const journal = await find(root);
-    if (!journal) throw new Error(`not protected: ${root}`);
+    const found = await find(root);
+    if (!found) throw new Error(`not protected: ${root}`);
+    const { journal } = found;
+    if (starting.has(found.root)) throw new Error('This folder is still being scanned. Try again when it is done.');
     if (journal.isRestoring()) throw new Error('a restore is running for this folder');
     await journal.stop();
-    journals.delete(journal.folderDir);
+    journals.delete(found.root);
+    changed();
     const dir = journal.folderDir;
     if (keepHistory) {
       const settings = await readJson(settingsFile(dir));
@@ -115,6 +173,38 @@ function createMewndo({
   };
 
   mewndo.journals = () => [...journals.values()];
+
+  // Protected folders for display: [{ root, status: scanning|restoring|paused|protected, files }].
+  mewndo.folders = () => [...journals].map(([root, j]) => ({
+    root,
+    status: starting.has(root) ? 'scanning' : j.isRestoring() ? 'restoring' : pausedUntil ? 'paused' : 'protected',
+    files: Object.values(j.getIndex() ?? {}).filter((e) => e.type === 'file').length,
+  }));
+
+  // Stop watching every folder for ms, then catch up on what changed. Save points and restores still work.
+  mewndo.pauseProtection = async (ms) => {
+    clearTimeout(resumeTimer);
+    pausedUntil = now() + ms;
+    for (const [root, j] of journals) if (!starting.has(root)) await j.stop();
+    resumeTimer = setTimeout(() => mewndo.resumeProtection().catch((e) => warn('journal', e.message)), ms);
+    resumeTimer.unref();
+    changed();
+  };
+
+  mewndo.resumeProtection = async () => {
+    if (!pausedUntil) return;
+    clearTimeout(resumeTimer);
+    pausedUntil = null;
+    changed();
+    for (const [root, j] of journals) {
+      starting.add(root);
+      changed();
+      try { await j.start(); } catch (e) { warn('folder-unavailable', `Can't protect ${root}: ${e.message}`, { root }); }
+      finally { starting.delete(root); changed(); }
+    }
+  };
+
+  mewndo.pausedUntil = () => pausedUntil;
 
   // Everything every folder still refers to, including folders that are no longer protected.
   async function loadFolders() {
@@ -268,17 +358,25 @@ function createMewndo({
   };
 
   // Storage at a glance. The budget covers save point history; the trash is reported separately.
+  // Per folder, `bytes` counts all content its history and index use, even if another folder shares it.
   mewndo.storageReport = async () => {
-    const { used } = await measure();
+    const { used, folders: all, sizes } = await measure();
     const trash = await mewndo.trashReport();
+    const folders = all.filter((f) => f.root).map((f) => {
+      const hashes = new Set([...f.pinned, ...f.savePoints.flatMap((sp) => [...sp.hashes])]);
+      let bytes = f.jsonBytes;
+      for (const h of hashes) bytes += sizes.get(h) ?? 0;
+      return { folder: f.root, bytes, savePoints: f.savePoints.length };
+    });
     return {
-      usedBytes: used, budgetBytes, overBudget: used > budgetBytes,
+      usedBytes: used, budgetBytes, overBudget: used > budgetBytes, folders,
       trashBytes: trash.reduce((n, t) => n + t.bytes, 0), trash,
       freeDiskBytes: await freeDiskBytes(),
     };
   };
 
-  // At launch: clean temp files, protect the remembered folders again, prune, then prune once a day.
+  // At launch: clean temp files, protect the remembered folders again (catch-up scans run in the
+  // background), prune, then prune once a day.
   mewndo.start = async () => {
     await fsp.mkdir(dataDir, { recursive: true });
     await store.cleanTemp();
@@ -286,7 +384,7 @@ function createMewndo({
       const settings = await readJson(settingsFile(path.join(foldersDir, id)));
       if (!settings?.protected) continue;
       try {
-        await mewndo.protect(settings.root, { retentionDays: settings.retentionDays });
+        await mewndo.protect(settings.root, { retentionDays: settings.retentionDays, background: true, resuming: true });
       } catch (e) {
         warn('folder-unavailable', `Can't protect ${settings.root}: ${e.message}`, { root: settings.root });
       }
@@ -298,6 +396,7 @@ function createMewndo({
 
   mewndo.stop = async () => {
     clearInterval(timer);
+    clearTimeout(resumeTimer);
     await pruning;
     for (const j of mewndo.journals()) await j.stop();
     journals.clear();

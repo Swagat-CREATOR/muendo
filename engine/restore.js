@@ -372,4 +372,15 @@ async function resumeRestores(journal) {
 
 const isRestoreRunning = (journal) => running.has(journal);
 
-module.exports = { planRestore, restore, resumeRestores, buildPlan, isRestoreRunning };
+// Past and unfinished restores, newest first, without their step lists.
+async function listRestores(journal) {
+  const dir = path.join(journal.folderDir, 'restores');
+  const list = [];
+  for (const name of (await fsp.readdir(dir).catch(() => [])).filter((n) => n.endsWith('.json'))) {
+    const { steps, ...log } = await readJson(path.join(dir, name));
+    list.push({ ...log, stepCount: steps.length });
+  }
+  return list.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+}
+
+module.exports = { planRestore, restore, resumeRestores, buildPlan, isRestoreRunning, listRestores };

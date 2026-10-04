@@ -92,4 +92,28 @@ async function scan(root, {
   return manifest;
 }
 
-module.exports = { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE };
+// Total size of the files in a folder, with the scan's ignore rules and never entering links. Stops early
+// once over stopAboveBytes. Returns { bytes, files, over }.
+async function folderSize(root, { ignore = DEFAULT_IGNORE, stopAboveBytes = Infinity } = {}) {
+  const ignored = new Set(ignore);
+  let bytes = 0;
+  let files = 0;
+  const dirs = [root];
+  while (dirs.length) {
+    const dir = dirs.pop();
+    for (const name of await fsp.readdir(dir).catch(() => [])) {
+      const st = await fsp.lstat(path.join(dir, name)).catch(() => null);
+      if (!st || st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        if (!ignored.has(name)) dirs.push(path.join(dir, name));
+      } else if (st.isFile()) {
+        bytes += st.size;
+        files++;
+        if (bytes > stopAboveBytes) return { bytes, files, over: true };
+      }
+    }
+  }
+  return { bytes, files, over: false };
+}
+
+module.exports = { scan, folderSize, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE };

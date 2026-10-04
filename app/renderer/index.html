@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Mewndo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <section id="setup" hidden>
+    <h1>Welcome to Mewndo</h1>
+    <p class="intro">Mewndo keeps a copy of every version of every file in the folders you choose, and all of it stays on this computer.
+      If an AI agent deletes or changes something it shouldn't, you can put the whole folder, or just some files, back the way they were.</p>
+    <h2>Folders to protect</h2>
+    <ul id="setup-folders" class="plain"></ul>
+    <button id="setup-add">Add project folders…</button>
+    <p class="muted">Folders larger than 20 GB, or that contain Mewndo's own data, can't be protected.</p>
+    <label id="setup-login-wrap"><input type="checkbox" id="setup-login" checked> Start Mewndo when I sign in</label>
+    <p id="setup-error" class="error" role="alert"></p>
+    <button id="setup-start" class="primary">Start protecting</button>
+  </section>
+
+  <main id="main" hidden>
+    <header>
+      <h1>Mewndo</h1>
+      <span id="pause-status" class="muted"></span>
+      <button id="pause">Pause protection for 1 hour</button>
+      <label id="login-wrap"><input type="checkbox" id="login"> Start at sign-in</label>
+    </header>
+    <div class="columns">
+      <nav aria-label="Protected folders">
+        <h2>Protected folders</h2>
+        <ul id="folders" class="plain"></ul>
+        <button id="add-folder">Add folder…</button>
+        <p id="storage-summary" class="muted"></p>
+      </nav>
+
+      <section id="detail">
+        <p id="no-folder" class="muted">Choose a folder on the left, or add one.</p>
+        <div id="folder-view" hidden>
+          <h2 id="folder-title"></h2>
+          <p id="folder-path" class="muted"></p>
+          <div class="row">
+            <input id="sp-label" placeholder="Save point name (optional)" maxlength="200" aria-label="Save point name">
+            <button id="create-sp" class="primary">Create save point</button>
+            <button id="stop-protecting">Stop protecting…</button>
+          </div>
+
+          <h3>Save points</h3>
+          <div class="scroll">
+            <table id="savepoints">
+              <thead><tr><th>Time</th><th>Label</th><th>Trigger</th><th>Agent</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="no-savepoints" class="muted" hidden>No save points yet. One is made automatically when changes start, or create one now.</p>
+
+          <div id="diff-view" hidden>
+            <h3>What changed since <span id="diff-when"></span></h3>
+            <p id="diff-summary"></p>
+            <label><input type="checkbox" id="select-all" checked> All</label>
+            <div id="diff-lists"></div>
+            <div class="row">
+              <button id="undo-in-place" class="primary">Undo in place</button>
+              <button id="restore-separate">Restore to separate folder</button>
+            </div>
+            <p id="restore-status" role="status"></p>
+            <div id="result" hidden></div>
+          </div>
+
+          <h3>Recent restores</h3>
+          <ul id="restores" class="plain"></ul>
+          <p id="no-restores" class="muted" hidden>No restores yet.</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="confirm">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text" class="pre"></p>
+      <ul id="confirm-list"></ul>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" id="confirm-ok" class="primary"></button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="unprotect">
+    <form method="dialog">
+      <h2>Stop protecting <span id="unprotect-name"></span>?</h2>
+      <p>Mewndo will stop watching this folder. The folder itself is not changed.</p>
+      <label><input type="radio" name="history" value="keep" checked> Keep its save points, so I can still restore or protect it again later</label>
+      <label><input type="radio" name="history" value="delete"> Delete its save points (Mewndo's trash for it is kept)</label>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Stop protecting</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

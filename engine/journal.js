@@ -11,7 +11,7 @@ const { watch } = require('chokidar');
 const { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE } = require('./scanner');
 const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
 const { changes: diff, compare } = require('./diff');
-const { planRestore, restore, resumeRestores, isRestoreRunning } = require('./restore');
+const { planRestore, restore, resumeRestores, isRestoreRunning, listRestores } = require('./restore');
 
 const TRIGGERS = ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -196,8 +196,9 @@ function createJournal({
   journal.scanOptions = { ignore, maxFileSize, concurrency };
   journal.planRestore = (id, opts) => planRestore(journal, id, opts);
   journal.restore = (id, opts) => restore(journal, id, opts);
+  journal.listRestores = () => listRestores(journal);
 
   return journal;
 }
 
-module.exports = { createJournal, TRIGGERS };
+module.exports = { createJournal, folderId, TRIGGERS };

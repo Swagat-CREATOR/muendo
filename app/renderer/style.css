@@ -1,0 +1,56 @@
+/* Plain and clear. Design comes later. */
+:root { color-scheme: light dark; --line: #8884; --accent: #1f6b9c; --bad: #b3261e; --good: #1e7b34; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; } /* rules below set display; hidden must still win */
+body { margin: 0; font: 14px/1.45 system-ui, sans-serif; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 16px; margin: 16px 0 8px; }
+h3 { font-size: 14px; margin: 20px 0 6px; }
+button { font: inherit; padding: 5px 12px; cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: 3px; }
+button:disabled { opacity: .5; cursor: default; }
+input[type=text], input:not([type]) { font: inherit; padding: 4px 6px; min-width: 240px; }
+.muted { opacity: .7; }
+.error { color: var(--bad); }
+.good { color: var(--good); }
+.pre { white-space: pre-line; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+ul.plain { list-style: none; padding: 0; margin: 0 0 10px; }
+label { display: block; margin: 6px 0; }
+
+#setup { max-width: 640px; margin: 32px auto; padding: 0 16px; }
+#setup .intro { font-size: 15px; }
+#setup-folders li { padding: 4px 0; }
+#setup-folders .error { margin-left: 24px; }
+
+header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+header label { margin: 0 0 0 auto; }
+#main { display: flex; flex-direction: column; height: 100vh; }
+.columns { display: grid; grid-template-columns: 300px 1fr; flex: 1; min-height: 0; }
+nav { border-right: 1px solid var(--line); padding: 0 12px; overflow: auto; }
+#detail { padding: 0 20px 20px; overflow: auto; }
+
+#folders li { padding: 8px; border-radius: 4px; cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
+#folders li:hover { border-color: var(--line); }
+#folders li.selected { border-color: var(--accent); }
+#folders .name { font-weight: 600; }
+#folders progress { width: 100%; }
+
+.scroll { max-height: 280px; overflow: auto; border: 1px solid var(--line); }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+thead th { position: sticky; top: 0; background: Canvas; }
+tbody tr { cursor: pointer; }
+tbody tr:hover, tbody tr.selected { background: #1f6b9c22; }
+
+#diff-lists h4 { margin: 10px 0 2px; }
+#diff-lists ul { list-style: none; padding-left: 4px; margin: 0; max-height: 200px; overflow: auto; }
+#diff-lists label { margin: 1px 0; font-family: ui-monospace, monospace; font-size: 12px; }
+#result { border: 1px solid var(--line); padding: 8px 12px; border-radius: 4px; }
+#restores li { padding: 6px 0; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 6px; }
+dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 16px 0 0; }
+#confirm-list { max-height: 160px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
+#toast { position: fixed; bottom: 16px; right: 16px; max-width: 420px; padding: 10px 14px; border-radius: 4px;
+  background: #333; color: #fff; }
