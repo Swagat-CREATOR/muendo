@@ -4,7 +4,7 @@
 //
 // Order: trash new things -> remove new empty folders -> create folders -> write files and links.
 // Nothing is deleted: anything new or about to be replaced is moved into
-// <folder data>/trash/Restored/<restore id>/<its relative path>.
+// <folder data>/trash/Restored/<restore start time>_<restore id>/<its relative path>.
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
@@ -342,10 +342,12 @@ async function restore(journal, savePointId, { paths, into, retryDelayMs, crashA
       base = journal.root;
     }
     const id = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
     const log = {
-      id, status: 'running', startedAt: new Date().toISOString(), savePointId, beforeUndoId,
+      id, status: 'running', startedAt, savePointId, beforeUndoId,
       base, inPlace: !into, paths: paths ?? null,
-      trashRoot: path.join(journal.folderDir, 'trash', 'Restored', id),
+      // The name starts with when it was trashed: moved files keep their own modified times.
+      trashRoot: path.join(journal.folderDir, 'trash', 'Restored', `${startedAt.replace(/:/g, '-')}_${id}`),
       steps: stepsFor(buildPlan(sp.index, current, paths), sp.index),
     };
     await writeFileAtomic(logFile(journal, id), JSON.stringify(log)); // the whole plan, before any step runs

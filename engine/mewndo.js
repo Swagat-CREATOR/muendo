@@ -20,10 +20,44 @@ async function readJson(file) {
   try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
 
-// Never pruned: a folder's newest save point, anything from the last 24 hours, before-undo from the last 7 days.
+// Protected from pruning, even over budget: a folder's newest save point, anything from the last 24 hours,
+// and manual, brief and before-undo save points within the folder's retention period. So the budget can
+// only ever remove activity, agent and hook save points.
+const PROTECTED_TRIGGERS = new Set(['manual', 'brief', 'before-undo']);
 function isKept(sp, folder, now) {
   const age = now - Date.parse(sp.createdAt);
-  return sp === folder.savePoints.at(-1) || age < DAY || (sp.trigger === 'before-undo' && age < 7 * DAY);
+  return sp === folder.savePoints.at(-1) || age < DAY
+    || (PROTECTED_TRIGGERS.has(sp.trigger) && age <= folder.retentionDays * DAY);
+}
+
+// Delete a folder tree in Mewndo's own data without ever entering a link or junction: links are unlinked.
+async function removeTree(p) {
+  const st = await fsp.lstat(p).catch(() => null);
+  if (!st) return;
+  if (st.isDirectory()) {
+    for (const name of await fsp.readdir(p)) await removeTree(path.join(p, name));
+    await fsp.rmdir(p);
+  } else {
+    await fsp.unlink(p);
+  }
+}
+
+// Bytes and file count under p, without following links.
+async function treeSize(p) {
+  let bytes = 0;
+  let items = 0;
+  for (const e of await fsp.readdir(p, { recursive: true, withFileTypes: true }).catch(() => [])) {
+    if (e.isDirectory()) continue;
+    bytes += (await fsp.lstat(path.join(e.parentPath, e.name))).size;
+    items++;
+  }
+  return { bytes, items };
+}
+
+// When a trash batch was made: Restored/<ISO time with ':' as '-'>_<id>. Null if the name doesn't say.
+function trashedAt(name) {
+  const m = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d\.\d{3}Z)_/.exec(name);
+  return m ? Date.parse(`${m[1]}:${m[2]}:${m[3]}`) : null;
 }
 
 function createMewndo({
@@ -114,7 +148,8 @@ function createMewndo({
     return folders;
   }
 
-  async function pruneNow(t) {
+  // What counts toward the budget: referenced stored content plus Mewndo's JSON files. Not the trash.
+  async function measure() {
     const folders = await loadFolders();
     const sizes = await store.objects();
     const refs = new Map(); // hash -> how many save points/indexes refer to it
@@ -122,10 +157,19 @@ function createMewndo({
       for (const h of f.pinned) refs.set(h, (refs.get(h) ?? 0) + 1);
       for (const sp of f.savePoints) for (const h of sp.hashes) refs.set(h, (refs.get(h) ?? 0) + 1);
     }
-    // Bytes in use once unreferenced content is gone: referenced objects plus Mewndo's JSON files.
     let used = folders.reduce((n, f) => n + f.jsonBytes, 0);
     for (const h of refs.keys()) used += sizes.get(h) ?? 0;
+    return { folders, sizes, refs, used };
+  }
 
+  async function freeDiskBytes() {
+    const disk = await fsp.statfs(dataDir);
+    return disk.bavail * disk.bsize;
+  }
+
+  async function pruneNow(t) {
+    const { folders, sizes, refs, used: usedBefore } = await measure();
+    let used = usedBefore;
     const pruned = [];
     const drop = (c) => {
       used -= c.sp.bytes;
@@ -139,7 +183,9 @@ function createMewndo({
     const candidates = folders
       .flatMap((f) => f.savePoints.filter((sp) => !isKept(sp, f, t)).map((sp) => ({ f, sp })))
       .sort((a, b) => byAge(a.sp, b.sp));
+    // Retention: everything unprotected past its folder's retention period.
     for (const c of candidates) if (t - Date.parse(c.sp.createdAt) > c.f.retentionDays * DAY) drop(c);
+    // Budget: what's left unprotected is activity, agent and hook save points within retention. Oldest first.
     for (const c of candidates) {
       if (used <= budgetBytes) break;
       if (!pruned.includes(c)) drop(c);
@@ -156,11 +202,11 @@ function createMewndo({
       removedObjects, usedBytes: used, budgetBytes, overBudget: used > budgetBytes,
     };
     if (result.overBudget) {
-      warn('over-budget', `Mewndo is using ${gb(used)} of its ${gb(budgetBytes)} budget and nothing more can be pruned safely.`,
-        { usedBytes: used, budgetBytes });
+      warn('over-budget', `Mewndo is using ${gb(used)} of its ${gb(budgetBytes)} budget. The budget can't be met `
+        + 'without removing protected save points (manual, brief, before-undo, or recent ones), so they were kept.',
+      { usedBytes: used, budgetBytes });
     }
-    const disk = await fsp.statfs(dataDir);
-    const free = disk.bavail * disk.bsize;
+    const free = await freeDiskBytes();
     if (free < lowDiskBytes) warn('low-disk', `Only ${gb(free)} free on the disk Mewndo uses.`, { freeBytes: free });
     mewndo.emit('pruned', result);
     return result;
@@ -183,6 +229,54 @@ function createMewndo({
     }
   }
   mewndo.prune = () => (pruning ??= runPrune().finally(() => { pruning = null; }));
+
+  // Trash per folder (protected or not): [{ folder, trashFolder, bytes, items }]. Never counted in the budget.
+  mewndo.trashReport = async () => {
+    const report = [];
+    for (const id of await fsp.readdir(foldersDir).catch(() => [])) {
+      const dir = path.join(foldersDir, id);
+      const trashFolder = path.join(dir, 'trash');
+      const settings = await readJson(settingsFile(dir));
+      const root = settings?.root ?? (await readJson(path.join(dir, 'index.json')))?.root ?? null;
+      report.push({ folder: root, trashFolder, ...(await treeSize(trashFolder)) });
+    }
+    return report;
+  };
+
+  // Permanently delete trash batches older than `olderThanDays`, optionally for one folder only.
+  // Never runs on its own: only when the app calls it, e.g. after the user agrees.
+  mewndo.emptyTrash = async ({ olderThanDays, folder } = {}) => {
+    if (!Number.isFinite(olderThanDays) || olderThanDays < 0) throw new Error('olderThanDays must be a number >= 0');
+    const cutoff = now() - olderThanDays * DAY;
+    const realFolder = folder && (await fsp.realpath(folder).catch(() => path.resolve(folder)));
+    const removed = [];
+    let removedBytes = 0;
+    for (const entry of await mewndo.trashReport()) {
+      if (realFolder && !(entry.folder && samePath(entry.folder, realFolder))) continue;
+      const restored = path.join(entry.trashFolder, 'Restored');
+      for (const name of await fsp.readdir(restored).catch(() => [])) {
+        const at = trashedAt(name);
+        if (at === null || at > cutoff) continue; // unknown or too recent: keep
+        const batch = path.join(restored, name);
+        const { bytes } = await treeSize(batch);
+        await removeTree(batch);
+        removed.push(batch);
+        removedBytes += bytes;
+      }
+    }
+    return { removed, removedBytes };
+  };
+
+  // Storage at a glance. The budget covers save point history; the trash is reported separately.
+  mewndo.storageReport = async () => {
+    const { used } = await measure();
+    const trash = await mewndo.trashReport();
+    return {
+      usedBytes: used, budgetBytes, overBudget: used > budgetBytes,
+      trashBytes: trash.reduce((n, t) => n + t.bytes, 0), trash,
+      freeDiskBytes: await freeDiskBytes(),
+    };
+  };
 
   // At launch: clean temp files, protect the remembered folders again, prune, then prune once a day.
   mewndo.start = async () => {

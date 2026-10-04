@@ -9,6 +9,9 @@
   restore removes or replaces goes to Mewndo's trash, and the state just before the restore is kept as a
   save point, so a restore can itself be undone. A restore cut short by a crash finishes on the next start.
 - Keep several protected folders at once, each with its own history.
+- Keep manual, brief and before-undo save points for the folder's whole retention period (30 days by
+  default), even when storage is tight. Only automatic save points are removed early to stay within budget.
+- Keep everything in Mewndo's trash until you choose to empty it.
 - Pick up changes made while Mewndo was closed. The folder as it was when Mewndo last saw it is kept as a
   save point.
 - Protect the `.git` folder, so an agent's damage to your repository history can be undone too.

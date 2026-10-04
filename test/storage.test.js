@@ -53,24 +53,35 @@ test('retention prunes save points older than the period, oldest first, keeping 
   } finally { await mewndo.stop(); }
 });
 
-test('never prunes the newest, anything from the last 24 hours, or recent before-undo save points', async () => {
+test('never prunes the newest or anything from the last 24 hours, even past retention', async () => {
   const { root, clock, mewndo, journal } = await setup({ retentionDays: 0 });
   try {
-    const old = await version(journal, root, 'a.txt', 'old');
-    const undo = await version(journal, root, 'a.txt', 'before undo', { trigger: 'before-undo' });
-    const newest = await version(journal, root, 'a.txt', 'newest');
-
+    await version(journal, root, 'a.txt', 'old', { trigger: 'agent' });
+    const newest = await version(journal, root, 'a.txt', 'newest', { trigger: 'agent' });
     assert.deepStrictEqual(ids(await mewndo.prune()), [], 'everything is under 24 hours old');
+    clock.now += 100 * DAY;
+    await mewndo.prune();
+    assert.deepStrictEqual((await journal.listSavePoints()).map((s) => s.id), [newest.sp.id]);
+  } finally { await mewndo.stop(); }
+});
 
-    clock.now += 3 * DAY;
+test('manual, brief and before-undo save points last the full retention period, then go', async () => {
+  const { root, clock, mewndo, journal } = await setup({ retentionDays: 10, budgetBytes: 1 });
+  try {
+    const manual = await version(journal, root, 'a.txt', 'manual', { trigger: 'manual' });
+    const brief = await version(journal, root, 'a.txt', 'brief', { trigger: 'brief' });
+    const undo = await version(journal, root, 'a.txt', 'before undo', { trigger: 'before-undo' });
+    const agent = await version(journal, root, 'a.txt', 'agent', { trigger: 'agent' });
+    const newest = await version(journal, root, 'a.txt', 'newest', { trigger: 'hook' });
+
+    clock.now += 9 * DAY; // within retention, and over budget
     const r1 = await mewndo.prune();
-    assert.ok(ids(r1).includes(old.sp.id));
-    assert.ok(!ids(r1).includes(undo.sp.id), 'before-undo kept for 7 days');
-    assert.ok(!ids(r1).includes(newest.sp.id), 'newest always kept');
+    for (const kept of [manual, brief, undo, newest]) assert.ok(!ids(r1).includes(kept.sp.id), kept.sp.trigger);
+    assert.ok(ids(r1).includes(agent.sp.id), 'agent save point removed for the budget');
 
-    clock.now += 5 * DAY;
+    clock.now += 2 * DAY; // past retention
     const r2 = await mewndo.prune();
-    assert.deepStrictEqual(ids(r2), [undo.sp.id], 'before-undo pruned after 7 days');
+    for (const gone of [manual, brief, undo]) assert.ok(ids(r2).includes(gone.sp.id), gone.sp.trigger);
     assert.deepStrictEqual((await journal.listSavePoints()).map((s) => s.id), [newest.sp.id]);
   } finally { await mewndo.stop(); }
 });
@@ -105,36 +116,79 @@ test('deletes stored content nothing refers to, keeps what any save point or ind
   } finally { await mewndo.stop(); }
 });
 
-test('over budget: prunes further, oldest first, within the protections', async () => {
+test('over budget: removes activity, agent and hook save points oldest first, never protected ones', async () => {
   const big = () => crypto.randomBytes(200 * 1024); // incompressible, ~200 KB stored
-  const { root, clock, mewndo, journal, warnings } = await setup({ retentionDays: 30, budgetBytes: 520 * 1024 });
+  const { root, clock, mewndo, journal, warnings } = await setup({ retentionDays: 30, budgetBytes: 650 * 1024 });
   try {
-    const v = [];
-    for (let i = 0; i < 4; i++) v.push(await version(journal, root, 'big.bin', big()));
+    const manual = await version(journal, root, 'big.bin', big(), { trigger: 'manual' }); // oldest, but protected
+    const agent = await version(journal, root, 'big.bin', big(), { trigger: 'agent' });
+    const hook = await version(journal, root, 'big.bin', big(), { trigger: 'hook' });
+    const activity = await version(journal, root, 'big.bin', big(), { trigger: 'activity' });
+    const newest = await version(journal, root, 'big.bin', big(), { trigger: 'agent' });
     clock.now += 2 * DAY; // past the 24-hour protection, well within retention
 
     const result = await mewndo.prune();
-    assert.ok(ids(result).includes(v[0].sp.id) && ids(result).includes(v[1].sp.id), 'two oldest pruned');
-    assert.ok(!ids(result).includes(v[2].sp.id) && !ids(result).includes(v[3].sp.id), 'stopped once under budget');
-    assert.ok(!(await mewndo.store.has(v[0].hash)) && !(await mewndo.store.has(v[1].hash)));
-    assert.ok(result.usedBytes <= 520 * 1024 && !result.overBudget);
+    assert.ok(!ids(result).includes(manual.sp.id), 'manual kept though oldest');
+    assert.ok(ids(result).includes(agent.sp.id) && ids(result).includes(hook.sp.id), 'oldest unprotected removed');
+    assert.ok(!ids(result).includes(activity.sp.id) && !ids(result).includes(newest.sp.id), 'stopped once under budget');
+    assert.ok(!(await mewndo.store.has(agent.hash)) && !(await mewndo.store.has(hook.hash)));
+    assert.ok(await mewndo.store.has(manual.hash));
+    assert.ok(result.usedBytes <= 650 * 1024 && !result.overBudget, String(result.usedBytes));
     assert.deepStrictEqual(warnings, []);
   } finally { await mewndo.stop(); }
 });
 
-test('still over budget after pruning everything allowed: warns and keeps protected save points', async () => {
+test("budget that can't be met: warns, and keeps every protected save point", async () => {
   const { root, clock, mewndo, journal, warnings } = await setup({ budgetBytes: 1 });
   try {
-    await version(journal, root, 'a.txt', 'one');
-    const undo = await version(journal, root, 'a.txt', 'two', { trigger: 'before-undo' });
-    const newest = await version(journal, root, 'a.txt', 'three');
+    const kept = [];
+    for (const trigger of ['manual', 'brief', 'before-undo']) kept.push(await version(journal, root, 'a.txt', trigger, { trigger }));
+    const agent = await version(journal, root, 'a.txt', 'agent', { trigger: 'agent' });
+    const newest = await version(journal, root, 'a.txt', 'newest', { trigger: 'hook' });
     clock.now += 2 * DAY;
     const result = await mewndo.prune();
     assert.strictEqual(result.overBudget, true);
+    assert.ok(ids(result).includes(agent.sp.id));
     const left = (await journal.listSavePoints()).map((s) => s.id);
-    assert.deepStrictEqual(left, [undo.sp.id, newest.sp.id]);
-    assert.strictEqual(warnings.filter((w) => w.code === 'over-budget').length, 1);
-    assert.match(warnings[0].message, /budget/);
+    assert.deepStrictEqual(left, [...kept, newest].map((v) => v.sp.id));
+    const w = warnings.filter((x) => x.code === 'over-budget');
+    assert.strictEqual(w.length, 1);
+    assert.match(w[0].message, /can't be met/);
+  } finally { await mewndo.stop(); }
+});
+
+test('trash: reported per folder and separately from the budget, emptied only when asked', async () => {
+  const { base, root, clock, mewndo, journal } = await setup({ files: { 'a.txt': 'A' } });
+  try {
+    const outside = path.join(base, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'keep.txt'), 'never touched');
+    const sp = await journal.createSavePoint();
+    fs.writeFileSync(path.join(root, 'junk.txt'), 'x'.repeat(1000));
+    fs.symlinkSync(outside, path.join(root, 'junk-link'), 'junction');
+    await journal.restore(sp.id);
+
+    const [entry] = await mewndo.trashReport();
+    assert.strictEqual(entry.folder, journal.root);
+    assert.strictEqual(entry.items, 2);
+    assert.ok(entry.bytes >= 1000);
+    const report = await mewndo.storageReport();
+    assert.strictEqual(report.trashBytes, entry.bytes);
+    assert.ok(report.usedBytes > 0 && report.freeDiskBytes > 0);
+    const usedBefore = report.usedBytes;
+
+    clock.now += 365 * DAY;
+    await mewndo.prune(); // pruning never touches the trash
+    assert.strictEqual((await mewndo.trashReport())[0].bytes, entry.bytes);
+
+    assert.deepStrictEqual((await mewndo.emptyTrash({ olderThanDays: 400 })).removed, [], 'nothing that old');
+    await assert.rejects(mewndo.emptyTrash({}), /olderThanDays/);
+    const emptied = await mewndo.emptyTrash({ olderThanDays: 30, folder: root });
+    assert.strictEqual(emptied.removed.length, 1);
+    assert.strictEqual(emptied.removedBytes, entry.bytes);
+    assert.strictEqual((await mewndo.trashReport())[0].bytes, 0);
+    assert.strictEqual(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8'), 'never touched', 'link not followed');
+    assert.ok((await mewndo.storageReport()).usedBytes <= usedBefore);
   } finally { await mewndo.stop(); }
 });
 
