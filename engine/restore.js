@@ -368,4 +368,6 @@ async function resumeRestores(journal) {
   return results;
 }
 
-module.exports = { planRestore, restore, resumeRestores, buildPlan };
+const isRestoreRunning = (journal) => running.has(journal);
+
+module.exports = { planRestore, restore, resumeRestores, buildPlan, isRestoreRunning };

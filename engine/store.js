@@ -78,12 +78,12 @@ async function hashFile(file, within) {
 }
 
 function createStore(dir) {
-  const objects = path.join(dir, 'objects');
+  const objectsDir = path.join(dir, 'objects');
   const tmpDir = path.join(dir, 'tmp');
 
   function objectPath(hash, gzipped) {
     if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`invalid hash: ${hash}`);
-    return path.join(objects, hash.slice(0, 2), gzipped ? `${hash}.gz` : hash);
+    return path.join(objectsDir, hash.slice(0, 2), gzipped ? `${hash}.gz` : hash);
   }
 
   async function find(hash) {
@@ -166,18 +166,36 @@ function createStore(dir) {
 
   // Total bytes on disk used by stored content.
   async function usage() {
-    if (!(await exists(objects))) return 0;
+    if (!(await exists(objectsDir))) return 0;
     let total = 0;
-    for (const e of await fsp.readdir(objects, { recursive: true, withFileTypes: true })) {
+    for (const e of await fsp.readdir(objectsDir, { recursive: true, withFileTypes: true })) {
       if (e.isFile()) total += (await fsp.lstat(path.join(e.parentPath, e.name))).size;
     }
     return total;
   }
 
+  // Every stored object: Map hash -> bytes on disk.
+  async function objects() {
+    const sizes = new Map();
+    if (!(await exists(objectsDir))) return sizes;
+    for (const e of await fsp.readdir(objectsDir, { recursive: true, withFileTypes: true })) {
+      const hash = e.name.replace(/\.gz$/, '');
+      if (e.isFile() && /^[0-9a-f]{64}$/.test(hash)) {
+        sizes.set(hash, (sizes.get(hash) ?? 0) + (await fsp.lstat(path.join(e.parentPath, e.name))).size);
+      }
+    }
+    return sizes;
+  }
+
+  // Delete stored content. Only for content no save point or index refers to (see pruning).
+  async function remove(hash) {
+    for (const gzipped of [false, true]) await fsp.rm(objectPath(hash, gzipped), { force: true });
+  }
+
   // Run at startup. Never touches objects.
   const cleanTemp = (maxAgeMs) => removeStaleTemp(tmpDir, maxAgeMs);
 
-  return { put, has, extract, copyOut, usage, cleanTemp };
+  return { put, has, extract, copyOut, usage, objects, remove, cleanTemp };
 }
 
 // Delete *.mewndo-tmp files older than maxAgeMs directly inside dir (Mewndo's own folders only).

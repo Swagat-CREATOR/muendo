@@ -11,7 +11,7 @@ const { watch } = require('chokidar');
 const { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE } = require('./scanner');
 const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
 const { changes: diff, compare } = require('./diff');
-const { planRestore, restore, resumeRestores } = require('./restore');
+const { planRestore, restore, resumeRestores, isRestoreRunning } = require('./restore');
 
 const TRIGGERS = ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -184,6 +184,13 @@ function createJournal({
 
   // Scan now and return the up-to-date index.
   journal.sync = () => enqueue(sync).then(() => index);
+
+  // Hold the journal's work (syncs, save points) until the returned resume() is called. Watcher events
+  // still queue up and run after. Used so pruning sees indexes and save points that can't change under it.
+  journal.pause = () => new Promise((paused) => {
+    enqueue(() => new Promise((resume) => paused(resume)));
+  });
+  journal.isRestoring = () => isRestoreRunning(journal);
 
   journal.store = store;
   journal.scanOptions = { ignore, maxFileSize, concurrency };
