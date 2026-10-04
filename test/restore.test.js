@@ -227,3 +227,18 @@ test('a file that stays locked is reported, not fatal', { skip: process.platform
     assert.strictEqual(result.verified, false);
   } finally { await journal.stop(); }
 });
+
+test('before-undo labels stay readable when undos are undone, never nested', async () => {
+  const { root, journal } = await setup({ 'a.txt': 'A' });
+  try {
+    const sp = await journal.createSavePoint({ label: 'clean' });
+    fs.writeFileSync(path.join(root, 'a.txt'), 'agent');
+    const first = await journal.restore(sp.id); // undo the agent
+    const second = await journal.restore(first.beforeUndoId); // undo that undo
+    const third = await journal.restore(second.beforeUndoId); // and undo again
+    const labels = [];
+    for (const r of [first, second, third]) labels.push((await journal.getSavePoint(r.beforeUndoId)).label);
+    assert.deepStrictEqual(labels, ['Before restoring "clean"', 'Before undoing a restore', 'Before undoing a restore']);
+    assert.strictEqual(read(root, 'a.txt'), 'A');
+  } finally { await journal.stop(); }
+});

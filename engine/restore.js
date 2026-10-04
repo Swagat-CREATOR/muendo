@@ -336,7 +336,10 @@ async function restore(journal, savePointId, { paths, into, retryDelayMs, crashA
       base = await prepareInto(journal, into);
       current = {};
     } else {
-      const label = `Before restoring ${sp.label ? `"${sp.label}"` : sp.createdAt}`;
+      // Going back to a before-undo save point undoes a restore. A fixed label there keeps labels from
+      // nesting ("Before restoring "Before restoring ..."") when undos are undone.
+      const label = sp.trigger === 'before-undo' ? 'Before undoing a restore'
+        : `Before restoring ${sp.label ? `"${sp.label}"` : `the save point from ${sp.createdAt}`}`;
       beforeUndoId = (await journal.createSavePoint({ trigger: 'before-undo', label })).id;
       current = (await journal.getSavePoint(beforeUndoId)).index;
       base = journal.root;

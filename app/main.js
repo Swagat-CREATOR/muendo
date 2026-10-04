@@ -276,6 +276,20 @@ function registerUndoShortcut() {
 
 const liveNotifications = new Set(); // Windows drops click handlers of notifications that get garbage-collected
 
+const xml = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// Windows toast layout. Clicking the toast or "Put them back" both arrive as Electron's 'click' (Windows reports
+// any activation that way); "Dismiss" is the system's own dismiss button and closes it without a click.
+function urgentToast(title, body) {
+  return `<toast scenario="urgent" activationType="foreground" launch="mewndo-burst">
+  <visual><binding template="ToastGeneric"><text>${xml(title)}</text><text>${xml(body)}</text></binding></visual>
+  <actions>
+    <action content="Put them back" arguments="undo" activationType="foreground"/>
+    <action content="Dismiss" arguments="dismiss" activationType="system"/>
+  </actions>
+</toast>`;
+}
+
 // "40 files deleted in Documents by Claude Code in the last minute. Put them back?" The agent's name comes
 // from the most recent save point an agent (or its hook) made in the last hour, if any.
 async function burstAlert(root, { deleted, changed }) {
@@ -287,7 +301,10 @@ async function burstAlert(root, { deleted, changed }) {
     : deleted ? `${deleted} file${s(deleted)} deleted` : `${other} file${s(other)} changed`;
   const body = `${what} in ${folderName(root)}${agent ? ` by ${agent}` : ''} in the last minute. Put them back?`;
   send('toast', body); // also in the window, for systems without notifications
-  const n = new Notification({ title: 'Mewndo: lots of changes at once', body }); // show() is a no-op where unsupported
+  const title = 'Mewndo: lots of changes at once';
+  // show() is a no-op where notifications aren't supported. On Windows the toast is marked urgent: it stays on
+  // screen until handled and may show during Do Not Disturb, if Windows allows urgent notifications for Mewndo.
+  const n = new Notification(process.platform === 'win32' ? { toastXml: urgentToast(title, body) } : { title, body });
   liveNotifications.add(n);
   const done = () => liveNotifications.delete(n);
   n.on('click', () => { done(); openUndo(root); });
