@@ -1,7 +1,8 @@
 // Journal: one per protected folder. Keeps the folder's current index (a scanner manifest whose file
 // contents are all in the store), watches for changes, and writes save points. Events:
 //   'progress' scan/restore progress · 'change' { path, type: added|changed|deleted } · 'savepoint' metadata ·
-//   'restored' restore result · 'warning' Error from background work (watcher or sync) that did not stop it.
+//   'restored' restore result · 'retry' { path, op, attempt, error } while waiting for a locked file ·
+//   'warning' Error from background work (watcher or sync) that did not stop it.
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');

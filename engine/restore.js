@@ -184,13 +184,27 @@ const OPS = {
 };
 
 // Locked files (antivirus, an open editor) usually free up quickly on Windows.
-async function retry(fn, delayMs) {
+async function retry(fn, delayMs, onRetry) {
   for (let i = 0; ; i++) {
     try { return await fn(); } catch (e) {
       if (i >= RETRIES || !LOCKED.has(e.code)) throw e;
+      onRetry(e);
       await sleep(delayMs * 2 ** i);
     }
   }
+}
+
+// Run fn over items, `size` at a time. After the first throw, starts nothing new, waits, then rethrows.
+async function pool(items, size, fn) {
+  let next = 0;
+  let error = null;
+  const worker = async () => {
+    while (!error && next < items.length) {
+      try { await fn(items[next++]); } catch (e) { error = e; }
+    }
+  };
+  await Promise.all(Array.from({ length: size }, worker));
+  if (error) throw error;
 }
 
 // Paths in the folder that differ from the save point. Unrestorable entries are left out.
@@ -229,18 +243,40 @@ async function run(journal, log, { resuming = false, retryDelayMs = 100, crashAf
   const ctx = { store: journal.store, trashRoot: log.trashRoot };
   const counts = { written: 0, linked: 0, trashed: 0, foldersCreated: 0, foldersRemoved: 0 };
   const failures = [];
+  const retried = []; // steps that succeeded after waiting for a lock
   if (log.inPlace) await journal.setRestoring(true);
   try {
     if (resuming) await removeOwnTemps(log);
-    for (const [i, step] of log.steps.entries()) {
+    let done = 0;
+    const runStep = async (i) => {
       if (i >= crashAfterSteps) throw new Error('simulated crash'); // tests only
+      const step = log.steps[i];
+      let attempts = 1;
+      const onRetry = (e) => {
+        attempts++;
+        journal.emit('retry', { path: step.path, op: step.op, attempt: attempts, error: e.code });
+      };
       try {
-        if (await retry(() => OPS[step.op](step, toAbs(log.base, step.path), ctx), retryDelayMs)) counts[COUNT[step.op]]++;
+        const did = await retry(() => OPS[step.op](step, toAbs(log.base, step.path), ctx), retryDelayMs, onRetry);
+        if (did) counts[COUNT[step.op]]++;
+        if (attempts > 1) retried.push({ path: step.path, op: step.op, attempts });
       } catch (e) {
-        failures.push({ path: step.path, op: step.op, error: e.code ?? e.message });
+        const error = e.code ?? e.message;
+        failures.push({
+          path: step.path, op: step.op, error, attempts,
+          message: `Could not ${step.op} ${step.path} after ${attempts} attempt${attempts > 1 ? 's' : ''}: ${error}`,
+        });
       }
-      journal.emit('progress', { phase: 'restoring', done: i + 1, total: log.steps.length });
+      journal.emit('progress', { phase: 'restoring', done: ++done, total: log.steps.length });
+    };
+    // Steps run phase by phase (same op = one phase). Folder steps run one at a time, deepest/shallowest
+    // first; files, links and trash moves touch distinct paths, so several run at once to overlap disk flushes.
+    const phases = [];
+    for (const [i, step] of log.steps.entries()) {
+      if (phases.at(-1)?.op === step.op) phases.at(-1).items.push(i);
+      else phases.push({ op: step.op, items: [i] });
     }
+    for (const { op, items } of phases) await pool(items, op === 'rmdir' || op === 'mkdir' ? 1 : 4, runStep);
 
     // Fresh scan with full rehash: verify what is really on disk, not what the index assumes.
     const { index: target } = await journal.getSavePoint(log.savePointId);
@@ -251,7 +287,7 @@ async function run(journal, log, { resuming = false, retryDelayMs = 100, crashAf
     const mismatches = verify(target, now, log.paths, log.base);
     const result = {
       id: log.id, savePointId: log.savePointId, beforeUndoId: log.beforeUndoId, folder: log.base,
-      trashFolder: log.trashRoot, resumed: resuming, counts, failures, mismatches, verified: mismatches.length === 0,
+      trashFolder: log.trashRoot, resumed: resuming, counts, failures, retried, mismatches, verified: mismatches.length === 0,
     };
     await writeFileAtomic(logFile(journal, log.id), JSON.stringify({ ...log, status: 'done', finishedAt: new Date().toISOString(), result }));
     journal.emit('restored', result);

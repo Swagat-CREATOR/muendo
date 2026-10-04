@@ -150,7 +150,7 @@ test('put stores nothing and leaves no temp file when readStable rejects', async
   fs.symlinkSync(path.join(dir, 'real.txt'), path.join(dir, 'a.txt'));
   await assert.rejects(store.put(path.join(dir, 'a.txt')), { code: CHANGED });
   assert.strictEqual(await store.usage(), 0);
-  assert.deepStrictEqual(fs.readdirSync(path.join(data, 'tmp')), []);
+  assert.deepStrictEqual(fs.existsSync(path.join(data, 'tmp')) ? fs.readdirSync(path.join(data, 'tmp')) : [], []);
 });
 
 test('cleanTemp removes stale temp files only, never objects or recent temps', async () => {

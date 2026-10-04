@@ -222,7 +222,7 @@ test('a file that stays locked is reported, not fatal', { skip: process.platform
     try { result = await journal.restore(sp.id, { retryDelayMs: 1 }); }
     finally { fs.chmodSync(path.join(root, 'locked'), 0o755); }
     assert.strictEqual(read(root, 'a.txt'), 'A');
-    assert.deepStrictEqual(result.failures.map((f) => [f.path, f.error]), [['locked/b.txt', 'EACCES']]);
+    assert.deepStrictEqual(result.failures.map((f) => [f.path, f.error, f.attempts]), [['locked/b.txt', 'EACCES', 5]]);
     assert.deepStrictEqual(result.mismatches, ['locked/b.txt']);
     assert.strictEqual(result.verified, false);
   } finally { await journal.stop(); }

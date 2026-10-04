@@ -6,7 +6,8 @@
   "main": "app/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "reliability": "node scripts/reliability.js"
   },
   "engines": { "node": ">=22" },
   "dependencies": {

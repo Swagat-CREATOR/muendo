@@ -98,8 +98,12 @@ function createStore(dir) {
     return (await find(hash)) !== null;
   }
 
-  // Store a file and return its hash. One read pass: hash and (maybe) gzip into a temp file, then rename.
+  // Store a file and return its hash. Hashes first so already-stored content costs one read and no write;
+  // new content is then hashed again while it is (maybe) gzipped into a flushed temp file and renamed.
+  // ponytail: new content is read twice; fine up to the 50 MB limit, single-pass if big files get slow.
   async function put(file, within) {
+    const first = await hashFile(file, within);
+    if (await has(first)) return first;
     await fsp.mkdir(tmpDir, { recursive: true });
     const tmp = path.join(tmpDir, crypto.randomUUID() + TEMP_SUFFIX);
     const gzipped = !PRECOMPRESSED.has(path.extname(file).toLowerCase());
@@ -112,6 +116,7 @@ function createStore(dir) {
         fs.createWriteStream(tmp, { flags: 'wx', flush: true }),
       ));
       const digest = hash.digest('hex');
+      if (digest !== first) throw changed(file, 'modified between reads');
       if (!(await has(digest))) {
         const dest = objectPath(digest, gzipped);
         await fsp.mkdir(path.dirname(dest), { recursive: true });
