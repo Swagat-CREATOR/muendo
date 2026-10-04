@@ -2,7 +2,7 @@
 // Paths use '/' on every platform. Links and junctions are recorded, never entered.
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { hashFile } = require('./store');
+const { hashFile, CHANGED } = require('./store');
 
 const DEFAULT_IGNORE = [
   'node_modules', '.venv', 'dist', 'build',
@@ -15,9 +15,10 @@ async function scan(root, {
   ignore = DEFAULT_IGNORE,
   maxFileSize = DEFAULT_MAX_FILE_SIZE,
   concurrency = 4,
-  hash = hashFile, // a store's put() can go here to hash and store in one read
+  hash = hashFile, // (file, realRoot); a store's put() can go here to hash and store in one read
   onProgress = () => {},
 } = {}) {
+  const realRoot = await fsp.realpath(root);
   const ignored = new Set(ignore);
   const manifest = {};
   const toHash = [];
@@ -74,9 +75,10 @@ async function scan(root, {
     while (next < toHash.length) {
       const rel = toHash[next++];
       try {
-        manifest[rel].hash = await hash(path.join(root, rel));
+        manifest[rel].hash = await hash(path.join(root, rel), realRoot);
       } catch (e) {
         if (e.code === 'ENOENT') delete manifest[rel];
+        else if (e.code === CHANGED) manifest[rel].skipped = 'changed-while-reading';
         else manifest[rel].error = e.code || e.message;
       }
       progress.hashed++;

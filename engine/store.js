@@ -14,26 +14,66 @@ const PRECOMPRESSED = new Set([
   '.pdf', '.docx', '.xlsx', '.pptx', '.jar', '.apk',
 ]);
 
-// O_NOFOLLOW refuses to open a symlink on Linux/macOS.
-// ponytail: Windows has no O_NOFOLLOW; we lstat right before opening, tiny race remains.
+const TEMP_SUFFIX = '.muendo-tmp';
+const TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+
+// Error code for a file that was swapped, modified or moved out of bounds while we read it.
+const CHANGED = 'EMUENDO_CHANGED';
+
+// O_NOFOLLOW refuses to open a symlink on Linux/macOS. Windows has none, so readStable re-checks after opening.
 const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
 
 function hashTap(hash) {
   return new Transform({ transform(chunk, _enc, cb) { hash.update(chunk); cb(null, chunk); } });
 }
 
-async function assertRegularFile(file) {
-  if (!(await fsp.lstat(file)).isFile()) throw new Error(`not a regular file: ${file}`);
+function changed(file, why) {
+  return Object.assign(new Error(`changed while reading (${why}): ${file}`), { code: CHANGED });
+}
+
+// Same file identity, size and modified time. Bigint stats so Windows file IDs compare exactly.
+function sameFile(a, b) {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs;
+}
+
+function isInside(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 async function exists(p) {
   try { await fsp.lstat(p); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; }
 }
 
-async function hashFile(file) {
-  await assertRegularFile(file);
+// Open a regular file and hand a read stream to consume(). Throws CHANGED if the path is or becomes a link,
+// if the opened file is not the one lstat saw, if it changes during the read, or if its real path is not
+// inside `within` (a realpath'd protected folder; optional).
+async function readStable(file, within, consume) {
+  const before = await fsp.lstat(file, { bigint: true });
+  if (!before.isFile()) throw changed(file, 'not a regular file');
+  let fh;
+  try {
+    fh = await fsp.open(file, READ_FLAGS);
+  } catch (e) {
+    throw e.code === 'ELOOP' ? changed(file, 'became a link') : e;
+  }
+  try {
+    if (!sameFile(before, await fh.stat({ bigint: true }))) throw changed(file, 'replaced before open');
+    if (within && !isInside(await fsp.realpath(file), within)) throw changed(file, 'outside protected folder');
+    const result = await consume(fh.createReadStream({ autoClose: false, start: 0 }));
+    const afterOpen = await fh.stat({ bigint: true });
+    const afterPath = await fsp.lstat(file, { bigint: true }).catch(() => null);
+    if (!afterPath || afterPath.isSymbolicLink()) throw changed(file, 'path is gone or now a link');
+    if (!sameFile(before, afterOpen) || !sameFile(before, afterPath)) throw changed(file, 'modified during read');
+    return result;
+  } finally {
+    await fh.close();
+  }
+}
+
+async function hashFile(file, within) {
   const hash = crypto.createHash('sha256');
-  for await (const chunk of fs.createReadStream(file, { flags: READ_FLAGS })) hash.update(chunk);
+  await readStable(file, within, async (stream) => { for await (const chunk of stream) hash.update(chunk); });
   return hash.digest('hex');
 }
 
@@ -59,19 +99,18 @@ function createStore(dir) {
   }
 
   // Store a file and return its hash. One read pass: hash and (maybe) gzip into a temp file, then rename.
-  async function put(file) {
-    await assertRegularFile(file);
+  async function put(file, within) {
     await fsp.mkdir(tmpDir, { recursive: true });
-    const tmp = path.join(tmpDir, crypto.randomUUID());
+    const tmp = path.join(tmpDir, crypto.randomUUID() + TEMP_SUFFIX);
     const gzipped = !PRECOMPRESSED.has(path.extname(file).toLowerCase());
     const hash = crypto.createHash('sha256');
     try {
-      await pipeline(
-        fs.createReadStream(file, { flags: READ_FLAGS }),
+      await readStable(file, within, (stream) => pipeline(
+        stream,
         hashTap(hash),
         ...(gzipped ? [zlib.createGzip()] : []),
         fs.createWriteStream(tmp, { flags: 'wx', flush: true }),
-      );
+      ));
       const digest = hash.digest('hex');
       if (!(await has(digest))) {
         const dest = objectPath(digest, gzipped);
@@ -86,11 +125,12 @@ function createStore(dir) {
 
   // Copy stored content to dest via temp file + rename. Verifies the hash. Never overwrites an existing dest:
   // the caller moves the old file to Muendo's trash first.
+  // The temp file sits next to dest (not in the store's tmp folder) because rename can't cross drives.
   async function copyOut(hash, dest) {
     const src = await find(hash);
     if (!src) throw new Error(`not stored: ${hash}`);
     if (await exists(dest)) throw new Error(`destination exists: ${dest}`);
-    const tmp = `${dest}.${crypto.randomUUID()}.muendo-tmp`;
+    const tmp = `${dest}.${crypto.randomUUID()}${TEMP_SUFFIX}`;
     const check = crypto.createHash('sha256');
     try {
       await pipeline(
@@ -118,7 +158,25 @@ function createStore(dir) {
     return total;
   }
 
-  return { put, has, copyOut, usage };
+  // Run at startup: delete leftover temp files older than maxAgeMs. Only touches *.muendo-tmp files
+  // directly inside the store's tmp folder, never objects. Returns how many were removed.
+  async function cleanTemp(maxAgeMs = TEMP_MAX_AGE_MS) {
+    let names;
+    try { names = await fsp.readdir(tmpDir); } catch (e) { if (e.code === 'ENOENT') return 0; throw e; }
+    let removed = 0;
+    for (const name of names) {
+      if (!name.endsWith(TEMP_SUFFIX)) continue;
+      const p = path.join(tmpDir, name);
+      const st = await fsp.lstat(p).catch(() => null);
+      if (st?.isFile() && Date.now() - st.mtimeMs > maxAgeMs) {
+        await fsp.rm(p, { force: true });
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  return { put, has, copyOut, usage, cleanTemp };
 }
 
-module.exports = { createStore, hashFile };
+module.exports = { createStore, hashFile, readStable, CHANGED, TEMP_SUFFIX };

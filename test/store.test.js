@@ -95,3 +95,91 @@ test('rejects malformed hashes and refuses to store links', async () => {
 test('usage is 0 for an empty store', async () => {
   assert.strictEqual(await createStore(path.join(tempDir(), 'data')).usage(), 0);
 });
+
+const { readStable, CHANGED, TEMP_SUFFIX } = require('../engine');
+
+test('readStable rejects a file swapped for a link while reading', async () => {
+  const dir = tempDir();
+  const file = path.join(dir, 'a.txt');
+  const other = path.join(dir, 'other.txt');
+  fs.writeFileSync(file, 'original');
+  fs.writeFileSync(other, 'elsewhere');
+  await assert.rejects(
+    readStable(file, null, async (stream) => {
+      fs.rmSync(file);
+      fs.symlinkSync(other, file);
+      for await (const _ of stream);
+    }),
+    { code: CHANGED },
+  );
+});
+
+test('readStable rejects a file modified while reading', async () => {
+  const dir = tempDir();
+  const file = path.join(dir, 'a.txt');
+  fs.writeFileSync(file, 'original');
+  await assert.rejects(
+    readStable(file, null, async (stream) => {
+      fs.appendFileSync(file, ' plus more');
+      for await (const _ of stream);
+    }),
+    { code: CHANGED },
+  );
+});
+
+test('readStable rejects a path whose real location is outside the protected folder', async () => {
+  const dir = tempDir();
+  const root = path.join(dir, 'root');
+  const outside = path.join(dir, 'outside');
+  fs.mkdirSync(root);
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+  fs.symlinkSync(outside, path.join(root, 'sneaky'), 'junction');
+  const realRoot = fs.realpathSync(root);
+  // lstat of root/sneaky/secret.txt sees a regular file; only the realpath check catches it.
+  await assert.rejects(hashFile(path.join(root, 'sneaky', 'secret.txt'), realRoot), /outside protected folder/);
+  fs.writeFileSync(path.join(root, 'ok.txt'), 'fine');
+  assert.strictEqual(await hashFile(path.join(root, 'ok.txt'), realRoot), sha(Buffer.from('fine')));
+});
+
+test('put stores nothing and leaves no temp file when readStable rejects', async () => {
+  const dir = tempDir();
+  const data = path.join(dir, 'data');
+  const store = createStore(data);
+  fs.writeFileSync(path.join(dir, 'real.txt'), 'x');
+  fs.symlinkSync(path.join(dir, 'real.txt'), path.join(dir, 'a.txt'));
+  await assert.rejects(store.put(path.join(dir, 'a.txt')), { code: CHANGED });
+  assert.strictEqual(await store.usage(), 0);
+  assert.deepStrictEqual(fs.readdirSync(path.join(data, 'tmp')), []);
+});
+
+test('cleanTemp removes stale temp files only, never objects or recent temps', async () => {
+  const dir = tempDir();
+  const data = path.join(dir, 'data');
+  const store = createStore(data);
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'keep me');
+  const hash = await store.put(path.join(dir, 'a.txt'));
+
+  const tmp = path.join(data, 'tmp');
+  const stale = path.join(tmp, `stale${TEMP_SUFFIX}`);
+  const recent = path.join(tmp, `recent${TEMP_SUFFIX}`);
+  const notOurs = path.join(tmp, 'stale-but-not-a-temp');
+  for (const f of [stale, recent, notOurs]) fs.writeFileSync(f, 'x');
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  fs.utimesSync(stale, twoHoursAgo, twoHoursAgo);
+  fs.utimesSync(notOurs, twoHoursAgo, twoHoursAgo);
+  const objectPath = path.join(data, 'objects', hash.slice(0, 2), `${hash}.gz`);
+  fs.utimesSync(objectPath, twoHoursAgo, twoHoursAgo);
+
+  assert.strictEqual(await store.cleanTemp(), 1);
+  assert.ok(!fs.existsSync(stale));
+  assert.ok(fs.existsSync(recent));
+  assert.ok(fs.existsSync(notOurs));
+  assert.ok(fs.existsSync(objectPath));
+  await store.copyOut(hash, path.join(dir, 'out.txt'));
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'out.txt'), 'utf8'), 'keep me');
+});
+
+test('cleanTemp on a fresh store is a no-op', async () => {
+  assert.strictEqual(await createStore(path.join(tempDir(), 'data')).cleanTemp(), 0);
+});

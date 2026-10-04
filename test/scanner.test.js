@@ -124,3 +124,20 @@ test('custom ignore list and missing root', async () => {
   assert.ok(!m.docs);
   await assert.rejects(scan(path.join(root, 'nope')), { code: 'ENOENT' });
 });
+
+test('a file that changes while being read is recorded as skipped, not hashed', async () => {
+  const { root } = makeTree();
+  const target = path.join(root, 'a.txt');
+  const racy = (f, within) => {
+    if (f === target) {
+      // Simulate an agent swapping the file for a link between the walk and the read.
+      fs.rmSync(f);
+      fs.symlinkSync(path.join(root, 'docs/b.txt'), f);
+    }
+    return hashFile(f, within);
+  };
+  const m = await scan(root, { ...opts, hash: racy });
+  assert.strictEqual(m['a.txt'].skipped, 'changed-while-reading');
+  assert.strictEqual(m['a.txt'].hash, undefined);
+  assert.ok(m['docs/b.txt'].hash);
+});
