@@ -8,16 +8,18 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 
-const started = Date.now();
-const DEADLINE_MS = 900; // whatever happens, exit by then
+// The time budget counts from when this process started (performance.now() is 0 then), not from when this code
+// began running: on Windows, Node alone takes about a quarter of a second to start.
+const DEADLINE_MS = 850; // whatever happens, exit by then
+const left = () => DEADLINE_MS - performance.now();
 const verbose = process.argv.includes('--verbose');
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 
 function done(message) {
-  if (verbose && message) process.stderr.write(`mewndo-savepoint: ${message} (${Date.now() - started} ms)\n`);
+  if (verbose && message) process.stderr.write(`mewndo-savepoint: ${message} (${Math.round(performance.now())} ms after start)\n`);
   process.exit(0);
 }
-setTimeout(() => done('gave up waiting; Mewndo keeps working on it'), DEADLINE_MS);
+setTimeout(() => done('gave up waiting; Mewndo keeps working on it'), Math.max(0, left()));
 process.on('uncaughtException', (e) => done(`error: ${e.message}`));
 
 // Mewndo's data folder: the same place the app uses (Electron's userData folder for the app "mewndo").
@@ -36,7 +38,7 @@ function readStdin() {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) return resolve('');
     let text = '';
-    const t = setTimeout(() => resolve(text), 250);
+    const t = setTimeout(() => resolve(text), Math.max(0, Math.min(250, left() - 300)));
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (d) => { if (text.length < 1_000_000) text += d; });
     process.stdin.on('end', () => { clearTimeout(t); resolve(text); });
@@ -62,7 +64,7 @@ function readStdin() {
   });
   const req = http.request({
     host: '127.0.0.1', port: config.port, path: '/savepoint', method: 'POST',
-    timeout: Math.max(50, DEADLINE_MS - 100 - (Date.now() - started)),
+    timeout: Math.max(50, left() - 60),
     headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'x-mewndo-token': config.token },
   }, (res) => {
     let text = '';

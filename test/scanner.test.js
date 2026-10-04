@@ -130,9 +130,10 @@ test('a file that changes while being read is recorded as skipped, not hashed', 
   const target = path.join(root, 'a.txt');
   const racy = (f, within) => {
     if (f === target) {
-      // Simulate an agent swapping the file for a link between the walk and the read.
+      // Simulate an agent swapping the file for a link between the walk and the read (a folder junction:
+      // Windows lets anyone make one).
       fs.rmSync(f);
-      fs.symlinkSync(path.join(root, 'docs/b.txt'), f);
+      fs.symlinkSync(path.join(root, 'docs'), f, 'junction');
     }
     return hashFile(f, within);
   };

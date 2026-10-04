@@ -25,7 +25,11 @@ async function scan(root, {
   onProgress = () => {},
   signal, // an AbortSignal: stops the scan between files with an AbortError
   skipOnlineOnly = process.platform === 'win32',
+  // Files modified less than this long ago are marked { pending: true } and not hashed: they may still be being
+  // written. Files dated more than a second in the future are not pending, so a wrong date can't hide a file.
+  settleMs = 0,
 } = {}) {
+  const scanStart = Date.now();
   const realRoot = await fsp.realpath(root);
   const ignored = new Set(ignore);
   const manifest = {};
@@ -68,8 +72,10 @@ async function scan(root, {
         const entry = { type: 'file', size: st.size, mtimeMs: st.mtimeMs };
         manifest[rel] = entry;
         const prev = previous[rel];
+        const age = scanStart - st.mtimeMs;
         if (st.size > maxFileSize) entry.skipped = 'too-large';
         else if (skipOnlineOnly && isOnlineOnly(st)) entry.skipped = 'online-only';
+        else if (settleMs && age < settleMs && age > -1000) entry.pending = true;
         else if (prev?.type === 'file' && prev.hash && prev.size === st.size && prev.mtimeMs === st.mtimeMs) entry.hash = prev.hash;
         else toHash.push(rel);
       } // ponytail: sockets, FIFOs and devices are not user files; skipped

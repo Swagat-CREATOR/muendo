@@ -98,20 +98,40 @@ test('usage is 0 for an empty store', async () => {
 
 const { readStable, CHANGED, TEMP_SUFFIX } = require('../engine');
 
-test('readStable rejects a file swapped for a link while reading', async () => {
+// Links: a folder junction, which Windows lets anyone create (file symlinks need admin or Developer Mode there,
+// so an agent couldn't make one either). Mewndo's checks are the same for both kinds of link.
+test('readStable rejects a file swapped for a link, or for another file, while reading', async () => {
   const dir = tempDir();
   const file = path.join(dir, 'a.txt');
   const other = path.join(dir, 'other.txt');
+  fs.mkdirSync(path.join(dir, 'elsewhere'));
   fs.writeFileSync(file, 'original');
-  fs.writeFileSync(other, 'elsewhere');
   await assert.rejects(
     readStable(file, null, async (stream) => {
       fs.rmSync(file);
-      fs.symlinkSync(other, file);
+      fs.symlinkSync(path.join(dir, 'elsewhere'), file, 'junction');
       for await (const _ of stream);
     }),
     { code: CHANGED },
   );
+  fs.unlinkSync(file);
+  fs.writeFileSync(file, 'original');
+  fs.writeFileSync(other, 'imposter');
+  let refused = false;
+  const reading = readStable(file, null, async (stream) => {
+    try {
+      fs.renameSync(other, file); // same name, different file
+    } catch (e) {
+      if (process.platform !== 'win32') throw e;
+      refused = true; // Windows won't replace a file that is open: the swap can't happen while Mewndo reads
+    }
+    let text = '';
+    for await (const chunk of stream) text += chunk;
+    return text;
+  });
+  const outcome = await reading.then((text) => ({ text }), (error) => ({ error }));
+  if (refused) assert.deepStrictEqual(outcome, { text: 'original' });
+  else assert.strictEqual(outcome.error?.code, CHANGED);
 });
 
 test('readStable rejects a file modified while reading', async () => {
@@ -146,8 +166,8 @@ test('put stores nothing and leaves no temp file when readStable rejects', async
   const dir = tempDir();
   const data = path.join(dir, 'data');
   const store = createStore(data);
-  fs.writeFileSync(path.join(dir, 'real.txt'), 'x');
-  fs.symlinkSync(path.join(dir, 'real.txt'), path.join(dir, 'a.txt'));
+  fs.mkdirSync(path.join(dir, 'real'));
+  fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'a.txt'), 'junction'); // a link where a file is expected
   await assert.rejects(store.put(path.join(dir, 'a.txt')), { code: CHANGED });
   assert.strictEqual(await store.usage(), 0);
   assert.deepStrictEqual(fs.existsSync(path.join(data, 'tmp')) ? fs.readdirSync(path.join(data, 'tmp')) : [], []);

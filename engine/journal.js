@@ -49,9 +49,12 @@ const MAX_WAIT_MS = 30_000; // under constant change, still sync at least this o
 async function watchTree(root, { mode, ignore, writeFinishMs, onChange, onError }) {
   const names = new Set(ignore);
   if (mode === 'native') {
-    const w = fs.watch(root, { recursive: true }, (_type, name) => {
+    const w = fs.watch(root, { recursive: true }, (type, name) => {
       if (name && String(name).split(/[\\/]/).slice(0, -1).some((s) => names.has(s))) return; // inside an ignored folder
-      onChange();
+      if (type !== 'change' || !name) return onChange();
+      // Windows reports a "change" on a folder when it is merely listed (its last-access time). Content changes
+      // always come with events for the files themselves, so folder "change" events can be ignored.
+      fsp.lstat(path.join(root, String(name))).then((st) => { if (!st.isDirectory()) onChange(); }, () => onChange());
     });
     w.on('error', onError);
     return async () => w.close();
@@ -83,7 +86,7 @@ function createJournal({
 }) {
   const journal = new EventEmitter();
   let realRoot, indexFile, savePointDir, closeWatcher, timer;
-  let pendingSince = null;
+  let waitingSince = null; // first change not yet captured; under constant change, sync anyway after MAX_WAIT_MS
   let index = null;
   let indexJson = null;
   let lastChangeAt = -Infinity;
@@ -107,12 +110,24 @@ function createJournal({
   const warn = (e) => { if (!isAbort(e)) journal.emit('warning', e); };
 
   // Scan against the index (only changed files are rehashed and stored), then record the result.
-  async function sync() {
+  // settle: leave files modified within writeFinishMs at their previous version and look again soon, because
+  // they may still be being written (used by background syncs with the native watcher, see schedule).
+  async function sync({ settle = false } = {}) {
     const next = await scan(realRoot, {
       previous: index ?? {}, ignore, maxFileSize, concurrency, signal: scanAbort.signal,
+      settleMs: settle ? writeFinishMs : 0,
       hash: store.put,
       onProgress: (p) => journal.emit('progress', p),
     });
+    let unsettled = false;
+    for (const [rel, e] of Object.entries(next)) {
+      if (!e.pending) continue;
+      unsettled = true;
+      if (index?.[rel]) next[rel] = index[rel];
+      else delete next[rel];
+    }
+    if (unsettled) schedule();
+    else waitingSince = null;
     const index0 = index;
     const changes = index ? diff(index, next) : [];
     if (changes.length && !restoring) {
@@ -151,19 +166,21 @@ function createJournal({
     return meta;
   }
 
-  // Sync once changes pause. Chokidar already waits for each file to stop changing; the native watcher reports
-  // every write, so it waits writeFinishMs of quiet instead, letting half-written files finish. Under constant
-  // change it still syncs every MAX_WAIT_MS; a file still being written then is caught by readStable and
-  // picked up by the next sync.
-  const settleMs = watchMode === 'native' ? Math.max(debounceMs, writeFinishMs) : debounceMs;
+  // Sync once changes pause. Chokidar already waits for each file to stop changing. The native watcher waits
+  // writeFinishMs of quiet, and its syncs also leave recently modified files for later: Windows sends no events
+  // while a program keeps a file open and writes to it, so quiet alone doesn't mean a file is complete. Under
+  // constant change it still syncs after MAX_WAIT_MS, then capturing everything as it is (a file still being
+  // written is caught by readStable and picked up by the next sync).
+  const native = watchMode === 'native';
+  const settleMs = native ? Math.max(debounceMs, writeFinishMs) : debounceMs;
   function schedule() {
-    pendingSince ??= Date.now();
+    waitingSince ??= Date.now();
     clearTimeout(timer);
-    const wait = Math.min(settleMs, Math.max(0, pendingSince + MAX_WAIT_MS - Date.now()));
+    const left = waitingSince + MAX_WAIT_MS - Date.now();
+    const forced = left <= settleMs;
     timer = setTimeout(() => {
-      pendingSince = null;
-      enqueue(sync).catch(warn);
-    }, wait);
+      enqueue(() => sync({ settle: native && !forced })).catch(warn);
+    }, Math.max(0, Math.min(settleMs, left)));
   }
 
   // Protect the folder: catch up with (or, the first time, capture) its contents, then watch it.
@@ -202,7 +219,7 @@ function createJournal({
 
   journal.stop = async () => {
     clearTimeout(timer);
-    pendingSince = null;
+    waitingSince = null;
     watching = false;
     scanAbort.abort();
     await closeWatcher?.();
