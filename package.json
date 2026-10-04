@@ -6,9 +6,9 @@
   "main": "app/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test"
+    "test": "node --test \"test/**/*.test.js\""
   },
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22" },
   "dependencies": {
     "chokidar": "^4.0.3"
   },
