@@ -1,7 +1,7 @@
 // Journal: one per protected folder. Keeps the folder's current index (a scanner manifest whose file
 // contents are all in the store), watches for changes, and writes save points. Events:
-//   'progress' scan progress · 'change' { path, type: added|changed|deleted } · 'savepoint' metadata ·
-//   'warning' Error from background work (watcher or sync) that did not stop the journal.
+//   'progress' scan/restore progress · 'change' { path, type: added|changed|deleted } · 'savepoint' metadata ·
+//   'restored' restore result · 'warning' Error from background work (watcher or sync) that did not stop it.
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -10,6 +10,7 @@ const { watch } = require('chokidar');
 const { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE } = require('./scanner');
 const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
 const { changes: diff, compare } = require('./diff');
+const { planRestore, restore, resumeRestores } = require('./restore');
 
 const TRIGGERS = ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -108,6 +109,8 @@ function createJournal({
       throw new Error(`Mewndo's data folder must not be inside a protected folder: ${realData}`);
     }
     const dir = path.join(realData, 'folders', folderId(realRoot));
+    journal.root = realRoot;
+    journal.folderDir = dir; // this folder's index, save points, restore logs and trash
     indexFile = path.join(dir, 'index.json');
     savePointDir = path.join(dir, 'savepoints');
     await removeStaleTemp(dir);
@@ -125,6 +128,8 @@ function createJournal({
     });
     watcher.on('all', schedule).on('error', warn);
     await new Promise((resolve) => watcher.once('ready', resolve));
+    // Finish an interrupted restore first, so its writes don't look like new activity.
+    if (index) await resumeRestores(journal);
     await enqueue(sync);
   };
 
@@ -175,6 +180,14 @@ function createJournal({
   });
 
   journal.getIndex = () => index;
+
+  // Scan now and return the up-to-date index.
+  journal.sync = () => enqueue(sync).then(() => index);
+
+  journal.store = store;
+  journal.scanOptions = { ignore, maxFileSize, concurrency };
+  journal.planRestore = (id, opts) => planRestore(journal, id, opts);
+  journal.restore = (id, opts) => restore(journal, id, opts);
 
   return journal;
 }

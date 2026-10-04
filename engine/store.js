@@ -123,13 +123,11 @@ function createStore(dir) {
     }
   }
 
-  // Copy stored content to dest via temp file + rename. Verifies the hash. Never overwrites an existing dest:
-  // the caller moves the old file to Mewndo's trash first.
-  // The temp file sits next to dest (not in the store's tmp folder) because rename can't cross drives.
-  async function copyOut(hash, dest) {
+  // Write stored content to a verified temp file next to dest and return its path; the caller renames it
+  // into place. Next to dest (not in the store's tmp folder) because rename can't cross drives.
+  async function extract(hash, dest) {
     const src = await find(hash);
     if (!src) throw new Error(`not stored: ${hash}`);
-    if (await exists(dest)) throw new Error(`destination exists: ${dest}`);
     const tmp = `${dest}.${crypto.randomUUID()}${TEMP_SUFFIX}`;
     const check = crypto.createHash('sha256');
     try {
@@ -140,6 +138,19 @@ function createStore(dir) {
         fs.createWriteStream(tmp, { flags: 'wx', flush: true }),
       );
       if (check.digest('hex') !== hash) throw new Error(`stored content is corrupt: ${hash}`);
+      return tmp;
+    } catch (e) {
+      await fsp.rm(tmp, { force: true });
+      throw e;
+    }
+  }
+
+  // Copy stored content to dest via temp file + rename. Verifies the hash. Never overwrites an existing dest:
+  // the caller moves the old file to Mewndo's trash first.
+  async function copyOut(hash, dest) {
+    if (await exists(dest)) throw new Error(`destination exists: ${dest}`);
+    const tmp = await extract(hash, dest);
+    try {
       // ponytail: check-then-rename has a tiny race; fs.link would be atomic but fails on FAT/exFAT drives.
       if (await exists(dest)) throw new Error(`destination exists: ${dest}`);
       await fsp.rename(tmp, dest);
@@ -161,7 +172,7 @@ function createStore(dir) {
   // Run at startup. Never touches objects.
   const cleanTemp = (maxAgeMs) => removeStaleTemp(tmpDir, maxAgeMs);
 
-  return { put, has, copyOut, usage, cleanTemp };
+  return { put, has, extract, copyOut, usage, cleanTemp };
 }
 
 // Delete *.mewndo-tmp files older than maxAgeMs directly inside dir (Mewndo's own folders only).
