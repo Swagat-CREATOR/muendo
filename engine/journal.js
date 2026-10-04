@@ -83,10 +83,13 @@ function createJournal({
   watcher: watchMode = process.platform === 'win32' || process.platform === 'darwin' ? 'native' : 'chokidar',
   burst: burstOptions, // thresholds for burst alerts, see burst.js
   likelyAgent = () => null, // the AI agent most likely making changes right now, if any (see agents.js)
+  maxWaitMs = MAX_WAIT_MS, // under constant change, sync at least this often (shorter in tests)
 }) {
   const journal = new EventEmitter();
   let realRoot, indexFile, savePointDir, closeWatcher, timer;
-  let waitingSince = null; // first change not yet captured; under constant change, sync anyway after MAX_WAIT_MS
+  let waitingSince = null; // first event of the current wait for quiet; reset when that wait ends
+  let unsettledSince = null; // when files were first left for later as still being written
+  let syncQueued = false; // at most one background sync waits in the queue, however many events arrive
   let index = null;
   let indexJson = null;
   let lastChangeAt = -Infinity;
@@ -126,8 +129,12 @@ function createJournal({
       if (index?.[rel]) next[rel] = index[rel];
       else delete next[rel];
     }
-    if (unsettled) schedule();
-    else waitingSince = null;
+    if (unsettled) {
+      unsettledSince ??= Date.now();
+      schedule();
+    } else {
+      unsettledSince = null;
+    }
     const index0 = index;
     const changes = index ? diff(index, next) : [];
     if (changes.length && !restoring) {
@@ -176,10 +183,17 @@ function createJournal({
   function schedule() {
     waitingSince ??= Date.now();
     clearTimeout(timer);
-    const left = waitingSince + MAX_WAIT_MS - Date.now();
-    const forced = left <= settleMs;
+    const left = waitingSince + maxWaitMs - Date.now();
     timer = setTimeout(() => {
-      enqueue(() => sync({ settle: native && !forced })).catch(warn);
+      waitingSince = null;
+      // Files left unsettled for maxWaitMs (e.g. a log written all the time) are captured as they are.
+      const forced = left <= settleMs || (unsettledSince !== null && Date.now() - unsettledSince >= maxWaitMs);
+      if (syncQueued) return; // one is already waiting and will see these changes too
+      syncQueued = true;
+      enqueue(() => {
+        syncQueued = false;
+        return sync({ settle: native && !forced });
+      }).catch(warn);
     }, Math.max(0, Math.min(settleMs, left)));
   }
 
@@ -220,6 +234,7 @@ function createJournal({
   journal.stop = async () => {
     clearTimeout(timer);
     waitingSince = null;
+    unsettledSince = null;
     watching = false;
     scanAbort.abort();
     await closeWatcher?.();

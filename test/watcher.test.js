@@ -89,3 +89,34 @@ test('native watcher: syncs at least every 30 s even under constant change', asy
     assert.ok(took >= 29_000 && took < 36_000, `synced after ${took} ms`);
   } finally { await journal.stop(); }
 });
+
+// Regression: past the wait cap, every watcher event during a running sync used to queue another full rescan:
+// 558 rescans for one 5,000-file restore (about 8x slower). Scaled down: 600 files, a 200 ms cap. The broken
+// version made 226 rescans here; the fixed one about 11.
+for (const watcher of ['native', 'chokidar']) {
+  test(`${watcher} watcher: a restore that writes many files doesn't trigger a rescan storm`, async () => {
+    const base = tempDir();
+    const root = path.join(base, 'project');
+    for (let i = 0; i < 600; i++) {
+      const dir = path.join(root, `d${i % 20}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `f${i}.txt`), `file ${i}`);
+    }
+    const dataDir = path.join(base, 'data');
+    const journal = createJournal({
+      root, dataDir, store: createStore(path.join(dataDir, 'store')), watcher, debounceMs: 50, writeFinishMs: 100, maxWaitMs: 200,
+    });
+    journal.on('warning', (e) => { throw e; });
+    await journal.start();
+    try {
+      const sp = await journal.createSavePoint();
+      for (let i = 0; i < 600; i++) fs.rmSync(path.join(root, `d${i % 20}`, `f${i}.txt`));
+      await sleep(500); // the watcher is still busy with the deletions when the restore starts
+      let scans = 0;
+      journal.on('progress', (p) => { if (p.phase === 'done') scans++; });
+      const result = await journal.restore(sp.id);
+      assert.strictEqual(result.verified, true);
+      assert.ok(scans <= 40, `${scans} rescans during the restore`);
+    } finally { await journal.stop(); }
+  });
+}
