@@ -3,7 +3,8 @@
 //   'progress' scan/restore progress · 'change' { path, type: added|changed|deleted } · 'savepoint' metadata ·
 //   'restored' restore result · 'retry' { path, op, attempt, error } while waiting for a locked file ·
 //   'warning' Error from background work (watcher or sync) that did not stop it.
-const fsp = require('node:fs/promises');
+const fs = require('node:fs');
+const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
@@ -34,6 +35,36 @@ function ignoreFn(root, names) {
   };
 }
 
+const MAX_WAIT_MS = 30_000; // under constant change, still sync at least this often
+
+// Call onChange whenever anything under root may have changed. The journal then rescans, so the details of
+// each event don't matter. Returns close().
+//   native (Windows, macOS): one recursive OS watch handle. Nothing to walk and no file work at start,
+//     however big the folder.
+//   chokidar (Linux, which has no native recursive watching): walks the tree and stats every file first to
+//     watch each folder. On Windows that walk over a 170,000-file OneDrive folder flooded the engine's file
+//     queue, so every other file operation, even checking a 28-file folder, waited minutes behind it.
+async function watchTree(root, { mode, ignore, writeFinishMs, onChange, onError }) {
+  const names = new Set(ignore);
+  if (mode === 'native') {
+    const w = fs.watch(root, { recursive: true }, (_type, name) => {
+      if (name && String(name).split(/[\\/]/).slice(0, -1).some((s) => names.has(s))) return; // inside an ignored folder
+      onChange();
+    });
+    w.on('error', onError);
+    return async () => w.close();
+  }
+  const w = watch(root, {
+    ignoreInitial: true,
+    followSymlinks: false,
+    ignored: ignoreFn(root, names),
+    awaitWriteFinish: { stabilityThreshold: writeFinishMs, pollInterval: Math.min(100, writeFinishMs / 2) },
+  });
+  w.on('all', onChange).on('error', onError);
+  await new Promise((resolve) => w.once('ready', resolve));
+  return () => w.close();
+}
+
 function createJournal({
   root,
   dataDir,
@@ -43,10 +74,12 @@ function createJournal({
   concurrency,
   quietMs = 30_000, // an activity save point is made when changes start after this much quiet
   debounceMs = 300, // batch watcher events into one sync
-  writeFinishMs = 2000, // a file must stop changing this long before the watcher reports it
+  writeFinishMs = 2000, // a file must stop changing this long before it is captured
+  watcher: watchMode = process.platform === 'win32' || process.platform === 'darwin' ? 'native' : 'chokidar',
 }) {
   const journal = new EventEmitter();
-  let realRoot, indexFile, savePointDir, watcher, timer;
+  let realRoot, indexFile, savePointDir, closeWatcher, timer;
+  let pendingSince = null;
   let index = null;
   let indexJson = null;
   let lastChangeAt = -Infinity;
@@ -99,9 +132,19 @@ function createJournal({
     return meta;
   }
 
+  // Sync once changes pause. Chokidar already waits for each file to stop changing; the native watcher reports
+  // every write, so it waits writeFinishMs of quiet instead, letting half-written files finish. Under constant
+  // change it still syncs every MAX_WAIT_MS; a file still being written then is caught by readStable and
+  // picked up by the next sync.
+  const settleMs = watchMode === 'native' ? Math.max(debounceMs, writeFinishMs) : debounceMs;
   function schedule() {
+    pendingSince ??= Date.now();
     clearTimeout(timer);
-    timer = setTimeout(() => enqueue(sync).catch(warn), debounceMs);
+    const wait = Math.min(settleMs, Math.max(0, pendingSince + MAX_WAIT_MS - Date.now()));
+    timer = setTimeout(() => {
+      pendingSince = null;
+      enqueue(sync).catch(warn);
+    }, wait);
   }
 
   // Protect the folder: catch up with (or, the first time, capture) its contents, then watch it.
@@ -124,14 +167,7 @@ function createJournal({
     indexJson = index && JSON.stringify(index);
 
     // Watch first, so nothing that changes during the initial scan is missed.
-    watcher = watch(realRoot, {
-      ignoreInitial: true,
-      followSymlinks: false,
-      ignored: ignoreFn(realRoot, new Set(ignore)),
-      awaitWriteFinish: { stabilityThreshold: writeFinishMs, pollInterval: Math.min(100, writeFinishMs / 2) },
-    });
-    watcher.on('all', schedule).on('error', warn);
-    await new Promise((resolve) => watcher.once('ready', resolve));
+    closeWatcher = await watchTree(realRoot, { mode: watchMode, ignore, writeFinishMs, onChange: schedule, onError: warn });
     // Finish an interrupted restore first, so its writes don't look like new activity.
     if (index) await resumeRestores(journal);
     try {
@@ -143,8 +179,10 @@ function createJournal({
 
   journal.stop = async () => {
     clearTimeout(timer);
+    pendingSince = null;
     scanAbort.abort();
-    await watcher?.close();
+    await closeWatcher?.();
+    closeWatcher = null;
     await queue;
     scanAbort = new AbortController(); // save points and restores still scan after a stop (e.g. while paused)
   };

@@ -27,6 +27,7 @@ const settingsFile = () => path.join(app.getPath('userData'), 'app-settings.json
 const send = (channel, payload) => { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); };
 const notify = (title, body) => { if (Notification.isSupported()) new Notification({ title, body }).show(); };
 const folderName = (root) => path.basename(root) || root;
+const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 
 async function loadSettings() {
   try { settings = { ...settings, ...JSON.parse(await fsp.readFile(settingsFile(), 'utf8')) }; } catch { /* first run */ }
@@ -158,7 +159,7 @@ async function suggestions(folders) {
   for (const name of ['documents', 'desktop']) {
     const p = path.resolve(app.getPath(name));
     const isDir = await fsp.stat(p).then((s) => s.isDirectory(), () => false);
-    if (isDir && p !== home && !out.includes(p) && !folders.some((f) => f.root === p)) out.push(p);
+    if (isDir && p !== home && !out.includes(p) && !folders.some((f) => samePath(f.root, p))) out.push(p);
   }
   return out;
 }
@@ -170,6 +171,7 @@ async function state() {
     setupDone: settings.setupDone,
     openAtLogin: settings.openAtLogin,
     loginSupported: process.platform !== 'linux',
+    windows: process.platform === 'win32',
     pausedUntil,
     suggestions: settings.setupDone ? [] : await suggestions(folders),
     folders: folders.map((f) => ({

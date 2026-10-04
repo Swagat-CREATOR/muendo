@@ -18,6 +18,9 @@ function h(tag, props = {}, ...children) {
 // Replace an element's children, skipping null/false like h() does (replaceChildren would print "null").
 const fill = (el, ...children) => el.replaceChildren(...children.flat().filter((c) => c != null && c !== false));
 
+// Windows paths ignore case.
+const samePath = (a, b) => (state?.windows ? a.toLowerCase() === b.toLowerCase() : a === b);
+
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const when = (iso) => new Date(iso).toLocaleString();
 function size(bytes) {
@@ -60,7 +63,7 @@ const setupFolders = [];
 function renderSetup() {
   const list = $('setup-folders');
   list.replaceChildren(...setupFolders.map((f) => h('li', {},
-    h('label', {}, h('input', { type: 'checkbox', checked: f.checked, onchange: (e) => { f.checked = e.target.checked; } }), ` ${f.path}`),
+    h('label', {}, h('input', { type: 'checkbox', checked: f.checked, onchange: (e) => { f.checked = e.target.checked; renderSetup(); } }), ` ${f.path}`),
     f.already && h('div', { class: 'muted' }, f.checked
       ? `Already being protected (${f.already}). Untick to stop protecting it.`
       : 'Mewndo will stop protecting this folder.'),
@@ -69,11 +72,13 @@ function renderSetup() {
 
 function showSetup() {
   // Folders already protected (from an earlier attempt) are shown first, so nothing runs out of sight.
+  // The engine re-registers remembered folders a moment after launch, so a folder first listed as a
+  // suggestion can turn out to be protected already: mark it then, keeping whatever the user ticked.
   let changed = false;
   for (const f of state.folders) {
-    const known = setupFolders.find((x) => x.path === f.root);
+    const known = setupFolders.find((x) => samePath(x.path, f.root));
     if (known) {
-      if (known.already && known.already !== f.status) { known.already = f.status; changed = true; }
+      if (known.already !== f.status) { known.already = f.status; changed = true; }
     } else {
       setupFolders.unshift({ path: f.root, checked: true, error: null, already: f.status });
       changed = true;
@@ -81,7 +86,7 @@ function showSetup() {
   }
   if (!setupFolders.some((f) => !f.already)) {
     for (const p of state.suggestions) {
-      if (!setupFolders.some((f) => f.path === p)) { setupFolders.push({ path: p, checked: true, error: null }); changed = true; }
+      if (!setupFolders.some((f) => samePath(f.path, p))) { setupFolders.push({ path: p, checked: true, error: null }); changed = true; }
     }
   }
   $('setup-login-wrap').hidden = !state.loginSupported;
@@ -90,7 +95,7 @@ function showSetup() {
 
 $('setup-add').onclick = guard(async () => {
   for (const p of await api.chooseFolders()) {
-    if (!setupFolders.some((f) => f.path === p)) setupFolders.push({ path: p, checked: true, error: null });
+    if (!setupFolders.some((f) => samePath(f.path, p))) setupFolders.push({ path: p, checked: true, error: null });
   }
   renderSetup();
 });
