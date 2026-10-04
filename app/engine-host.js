@@ -32,7 +32,7 @@ const methods = {
     mewndo = createMewndo(options);
     mewndo.on('progress', (root, p) => throttled('progress', root, p, 150));
     mewndo.on('change', (root, c) => throttled('change', root, c, 1000));
-    for (const event of ['savepoint', 'restored', 'retry']) mewndo.on(event, (root, payload) => emit(event, root, payload));
+    for (const event of ['savepoint', 'restored', 'retry', 'burst']) mewndo.on(event, (root, payload) => emit(event, root, payload));
     for (const event of ['warning', 'folders-changed', 'pruned']) mewndo.on(event, (payload) => emit(event, payload ?? null));
     await mewndo.start();
   },

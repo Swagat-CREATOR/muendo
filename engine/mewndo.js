@@ -2,7 +2,7 @@
 // folders are protected, and keeps storage in check: retention pruning, a storage budget, free disk space.
 // Events: 'pruned' prune result · 'folders-changed' · 'warning' { code: 'over-budget' | 'low-disk' |
 //   'folder-unavailable' | 'journal' | 'prune-failed', message, ... } · and from each journal, as (root, payload):
-//   'progress', 'savepoint', 'restored', 'retry', 'change'.
+//   'progress', 'savepoint', 'restored', 'retry', 'change', 'burst' (not while protection is paused).
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
@@ -138,6 +138,7 @@ function createMewndo({
     await writeFileAtomic(settingsFile(dir), JSON.stringify({ root: real, retentionDays, protected: true }));
     const journal = createJournal({ ...journalOptions, root: real, dataDir, store });
     for (const ev of FORWARDED) journal.on(ev, (payload) => mewndo.emit(ev, real, payload));
+    journal.on('burst', (payload) => { if (!pausedUntil) mewndo.emit('burst', real, payload); }); // not while paused
     journal.on('warning', (e) => warn('journal', e.message, { folder: real }));
     journals.set(real, journal);
     starting.add(real);

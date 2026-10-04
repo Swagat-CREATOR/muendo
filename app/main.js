@@ -71,6 +71,7 @@ function onEngineMessage(msg) {
     case 'savepoint': storage.at = 0; send('savepoints-changed', a); break;
     case 'restored': send('restores-changed', a); break;
     case 'retry': send('retry', { root: a, ...b }); break;
+    case 'burst': burstAlert(a, b).catch(() => {}); break;
     case 'folders-changed': storage.at = 0; stateChanged(); break;
     case 'pruned': storage.at = 0; break;
     case 'warning': notify('Mewndo', a.message); send('toast', a.message); break;
@@ -246,7 +247,10 @@ function createUndoWindow() {
 }
 
 // Show the undo window; it asks for the folders and the target itself (see renderer/undo.js).
-function openUndo() {
+// root: show that folder first (e.g. the one a burst alert was about).
+let undoPreferred = null;
+function openUndo(root) {
+  undoPreferred = typeof root === 'string' ? root : null;
   if (!undoWin || undoWin.isDestroyed()) createUndoWindow();
   else undoWin.webContents.send('undo:open');
   undoWin.center();
@@ -261,15 +265,45 @@ function openUndo() {
 function registerUndoShortcut() {
   const accel = settings.undoShortcut ?? DEFAULT_UNDO_SHORTCUT;
   let ok = false;
-  try { ok = globalShortcut.register(accel, openUndo); } catch { ok = false; }
+  try { ok = globalShortcut.register(accel, () => openUndo()); } catch { ok = false; }
   shortcutProblem = ok ? null
     : `${prettyShortcut(accel)} is already used by another app, so one-key undo has no shortcut. `
       + "You'll be able to choose a different shortcut in Settings. Meanwhile, use Undo Last in the tray menu.";
   if (shortcutProblem) notify('Mewndo', shortcutProblem);
 }
 
+// --- Burst alerts -----------------------------------------------------------------------------------------------
+
+const liveNotifications = new Set(); // Windows drops click handlers of notifications that get garbage-collected
+
+// "40 files deleted in Documents by Claude Code in the last minute. Put them back?" The agent's name comes
+// from the most recent save point an agent (or its hook) made in the last hour, if any.
+async function burstAlert(root, { deleted, changed }) {
+  const savePoints = await call('journal.listSavePoints', root).catch(() => []);
+  const agent = savePoints.filter((sp) => sp.agent && Date.now() - Date.parse(sp.createdAt) < 60 * 60 * 1000).at(-1)?.agent;
+  const other = changed - deleted;
+  const s = (n) => (n === 1 ? '' : 's');
+  const what = deleted && other ? `${deleted} file${s(deleted)} deleted and ${other} changed`
+    : deleted ? `${deleted} file${s(deleted)} deleted` : `${other} file${s(other)} changed`;
+  const body = `${what} in ${folderName(root)}${agent ? ` by ${agent}` : ''} in the last minute. Put them back?`;
+  send('toast', body); // also in the window, for systems without notifications
+  const n = new Notification({ title: 'Mewndo: lots of changes at once', body }); // show() is a no-op where unsupported
+  liveNotifications.add(n);
+  const done = () => liveNotifications.delete(n);
+  n.on('click', () => { done(); openUndo(root); });
+  n.on('close', done);
+  n.show();
+}
+
 const undoHandlers = {
-  undoFolders,
+  async undoFolders() {
+    const folders = await undoFolders();
+    const i = folders.findIndex((f) => undoPreferred && samePath(f.root, undoPreferred));
+    if (i > 0) folders.unshift(...folders.splice(i, 1));
+    else if (i < 0 && undoPreferred) folders.unshift({ root: undoPreferred, name: folderName(undoPreferred) });
+    undoPreferred = null;
+    return folders;
+  },
   async undoTarget(root) {
     if (!(await undoFolders()).some((f) => f.root === root)) throw new Error('not a protected folder');
     return undoTarget(root);
@@ -343,7 +377,7 @@ async function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Window', click: showWindow },
     { label: 'Create Save Point', click: run(createSavePointEverywhere) },
-    { label: 'Undo Last', click: openUndo },
+    { label: 'Undo Last', click: () => openUndo() },
     { label: until ? 'Resume Protection' : 'Pause Protection for 1 Hour', click: run(togglePause) },
     { type: 'separator' },
     { label: 'Quit', click: () => quit() },

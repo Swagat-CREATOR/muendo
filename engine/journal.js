@@ -2,6 +2,7 @@
 // contents are all in the store), watches for changes, and writes save points. Events:
 //   'progress' scan/restore progress · 'change' { path, type: added|changed|deleted } · 'savepoint' metadata ·
 //   'restored' restore result · 'retry' { path, op, attempt, error } while waiting for a locked file ·
+//   'burst' { deleted, changed } once when many files change within a minute (not from restores) ·
 //   'warning' Error from background work (watcher or sync) that did not stop it.
 const fs = require('node:fs');
 const fsp = fs.promises;
@@ -12,6 +13,7 @@ const { watch } = require('chokidar');
 const { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE } = require('./scanner');
 const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
 const { changes: diff, compare } = require('./diff');
+const { createBurstDetector } = require('./burst');
 const { planRestore, restore, resumeRestores, isRestoreRunning, listRestores } = require('./restore');
 
 const TRIGGERS = ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo'];
@@ -76,6 +78,7 @@ function createJournal({
   debounceMs = 300, // batch watcher events into one sync
   writeFinishMs = 2000, // a file must stop changing this long before it is captured
   watcher: watchMode = process.platform === 'win32' || process.platform === 'darwin' ? 'native' : 'chokidar',
+  burst: burstOptions, // thresholds for burst alerts, see burst.js
 }) {
   const journal = new EventEmitter();
   let realRoot, indexFile, savePointDir, closeWatcher, timer;
@@ -85,6 +88,9 @@ function createJournal({
   let lastChangeAt = -Infinity;
   let lastSavePointAt = 0;
   let restoring = false;
+  let catchingUp = false; // the scan at start: those changes happened while Mewndo wasn't watching
+  let watching = false; // false while stopped or paused: changes then don't count toward burst alerts
+  const burst = createBurstDetector(burstOptions);
   let queue = Promise.resolve();
 
   // All work on the index runs one task at a time.
@@ -105,6 +111,7 @@ function createJournal({
       hash: store.put,
       onProgress: (p) => journal.emit('progress', p),
     });
+    const index0 = index;
     const changes = index ? diff(index, next) : [];
     if (changes.length && !restoring) {
       if (Date.now() - lastChangeAt >= quietMs) {
@@ -117,6 +124,12 @@ function createJournal({
     index = next;
     indexJson = json;
     for (const c of changes) journal.emit('change', c);
+    if (watching && !restoring && !catchingUp) {
+      // Files and links only: a deleted folder of 30 files is 30 files, not 31 changes.
+      const entry = (c) => (c.type === 'deleted' ? index0 : next)[c.path];
+      const alert = burst.record(changes.filter((c) => entry(c)?.type !== 'directory'));
+      if (alert) journal.emit('burst', alert);
+    }
   }
 
   // ponytail: each save point is a full copy of the index; share unchanged entries between save points
@@ -168,10 +181,14 @@ function createJournal({
 
     // Watch first, so nothing that changes during the initial scan is missed.
     closeWatcher = await watchTree(realRoot, { mode: watchMode, ignore, writeFinishMs, onChange: schedule, onError: warn });
+    watching = true;
     // Finish an interrupted restore first, so its writes don't look like new activity.
     if (index) await resumeRestores(journal);
     try {
-      await enqueue(sync);
+      await enqueue(async () => {
+        catchingUp = true;
+        try { await sync(); } finally { catchingUp = false; }
+      });
     } catch (e) {
       if (!isAbort(e)) throw e; // stopped during the first scan: not an error, the next start catches up
     }
@@ -180,6 +197,7 @@ function createJournal({
   journal.stop = async () => {
     clearTimeout(timer);
     pendingSince = null;
+    watching = false;
     scanAbort.abort();
     await closeWatcher?.();
     closeWatcher = null;
