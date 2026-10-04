@@ -108,3 +108,26 @@ test('restores are listed newest first; storage is reported per folder', async (
     assert.ok(report.folders[0].bytes > 0 && report.folders[0].savePoints >= 3);
   } finally { await mewndo.stop(); }
 });
+
+test('stopping during a first scan cancels it quickly, keeps the folder protected, and the next start finishes it', async () => {
+  const base = tempDir();
+  const files = {};
+  for (let i = 0; i < 3000; i++) files[`d${i % 30}/f${i}.txt`] = `file ${i}`;
+  const root = folder(base, 'project', files);
+  const dataDir = path.join(base, 'data');
+  const mewndo = createMewndo({ dataDir, journalOptions });
+  await mewndo.protect(root, { background: true });
+  while (!mewndo.folders()[0]?.files && mewndo.folders()[0]?.status === 'scanning') await sleep(20);
+  await sleep(300); // well into hashing
+  const t = Date.now();
+  await mewndo.stop();
+  assert.ok(Date.now() - t < 3000, `stop took ${Date.now() - t} ms`);
+
+  const again = createMewndo({ dataDir, journalOptions });
+  await again.start();
+  try {
+    assert.deepStrictEqual(again.folders().map((f) => f.root), [fs.realpathSync(root)], 'still protected');
+    while (again.folders()[0].status === 'scanning') await sleep(50);
+    assert.strictEqual(again.folders()[0].files, 3000);
+  } finally { await again.stop(); }
+});

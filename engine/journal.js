@@ -60,12 +60,15 @@ function createJournal({
     queue = p.catch(() => {});
     return p;
   }
-  const warn = (e) => journal.emit('warning', e);
+  // A stopped journal cancels its running scan instead of waiting for it; the next start scans again.
+  let scanAbort = new AbortController();
+  const isAbort = (e) => e?.name === 'AbortError';
+  const warn = (e) => { if (!isAbort(e)) journal.emit('warning', e); };
 
   // Scan against the index (only changed files are rehashed and stored), then record the result.
   async function sync() {
     const next = await scan(realRoot, {
-      previous: index ?? {}, ignore, maxFileSize, concurrency,
+      previous: index ?? {}, ignore, maxFileSize, concurrency, signal: scanAbort.signal,
       hash: store.put,
       onProgress: (p) => journal.emit('progress', p),
     });
@@ -131,13 +134,19 @@ function createJournal({
     await new Promise((resolve) => watcher.once('ready', resolve));
     // Finish an interrupted restore first, so its writes don't look like new activity.
     if (index) await resumeRestores(journal);
-    await enqueue(sync);
+    try {
+      await enqueue(sync);
+    } catch (e) {
+      if (!isAbort(e)) throw e; // stopped during the first scan: not an error, the next start catches up
+    }
   };
 
   journal.stop = async () => {
     clearTimeout(timer);
+    scanAbort.abort();
     await watcher?.close();
     await queue;
+    scanAbort = new AbortController(); // save points and restores still scan after a stop (e.g. while paused)
   };
 
   journal.createSavePoint = async ({ label, trigger = 'manual', agent } = {}) => {

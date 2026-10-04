@@ -1,9 +1,11 @@
-// Electron main process: runs the engine, the tray and the window. The window has no Node access; it talks to
-// this process only through the IPC calls in preload.js, and every call is checked here.
+// Electron main process: the window, the tray, dialogs and notifications. The engine runs in its own utility
+// process (engine-host.js) and is reached only by messages, so engine work can never freeze the window.
+// The window has no Node access; it talks to this process through the IPC calls in preload.js, all checked here.
+// Nothing here uses synchronous file calls.
 const path = require('node:path');
 const fsp = require('node:fs/promises');
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell } = require('electron');
-const { createMewndo, writeFileAtomic } = require('../engine');
+const crypto = require('node:crypto');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess } = require('electron');
 
 const APP_ID = 'com.mewndo.app';
 const HOUR = 60 * 60 * 1000;
@@ -11,7 +13,6 @@ const HOUR = 60 * 60 * 1000;
 // Dev and testing: a throwaway profile instead of the real one.
 if (process.env.MEWNDO_USER_DATA) app.setPath('userData', path.resolve(process.env.MEWNDO_USER_DATA));
 
-let mewndo;
 let win = null;
 let tray = null;
 let quitting = false;
@@ -30,7 +31,74 @@ const folderName = (root) => path.basename(root) || root;
 async function loadSettings() {
   try { settings = { ...settings, ...JSON.parse(await fsp.readFile(settingsFile(), 'utf8')) }; } catch { /* first run */ }
 }
-const saveSettings = () => writeFileAtomic(settingsFile(), JSON.stringify(settings));
+async function saveSettings() { // temp file + rename, like everything Mewndo writes
+  const tmp = `${settingsFile()}.${crypto.randomUUID()}.mewndo-tmp`;
+  await fsp.writeFile(tmp, JSON.stringify(settings), { flush: true });
+  await fsp.rename(tmp, settingsFile());
+}
+
+// --- The engine process ----------------------------------------------------------------------------------------
+
+let engine = null;
+let nextCallId = 0;
+const calls = new Map(); // id -> { resolve, reject }
+let crashes = [];
+
+// Call an engine method; resolves with its result. See engine-host.js for the methods.
+function call(method, ...args) {
+  return new Promise((resolve, reject) => {
+    if (!engine) return reject(new Error('The Mewndo engine is not running.'));
+    const id = ++nextCallId;
+    calls.set(id, { resolve, reject });
+    engine.postMessage({ id, method, args });
+  });
+}
+
+function onEngineMessage(msg) {
+  if (msg.id) {
+    const pending = calls.get(msg.id);
+    calls.delete(msg.id);
+    if (!pending) return;
+    if (msg.error !== undefined) pending.reject(Object.assign(new Error(msg.error), { code: msg.code }));
+    else pending.resolve(msg.result);
+    return;
+  }
+  const [a, b] = msg.args;
+  switch (msg.event) {
+    case 'progress': progress.set(a, b); send('progress', { root: a, ...b }); break;
+    case 'change': lastChange.set(a, Date.now()); break;
+    case 'savepoint': storage.at = 0; send('savepoints-changed', a); break;
+    case 'restored': send('restores-changed', a); break;
+    case 'retry': send('retry', { root: a, ...b }); break;
+    case 'folders-changed': storage.at = 0; stateChanged(); break;
+    case 'pruned': storage.at = 0; break;
+    case 'warning': notify('Mewndo', a.message); send('toast', a.message); break;
+    default: break;
+  }
+}
+
+// Start the engine process. If it ever dies, everything it was doing fails cleanly and it is started again
+// (its own startup finishes interrupted restores). Three crashes within a minute: stop and tell the user.
+function startEngine() {
+  engine = utilityProcess.fork(path.join(__dirname, 'engine-host.js'), [], { serviceName: 'Mewndo engine', stdio: 'inherit' });
+  engine.on('message', onEngineMessage);
+  engine.on('exit', (code) => {
+    engine = null;
+    for (const { reject } of calls.values()) reject(new Error('The Mewndo engine stopped.'));
+    calls.clear();
+    if (quitting) return;
+    crashes = [...crashes.filter((t) => Date.now() - t < 60_000), Date.now()];
+    if (crashes.length >= 3) {
+      dialog.showErrorBox('Mewndo stopped working',
+        `The Mewndo engine keeps stopping (exit code ${code}). Your folders are not being protected. Please restart Mewndo.`);
+      return;
+    }
+    notify('Mewndo', 'The Mewndo engine stopped unexpectedly and is restarting.');
+    setTimeout(startEngine, 1000);
+  });
+  call('start', { dataDir: path.join(app.getPath('userData'), 'data') })
+    .then(stateChanged, (e) => notify('Mewndo could not start protecting', e.message));
+}
 
 function applyOpenAtLogin() {
   // Windows and macOS; a no-op on Linux. Started at login, Mewndo opens hidden in the tray.
@@ -73,34 +141,34 @@ function showWindow() {
 
 async function storageReport(maxAgeMs = 30_000) {
   if (!storage.report || Date.now() - storage.at > maxAgeMs) {
-    storage = { at: Date.now(), report: await mewndo.storageReport() };
+    storage = { at: Date.now(), report: await call('storageReport') };
   }
   return storage.report;
 }
 
 // Documents and Desktop, if they are real folders. Some systems report the home folder itself for a missing
 // Documents folder, which must never be suggested.
-async function suggestions() {
+async function suggestions(folders) {
   const home = path.resolve(app.getPath('home'));
   const out = [];
   for (const name of ['documents', 'desktop']) {
     const p = path.resolve(app.getPath(name));
     const isDir = await fsp.stat(p).then((s) => s.isDirectory(), () => false);
-    if (isDir && p !== home && !out.includes(p) && !mewndo.folders().some((f) => f.root === p)) out.push(p);
+    if (isDir && p !== home && !out.includes(p) && !folders.some((f) => f.root === p)) out.push(p);
   }
   return out;
 }
 
 async function state() {
-  const report = await storageReport().catch(() => null);
+  const [folders, pausedUntil, report] = await Promise.all([call('folders'), call('pausedUntil'), storageReport().catch(() => null)]);
   const bytes = new Map((report?.folders ?? []).map((f) => [f.folder, f.bytes]));
   return {
     setupDone: settings.setupDone,
     openAtLogin: settings.openAtLogin,
     loginSupported: process.platform !== 'linux',
-    pausedUntil: mewndo.pausedUntil(),
-    suggestions: settings.setupDone ? [] : await suggestions(),
-    folders: mewndo.folders().map((f) => ({
+    pausedUntil,
+    suggestions: settings.setupDone ? [] : await suggestions(folders),
+    folders: folders.map((f) => ({
       ...f, name: folderName(f.root), storageBytes: bytes.get(f.root) ?? null, progress: progress.get(f.root) ?? null,
     })),
     trashBytes: report?.trashBytes ?? null,
@@ -117,32 +185,31 @@ function stateChanged() {
 // --- Actions shared by the window and the tray -------------------------------------------------------------
 
 async function createSavePointEverywhere() {
-  const folders = mewndo.folders().filter((f) => f.status !== 'scanning');
+  const folders = (await call('folders')).filter((f) => f.status !== 'scanning');
   if (!folders.length) return notify('Mewndo', 'No folders are protected yet.');
-  for (const f of folders) await mewndo.journalFor(f.root).createSavePoint({ label: 'From the tray', trigger: 'manual' });
+  for (const f of folders) await call('journal.createSavePoint', f.root, { label: 'From the tray', trigger: 'manual' });
   notify('Save point created', `${folders.length} folder${folders.length > 1 ? 's' : ''}: ${folders.map((f) => folderName(f.root)).join(', ')}`);
 }
 
 // Undo Last: put the folder that changed most recently back to its latest save point, after asking.
 async function undoLast() {
-  const folders = mewndo.folders().filter((f) => f.status === 'protected' || f.status === 'paused');
+  const folders = (await call('folders')).filter((f) => f.status === 'protected' || f.status === 'paused');
   const root = folders.map((f) => f.root).sort((a, b) => (lastChange.get(b) ?? 0) - (lastChange.get(a) ?? 0))[0];
   if (!root) return notify('Mewndo', 'Nothing to undo: no folders are protected yet.');
-  const journal = mewndo.journalFor(root);
-  const latest = (await journal.listSavePoints()).at(-1);
+  const latest = (await call('journal.listSavePoints', root)).at(-1);
   if (!latest) return notify('Mewndo', `Nothing to undo in ${folderName(root)} yet.`);
-  const diff = await journal.diffSince(latest.id);
+  const diff = await call('journal.diffSince', root, latest.id);
   if (!diff.deleted.length && !diff.edited.length && !diff.moved.length && !diff.created.length) {
     return notify('Mewndo', `Nothing changed in ${folderName(root)} since the last save point.`);
   }
-  const plan = await journal.planRestore(latest.id);
+  const plan = await call('journal.planRestore', root, latest.id);
   const { response } = await dialog.showMessageBox({
     type: 'question', buttons: ['Undo', 'Cancel'], defaultId: 1, cancelId: 1, title: 'Undo last changes',
     message: `Undo the changes in ${folderName(root)} since ${new Date(latest.createdAt).toLocaleString()}?`,
     detail: `${diff.summary}\n\n${confirmText(plan)}`,
   });
   if (response !== 0) return;
-  await reportRestore(root, await journal.restore(latest.id));
+  await reportRestore(root, await call('journal.restore', root, latest.id));
 }
 
 function confirmText(plan) {
@@ -171,8 +238,8 @@ async function reportRestore(root, result) {
 }
 
 async function togglePause() {
-  if (mewndo.pausedUntil()) await mewndo.resumeProtection();
-  else await mewndo.pauseProtection(HOUR);
+  if (await call('pausedUntil')) await call('resumeProtection');
+  else await call('pauseProtection', HOUR);
   stateChanged();
 }
 
@@ -183,7 +250,11 @@ let quitPromise = null;
 function quit() {
   quitting = true;
   quitPromise ??= (async () => {
-    try { await mewndo?.stop(); } finally {
+    try {
+      // Let the engine stop cleanly, but never hang quitting on it.
+      await Promise.race([call('stop'), new Promise((r) => setTimeout(r, 15_000))]);
+    } catch { /* not running */ } finally {
+      engine?.kill();
       stopped = true;
       setImmediate(() => app.quit());
     }
@@ -191,9 +262,9 @@ function quit() {
   return quitPromise;
 }
 
-function updateTray() {
+async function updateTray() {
   if (!tray) return;
-  const until = mewndo.pausedUntil();
+  const until = await call('pausedUntil').catch(() => null);
   tray.setToolTip(until ? `Mewndo: paused until ${new Date(until).toLocaleTimeString()}` : 'Mewndo: protecting your folders');
   const run = (fn) => () => fn().catch((e) => notify('Mewndo', e.message));
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -229,7 +300,7 @@ const handlers = {
     const results = [];
     for (const root of strList(roots, 'folders') ?? []) {
       try {
-        await mewndo.protect(root, { background: true });
+        await call('protect', root, { background: true });
         results.push({ root, ok: true });
       } catch (e) {
         results.push({ root, ok: false, error: e.code === 'ENOENT' ? 'This folder does not exist.' : e.message });
@@ -239,7 +310,7 @@ const handlers = {
     return results;
   },
   async unprotect(root, keepHistory) {
-    await mewndo.unprotect(str(root, 'folder'), { keepHistory: keepHistory !== false });
+    await call('unprotect', str(root, 'folder'), { keepHistory: keepHistory !== false });
     storage.at = 0;
     stateChanged();
   },
@@ -257,22 +328,22 @@ const handlers = {
   },
   togglePause,
   async savePoints(root) {
-    return (await mewndo.journalFor(str(root, 'folder')).listSavePoints()).reverse();
+    return (await call('journal.listSavePoints', str(root, 'folder'))).reverse();
   },
   async createSavePoint(root, label) {
     const name = typeof label === 'string' ? label.trim().slice(0, 200) : '';
-    const sp = await mewndo.journalFor(str(root, 'folder')).createSavePoint({ label: name });
+    const sp = await call('journal.createSavePoint', str(root, 'folder'), { label: name });
     storage.at = 0;
     return sp;
   },
-  diff: (root, id) => mewndo.journalFor(str(root, 'folder')).diffSince(str(id, 'save point')),
+  diff: (root, id) => call('journal.diffSince', str(root, 'folder'), str(id, 'save point')),
   async plan(root, id, paths) {
-    const plan = await mewndo.journalFor(str(root, 'folder')).planRestore(str(id, 'save point'), { paths: strList(paths, 'paths') });
+    const plan = await call('journal.planRestore', str(root, 'folder'), str(id, 'save point'), { paths: strList(paths, 'paths') });
     return { ...plan, text: confirmText(plan) };
   },
   // mode 'in-place' or 'separate'. Separate asks where, then restores into a new folder there.
   async restore(root, id, paths, mode) {
-    const journal = mewndo.journalFor(str(root, 'folder'));
+    str(root, 'folder');
     let into;
     if (mode === 'separate') {
       const r = await dialog.showOpenDialog(win, { title: 'Where should the restored copy go?', properties: ['openDirectory', 'createDirectory'] });
@@ -284,26 +355,27 @@ const handlers = {
     } else if (mode !== 'in-place') {
       throw new Error('invalid mode');
     }
-    const result = await journal.restore(str(id, 'save point'), { paths: strList(paths, 'paths'), into });
+    const result = await call('journal.restore', root, str(id, 'save point'), { paths: strList(paths, 'paths'), into });
     return reportRestore(root, result);
   },
   async restores(root) {
-    const list = await mewndo.journalFor(str(root, 'folder')).listRestores();
+    const list = await call('journal.listRestores', str(root, 'folder'));
     for (const r of list) { openable.add(r.base); openable.add(r.trashRoot); }
     return list;
   },
   // Undo a restore: go back to the save point it made just before it ran.
   async undoRestore(root, restoreId) {
-    const journal = mewndo.journalFor(str(root, 'folder'));
-    const log = (await journal.listRestores()).find((r) => r.id === str(restoreId, 'restore'));
+    const log = (await call('journal.listRestores', str(root, 'folder'))).find((r) => r.id === str(restoreId, 'restore'));
     if (!log?.beforeUndoId) throw new Error('This restore cannot be undone because it did not change the folder.');
-    return reportRestore(root, await journal.restore(log.beforeUndoId));
+    return reportRestore(root, await call('journal.restore', root, log.beforeUndoId));
   },
   async openPath(p) {
-    if (typeof p !== 'string' || !(openable.has(p) || mewndo.folders().some((f) => f.root === p))) throw new Error('not allowed');
+    if (typeof p !== 'string' || !(openable.has(p) || (await call('folders')).some((f) => f.root === p))) throw new Error('not allowed');
     const err = await shell.openPath(p);
     if (err) throw new Error(err);
   },
+  // A round trip to the engine process and back; the responsiveness check uses it.
+  ping: () => call('ping'),
 };
 
 // --- Startup ---------------------------------------------------------------------------------------------------
@@ -318,24 +390,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     if (process.platform === 'win32') app.setAppUserModelId(APP_ID); // needed for notifications
     await loadSettings();
-    mewndo = createMewndo({ dataDir: path.join(app.getPath('userData'), 'data') });
-
-    let progressSentAt = 0;
-    mewndo.on('progress', (root, p) => {
-      progress.set(root, p);
-      // Scans report every file; the window needs a few updates a second.
-      if (p.phase === 'done' || Date.now() - progressSentAt > 150) {
-        progressSentAt = Date.now();
-        send('progress', { root, ...p });
-      }
-    });
-    mewndo.on('change', (root) => lastChange.set(root, Date.now()));
-    mewndo.on('savepoint', (root) => { storage.at = 0; send('savepoints-changed', root); });
-    mewndo.on('restored', (root) => send('restores-changed', root));
-    mewndo.on('retry', (root, r) => send('retry', { root, ...r }));
-    mewndo.on('folders-changed', () => { storage.at = 0; stateChanged(); });
-    mewndo.on('pruned', () => { storage.at = 0; });
-    mewndo.on('warning', (w) => { notify('Mewndo', w.message); send('toast', w.message); });
+    startEngine(); // re-protects saved folders and prunes, all inside the engine process
 
     for (const [name, fn] of Object.entries(handlers)) {
       ipcMain.handle(name, (event, ...args) => {
@@ -349,8 +404,6 @@ if (!app.requestSingleInstanceLock()) {
     updateTray();
 
     createWindow(!(process.argv.includes('--hidden') && settings.setupDone));
-    await mewndo.start(); // re-protects saved folders in the background, then prunes
-    stateChanged();
   }).catch((e) => {
     dialog.showErrorBox('Mewndo could not start', String(e?.stack ?? e));
     app.exit(1);

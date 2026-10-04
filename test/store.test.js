@@ -183,3 +183,16 @@ test('cleanTemp removes stale temp files only, never objects or recent temps', a
 test('cleanTemp on a fresh store is a no-op', async () => {
   assert.strictEqual(await createStore(path.join(tempDir(), 'data')).cleanTemp(), 0);
 });
+
+test('holdPuts makes new puts wait until released', async () => {
+  const dir = tempDir();
+  const store = createStore(path.join(dir, 'data'));
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'held');
+  const release = await store.holdPuts();
+  let done = false;
+  const pending = store.put(path.join(dir, 'a.txt')).then((h) => { done = true; return h; });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(done, false, 'put must wait while held');
+  release();
+  assert.strictEqual(await pending, sha(Buffer.from('held')));
+});

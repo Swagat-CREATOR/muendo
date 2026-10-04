@@ -17,6 +17,7 @@ async function scan(root, {
   concurrency = 4,
   hash = hashFile, // (file, realRoot); a store's put() can go here to hash and store in one read
   onProgress = () => {},
+  signal, // an AbortSignal: stops the scan between files with an AbortError
 } = {}) {
   const realRoot = await fsp.realpath(root);
   const ignored = new Set(ignore);
@@ -27,6 +28,7 @@ async function scan(root, {
 
   const dirs = [''];
   while (dirs.length) {
+    signal?.throwIfAborted();
     const dir = dirs.pop();
     let names;
     try {
@@ -74,6 +76,7 @@ async function scan(root, {
   let next = 0;
   async function worker() {
     while (next < toHash.length) {
+      signal?.throwIfAborted();
       const rel = toHash[next++];
       try {
         manifest[rel].hash = await hash(path.join(root, rel), realRoot);

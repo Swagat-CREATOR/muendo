@@ -258,3 +258,39 @@ test('stop protecting a folder, deleting its history but never its trash', async
     await assert.rejects(mewndo.unprotect(root), /not protected/);
   } finally { await mewndo.stop(); }
 });
+
+test('a folder protected while pruning runs never loses content to the sweep', async () => {
+  const { base, mewndo, journal } = await setup();
+  try {
+    // Content nothing refers to yet: the sweep would delete it.
+    const orphan = path.join(base, 'orphan.txt');
+    fs.writeFileSync(orphan, 'shared content');
+    const hash = await mewndo.store.put(orphan);
+
+    // Hold the new folder's scan right after it stores (dedups) the content and before it writes its index:
+    // the window in which pruning can't see the new reference.
+    let stored;
+    const putDone = new Promise((r) => { stored = r; });
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const realPut = mewndo.store.put;
+    mewndo.store.put = async (...args) => { const h = await realPut(...args); stored(); await gate; return h; };
+
+    const resume = await journal.pause(); // prune waits for this journal
+    const pruned = mewndo.prune();
+    const otherRoot = path.join(base, 'other');
+    fs.mkdirSync(otherRoot);
+    fs.writeFileSync(path.join(otherRoot, 'copy.txt'), 'shared content');
+    await mewndo.protect(otherRoot, { background: true });
+    await putDone;
+    resume();
+    await pruned; // sweeps while the new folder's index is not yet written
+    release();
+    while (mewndo.folders().some((f) => f.status === 'scanning')) await new Promise((r) => setTimeout(r, 20));
+    mewndo.store.put = realPut;
+
+    const other = mewndo.journals().find((j) => j.root === fs.realpathSync(otherRoot));
+    assert.strictEqual(other.getIndex()['copy.txt'].hash, hash);
+    assert.ok(await mewndo.store.has(hash), 'content referenced by the new folder must survive the prune');
+  } finally { await mewndo.stop(); }
+});

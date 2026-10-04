@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('mewndo', {
   restores: call('restores'),
   undoRestore: call('undoRestore'),
   openPath: call('openPath'),
+  ping: call('ping'),
   on(event, fn) {
     if (!EVENTS.has(event)) throw new Error(`unknown event: ${event}`);
     const listener = (_e, payload) => fn(payload);

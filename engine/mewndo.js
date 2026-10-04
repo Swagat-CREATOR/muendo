@@ -257,7 +257,7 @@ function createMewndo({
     return disk.bavail * disk.bsize;
   }
 
-  async function pruneNow(t) {
+  async function pruneNow(t, paused) {
     const { folders, sizes, refs, used: usedBefore } = await measure();
     let used = usedBefore;
     const pruned = [];
@@ -282,14 +282,28 @@ function createMewndo({
     }
 
     for (const c of pruned) await fsp.rm(c.sp.file, { force: true });
+
+    // Sweep content nothing refers to. New puts are held meanwhile, so nothing can start referring to content
+    // as it is deleted. A folder protected after this prune began wasn't paused: its scan may already refer to
+    // content that isn't in any index yet, so then the sweep waits for the next prune.
     let removedObjects = 0;
-    for (const h of sizes.keys()) {
-      if (!refs.has(h)) { await store.remove(h); removedObjects++; }
+    let sweepSkipped = null;
+    const release = await store.holdPuts();
+    try {
+      if (mewndo.journals().some((j) => !paused.includes(j))) sweepSkipped = 'a folder was added while pruning';
+      else if (paused.some((j) => j.isRestoring())) sweepSkipped = 'a restore is running';
+      else {
+        for (const h of sizes.keys()) {
+          if (!refs.has(h)) { await store.remove(h); removedObjects++; }
+        }
+      }
+    } finally {
+      release();
     }
 
     const result = {
       pruned: pruned.map(({ f, sp }) => ({ folder: f.root, id: sp.id, createdAt: sp.createdAt, trigger: sp.trigger, label: sp.label })),
-      removedObjects, usedBytes: used, budgetBytes, overBudget: used > budgetBytes,
+      removedObjects, sweepSkipped, usedBytes: used, budgetBytes, overBudget: used > budgetBytes,
     };
     if (result.overBudget) {
       warn('over-budget', `Mewndo is using ${gb(used)} of its ${gb(budgetBytes)} budget. The budget can't be met `
@@ -305,7 +319,7 @@ function createMewndo({
   // Prune save points (retention, then budget) and delete content nothing refers to anymore.
   // Journals are paused so nothing changes underneath; skipped while a restore runs.
   // ponytail: a separate-folder restore that starts mid-prune isn't paused; it reports failures if its save
-  // point was just pruned. Add a store-wide lock if that ever matters.
+  // point was just pruned (the sweep itself is skipped while any restore runs).
   async function runPrune() {
     const active = mewndo.journals();
     if (active.some((j) => j.isRestoring())) return { skipped: 'a restore is running' };
@@ -313,7 +327,7 @@ function createMewndo({
     try {
       for (const j of active) resumes.push(await j.pause());
       if (active.some((j) => j.isRestoring())) return { skipped: 'a restore is running' };
-      return await pruneNow(now());
+      return await pruneNow(now(), active);
     } finally {
       for (const resume of resumes) resume();
     }

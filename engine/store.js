@@ -101,7 +101,32 @@ function createStore(dir) {
   // Store a file and return its hash. Hashes first so already-stored content costs one read and no write;
   // new content is then hashed again while it is (maybe) gzipped into a flushed temp file and renamed.
   // ponytail: new content is read twice; fine up to the 50 MB limit, single-pass if big files get slow.
+  let gate = null; // set while pruning decides what to delete; puts wait for it
+  let inFlight = 0;
+  let idle = null; // resolves when inFlight drops to 0
+
   async function put(file, within) {
+    while (gate) await gate;
+    inFlight++;
+    try {
+      return await storeFile(file, within);
+    } finally {
+      if (--inFlight === 0) idle?.();
+    }
+  }
+
+  // Hold new puts and wait for running ones to finish; returns release(). While held, nothing new can come
+  // to refer to stored content, so pruning can safely delete what nothing refers to.
+  async function holdPuts() {
+    while (gate) await gate;
+    let release;
+    gate = new Promise((r) => { release = r; });
+    if (inFlight > 0) await new Promise((r) => { idle = r; });
+    idle = null;
+    return () => { gate = null; release(); };
+  }
+
+  async function storeFile(file, within) {
     const first = await hashFile(file, within);
     if (await has(first)) return first;
     await fsp.mkdir(tmpDir, { recursive: true });
@@ -195,7 +220,7 @@ function createStore(dir) {
   // Run at startup. Never touches objects.
   const cleanTemp = (maxAgeMs) => removeStaleTemp(tmpDir, maxAgeMs);
 
-  return { put, has, extract, copyOut, usage, objects, remove, cleanTemp };
+  return { put, holdPuts, has, extract, copyOut, usage, objects, remove, cleanTemp };
 }
 
 // Delete *.mewndo-tmp files older than maxAgeMs directly inside dir (Mewndo's own folders only).
