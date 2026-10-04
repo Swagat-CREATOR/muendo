@@ -1,9 +1,9 @@
-# Muendo
+# Mewndo
 
-Undo what AI agents did to your files. Muendo protects folders on your Windows PC, keeps every version of
+Undo what AI agents did to your files. Mewndo protects folders on your Windows PC, keeps every version of
 every file, and restores a whole folder or just some files to an earlier save point.
 
-Everything stays on your computer. See [What Muendo can and can't undo](docs/what-muendo-can-and-cant-undo.md).
+Everything stays on your computer. See [What Mewndo can and can't undo](docs/what-mewndo-can-and-cant-undo.md).
 
 ## Development
 

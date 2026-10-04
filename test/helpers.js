@@ -5,7 +5,7 @@ const { after } = require('node:test');
 
 // A fresh folder under the OS temp dir, removed when the test file finishes.
 function tempDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muendo-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mewndo-test-'));
   after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }

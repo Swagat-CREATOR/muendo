@@ -25,7 +25,7 @@ test('put returns the SHA-256 and copyOut restores byte for byte', async () => {
   const out = path.join(dir, 'out.bin');
   await store.copyOut(hash, out);
   assert.ok(fs.readFileSync(out).equals(content));
-  assert.deepStrictEqual(fs.readdirSync(dir).filter((f) => f.includes('muendo-tmp')), []);
+  assert.deepStrictEqual(fs.readdirSync(dir).filter((f) => f.includes('mewndo-tmp')), []);
 });
 
 test('identical content is stored once', async () => {
@@ -45,7 +45,7 @@ test('text is gzipped, already-compressed formats are not', async () => {
   const dir = tempDir();
   const data = path.join(dir, 'data');
   const store = createStore(data);
-  const text = 'hello muendo\n'.repeat(10000);
+  const text = 'hello mewndo\n'.repeat(10000);
   fs.writeFileSync(path.join(dir, 'notes.txt'), text);
   fs.writeFileSync(path.join(dir, 'photo.PNG'), 'pretend png bytes');
   const t = await store.put(path.join(dir, 'notes.txt'));

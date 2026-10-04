@@ -14,11 +14,11 @@ const PRECOMPRESSED = new Set([
   '.pdf', '.docx', '.xlsx', '.pptx', '.jar', '.apk',
 ]);
 
-const TEMP_SUFFIX = '.muendo-tmp';
+const TEMP_SUFFIX = '.mewndo-tmp';
 const TEMP_MAX_AGE_MS = 60 * 60 * 1000;
 
 // Error code for a file that was swapped, modified or moved out of bounds while we read it.
-const CHANGED = 'EMUENDO_CHANGED';
+const CHANGED = 'EMEWNDO_CHANGED';
 
 // O_NOFOLLOW refuses to open a symlink on Linux/macOS. Windows has none, so readStable re-checks after opening.
 const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
@@ -124,7 +124,7 @@ function createStore(dir) {
   }
 
   // Copy stored content to dest via temp file + rename. Verifies the hash. Never overwrites an existing dest:
-  // the caller moves the old file to Muendo's trash first.
+  // the caller moves the old file to Mewndo's trash first.
   // The temp file sits next to dest (not in the store's tmp folder) because rename can't cross drives.
   async function copyOut(hash, dest) {
     const src = await find(hash);
@@ -164,7 +164,7 @@ function createStore(dir) {
   return { put, has, copyOut, usage, cleanTemp };
 }
 
-// Delete *.muendo-tmp files older than maxAgeMs directly inside dir (Muendo's own folders only).
+// Delete *.mewndo-tmp files older than maxAgeMs directly inside dir (Mewndo's own folders only).
 // Returns how many were removed.
 async function removeStaleTemp(dir, maxAgeMs = TEMP_MAX_AGE_MS) {
   let names;

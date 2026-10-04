@@ -55,7 +55,7 @@ async function scan(root, {
         manifest[rel] = { type: 'directory' };
         dirs.push(rel);
       } else if (st.isFile()) {
-        if (name.endsWith(TEMP_SUFFIX)) continue; // Muendo's own in-progress restore writes
+        if (name.endsWith(TEMP_SUFFIX)) continue; // Mewndo's own in-progress restore writes
         const entry = { type: 'file', size: st.size, mtimeMs: st.mtimeMs };
         manifest[rel] = entry;
         const prev = previous[rel];

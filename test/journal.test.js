@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createJournal, createStore, hashFile } = require('../engine');
+const { createJournal, createStore, hashFile, TRIGGERS } = require('../engine');
 const { tempDir } = require('./helpers');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -81,15 +81,29 @@ test('a save point scans first, so it is accurate even before the watcher report
   await j.start();
   try {
     fs.writeFileSync(path.join(s.root, 'new.txt'), 'just written');
-    const sp = await j.createSavePoint({ label: 'checkpoint', trigger: 'agent-hook', agent: 'claude' });
+    const sp = await j.createSavePoint({ label: 'checkpoint', trigger: 'agent', agent: 'claude' });
     assert.deepStrictEqual(
       { label: sp.label, trigger: sp.trigger, agent: sp.agent },
-      { label: 'checkpoint', trigger: 'agent-hook', agent: 'claude' },
+      { label: 'checkpoint', trigger: 'agent', agent: 'claude' },
     );
     const full = await j.getSavePoint(sp.id);
     assert.strictEqual(full.index['new.txt'].hash, await hashFile(path.join(s.root, 'new.txt')));
-    await assert.rejects(j.createSavePoint({ trigger: 'whenever' }), /unknown trigger/);
     await assert.rejects(j.getSavePoint('../index'), /invalid save point id/);
+  } finally { await j.stop(); }
+});
+
+test('save point triggers are exactly the six allowed values', async () => {
+  assert.deepStrictEqual(TRIGGERS, ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo']);
+  const s = setup();
+  const j = journalFor(s);
+  await j.start();
+  try {
+    for (const trigger of TRIGGERS) assert.strictEqual((await j.createSavePoint({ trigger })).trigger, trigger);
+    assert.deepStrictEqual((await j.listSavePoints()).map((sp) => sp.trigger), TRIGGERS);
+    for (const bad of ['agent-hook', 'Manual', 'whenever', '', null, 42]) {
+      await assert.rejects(j.createSavePoint({ trigger: bad }), /unknown trigger/, String(bad));
+    }
+    assert.strictEqual((await j.listSavePoints()).length, TRIGGERS.length);
   } finally { await j.stop(); }
 });
 
@@ -181,7 +195,7 @@ test('catch-up scan on restart picks up changes made while closed', async () => 
       { path: 'docs/b.txt', type: 'deleted' },
       { path: 'new.txt', type: 'added' },
     ]);
-    // The state from before Muendo was closed is kept as a save point.
+    // The state from before Mewndo was closed is kept as a save point.
     const [sp] = await j2.listSavePoints();
     assert.strictEqual(sp.trigger, 'activity');
     assert.deepStrictEqual((await j2.getSavePoint(sp.id)).index, closedIndex);
@@ -217,7 +231,7 @@ test('two protected folders keep independent histories', async () => {
 
 test('refuses a data folder inside the protected folder', async () => {
   const s = setup();
-  const j = createJournal({ root: s.root, dataDir: path.join(s.root, 'muendo-data'), store: s.store });
+  const j = createJournal({ root: s.root, dataDir: path.join(s.root, 'mewndo-data'), store: s.store });
   await assert.rejects(j.start(), /must not be inside a protected folder/);
 });
 

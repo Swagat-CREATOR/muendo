@@ -1,6 +1,6 @@
-# Muendo rules
+# Mewndo rules
 
-Muendo is a Windows desktop app that undoes AI agents. It protects folders,
+Mewndo is a Windows desktop app that undoes AI agents. It protects folders,
 keeps every version of every file, and restores a folder or chosen files to
 an earlier save point. Real people trust it with their files: correctness
 beats features.
@@ -11,11 +11,11 @@ Stack: Electron + Node.js, plain JavaScript (CommonJS), Chokidar for watching,
 Layout: `engine/` all file logic, plain Node, never imports Electron ·
 `app/` Electron main process and windows · `test/` tests · `scripts/` dev scripts.
 
-1. Muendo's data lives in the user's app data folder, never inside a protected folder.
+1. Mewndo's data lives in the user's app data folder, never inside a protected folder.
 2. Never follow symbolic links or Windows directory junctions. Always use `lstat`
    and store a link as a link.
-3. Muendo never permanently deletes user files. Anything it removes goes into
-   Muendo's trash folder.
+3. Mewndo never permanently deletes user files. Anything it removes goes into
+   Mewndo's trash folder.
 4. Every file written during a restore goes to a temporary file first and is
    then renamed into place.
 5. Ignore `node_modules`, `.venv`, `dist`, `build` and cache folders by default,

@@ -10,7 +10,7 @@ const { watch } = require('chokidar');
 const { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE } = require('./scanner');
 const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
 
-const TRIGGERS = ['manual', 'activity', 'agent-hook', 'before-undo'];
+const TRIGGERS = ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 async function readJson(file) {
@@ -120,7 +120,7 @@ function createJournal({
     await fsp.mkdir(dataDir, { recursive: true });
     const realData = await fsp.realpath(dataDir);
     if (realData === realRoot || isInside(realData, realRoot)) {
-      throw new Error(`Muendo's data folder must not be inside a protected folder: ${realData}`);
+      throw new Error(`Mewndo's data folder must not be inside a protected folder: ${realData}`);
     }
     const dir = path.join(realData, 'folders', folderId(realRoot));
     indexFile = path.join(dir, 'index.json');
