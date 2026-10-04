@@ -9,28 +9,13 @@ const { EventEmitter } = require('node:events');
 const { watch } = require('chokidar');
 const { scan, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE } = require('./scanner');
 const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
+const { changes: diff, compare } = require('./diff');
 
 const TRIGGERS = ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 async function readJson(file) {
   try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-}
-
-// Same content as far as undo cares. mtime only matters when there is no hash (skipped files).
-function sameEntry(a, b) {
-  return a.type === b.type && a.hash === b.hash && a.target === b.target && a.size === b.size
-    && a.skipped === b.skipped && (a.hash !== undefined || a.mtimeMs === b.mtimeMs);
-}
-
-function diff(before, after) {
-  const changes = [];
-  for (const [p, e] of Object.entries(after)) {
-    if (!before[p]) changes.push({ path: p, type: 'added' });
-    else if (!sameEntry(before[p], e)) changes.push({ path: p, type: 'changed' });
-  }
-  for (const p of Object.keys(before)) if (!after[p]) changes.push({ path: p, type: 'deleted' });
-  return changes;
 }
 
 function folderId(realRoot) {
@@ -179,6 +164,14 @@ function createJournal({
   journal.setRestoring = (on) => enqueue(async () => {
     if (!on) await sync();
     restoring = on;
+  });
+
+  // What changed between a save point and the folder right now (scans first, so it's current).
+  journal.diffSince = (id) => enqueue(async () => {
+    const sp = await journal.getSavePoint(id);
+    if (!sp) throw new Error(`no such save point: ${id}`);
+    await sync();
+    return compare(sp.index, index);
   });
 
   journal.getIndex = () => index;
