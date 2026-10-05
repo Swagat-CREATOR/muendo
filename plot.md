@@ -8,8 +8,10 @@ beats features.
 Stack: Electron + Node.js, plain JavaScript (CommonJS), Chokidar for watching,
 `node:test` for tests. No UI frameworks.
 
-Layout: `engine/` all file logic, plain Node, never imports Electron ·
-`app/` Electron main process and windows · `test/` tests · `scripts/` dev scripts.
+Layout: `apps/desktop/` the Electron app, containing `engine/` all file logic,
+plain Node, never imports Electron · `app/` Electron main process and windows ·
+`test/` tests · `scripts/` dev scripts. Also `core/` Rust service · `cloud/`
+Cloudflare Workers · `notebooks/` Kaggle notebooks · `docs/`. Run npm scripts from the root.
 
 1. Mewndo's data lives in the user's app data folder, never inside a protected folder.
 2. Never follow symbolic links or Windows directory junctions. Always use `lstat`
