@@ -75,13 +75,14 @@ function createJournal({
   dataDir,
   store,
   ignore = DEFAULT_IGNORE,
+  ignorePatterns = [], // extra names or * patterns to leave out, for this folder (settings)
   maxFileSize = DEFAULT_MAX_FILE_SIZE,
   concurrency,
   quietMs = 30_000, // an activity save point is made when changes start after this much quiet
   debounceMs = 300, // batch watcher events into one sync
   writeFinishMs = 2000, // a file must stop changing this long before it is captured
   watcher: watchMode = process.platform === 'win32' || process.platform === 'darwin' ? 'native' : 'chokidar',
-  burst: burstOptions, // thresholds for burst alerts, see burst.js
+  burst: burstOptions, // thresholds for burst alerts (an object read on every check, so settings apply live)
   likelyAgent = () => null, // the AI agent most likely making changes right now, if any (see agents.js)
   maxWaitMs = MAX_WAIT_MS, // under constant change, sync at least this often (shorter in tests)
 }) {
@@ -98,7 +99,7 @@ function createJournal({
   let catchingUp = false; // the scan at start: those changes happened while Mewndo wasn't watching
   let watching = false; // false while stopped or paused: changes then don't count toward burst alerts
   let savedJson = null; // the index as of the newest save point made since start, for onlyIfChanged
-  const burst = createBurstDetector(burstOptions);
+  const burst = createBurstDetector(burstOptions ?? {});
   let queue = Promise.resolve();
 
   // All work on the index runs one task at a time.
@@ -117,7 +118,7 @@ function createJournal({
   // they may still be being written (used by background syncs with the native watcher, see schedule).
   async function sync({ settle = false } = {}) {
     const next = await scan(realRoot, {
-      previous: index ?? {}, ignore, maxFileSize, concurrency, signal: scanAbort.signal,
+      previous: index ?? {}, ignore, ignorePatterns, maxFileSize, concurrency, signal: scanAbort.signal,
       settleMs: settle ? writeFinishMs : 0,
       hash: store.put,
       onProgress: (p) => journal.emit('progress', p),
@@ -301,7 +302,18 @@ function createJournal({
   journal.isRestoring = () => isRestoreRunning(journal);
 
   journal.store = store;
-  journal.scanOptions = { ignore, maxFileSize, concurrency };
+  // What a fresh scan of this folder uses (restore verification); always the current settings.
+  Object.defineProperty(journal, 'scanOptions', { get: () => ({ ignore, ignorePatterns, maxFileSize, concurrency }) });
+
+  // New per-folder settings: a running journal restarts (stop, then start with a catch-up scan), so files the
+  // new settings include are captured and ones they leave out drop out of the index.
+  journal.reconfigure = async ({ ignorePatterns: patterns, maxFileSize: size } = {}) => {
+    const running = !!closeWatcher;
+    if (running) await journal.stop();
+    if (patterns) ignorePatterns = patterns;
+    if (size) maxFileSize = size;
+    if (running) await journal.start();
+  };
   journal.planRestore = (id, opts) => planRestore(journal, id, opts);
   journal.restore = (id, opts) => restore(journal, id, opts);
   journal.listRestores = () => listRestores(journal);

@@ -52,14 +52,17 @@ test('native watcher: captures edits, new files in new folders, and deletions', 
 });
 
 test('native watcher: waits for writes to settle, so a half-written file is not captured', async () => {
-  const { root, journal } = await nativeJournal({ 'a.txt': 'A' });
+  // An 800 ms settle time against 100 ms pauses between writes: even on a busy machine (tests run in parallel)
+  // a pause never looks like the end of writing.
+  const { root, journal } = await nativeJournal({ 'a.txt': 'A' }, { writeFinishMs: 800 });
   const syncs = [];
   journal.on('change', (c) => syncs.push(c));
   try {
     const fd = fs.openSync(path.join(root, 'big.txt'), 'w');
     for (let i = 0; i < 5; i++) { fs.writeSync(fd, `part ${i}\n`); await sleep(100); } // writing for ~500 ms
     fs.closeSync(fd);
-    await sleep(800);
+    for (let i = 0; i < 40 && !syncs.length; i++) await sleep(100);
+    await sleep(500); // a second, wrong sync would show up by now
     assert.deepStrictEqual(syncs, [{ path: 'big.txt', type: 'added' }], 'one sync, after writing finished');
     assert.strictEqual(journal.getIndex()['big.txt'].size, 35, 'the finished file, not part of it');
   } finally { await journal.stop(); }

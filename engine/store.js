@@ -248,9 +248,22 @@ async function writeFileAtomic(file, text, mode) {
   const tmp = `${file}.${crypto.randomUUID()}${TEMP_SUFFIX}`;
   try {
     await fsp.writeFile(tmp, text, { flag: 'wx', flush: true, ...(mode ? { mode } : {}) });
-    await fsp.rename(tmp, file);
+    await renameReplacing(tmp, file);
   } finally {
     await fsp.rm(tmp, { force: true });
+  }
+}
+
+// Windows won't replace a file another program has open at that moment, which antivirus and the search indexer do
+// briefly with files that were just written. Try again for up to about 2 s before giving up.
+async function renameReplacing(from, to) {
+  for (let delay = 10; ; delay *= 2) {
+    try {
+      return await fsp.rename(from, to);
+    } catch (e) {
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code) || delay > 1000) throw e;
+      await new Promise((r) => setTimeout(r, delay));
+    }
   }
 }
 

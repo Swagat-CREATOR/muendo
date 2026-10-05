@@ -216,3 +216,19 @@ test('holdPuts makes new puts wait until released', async () => {
   release();
   assert.strictEqual(await pending, sha(Buffer.from('held')));
 });
+
+// Windows only: hold the target file open the way antivirus does (no sharing), release it after 300 ms.
+test('writeFileAtomic waits for a file another program briefly holds open (Windows)', { skip: process.platform !== 'win32' }, async () => {
+  const { spawn } = require('node:child_process');
+  const { writeFileAtomic } = require('../engine');
+  const dir = tempDir();
+  const file = path.join(dir, 'index.json');
+  fs.writeFileSync(file, 'old');
+  const ps = spawn('powershell.exe', ['-NoProfile', '-Command',
+    `$f = [System.IO.File]::Open('${file}', 'Open', 'Read', 'None'); 'locked'; Start-Sleep -Milliseconds 300; $f.Close()`]);
+  await new Promise((resolve) => ps.stdout.once('data', resolve));
+  await writeFileAtomic(file, 'new');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), 'new');
+  await new Promise((resolve) => (ps.exitCode !== null ? resolve() : ps.once('exit', resolve)));
+  assert.deepStrictEqual(fs.readdirSync(dir), ['index.json'], 'no temp file left behind');
+});

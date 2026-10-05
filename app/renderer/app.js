@@ -197,6 +197,7 @@ function renderHeader() {
 }
 
 $('pause').onclick = guard(async () => { await api.togglePause(); await refresh(); });
+$('open-settings').onclick = guard(() => api.openSettings());
 $('login').onchange = guard(async (e) => api.setOpenAtLogin(e.target.checked));
 
 $('add-folder').onclick = guard(async () => {

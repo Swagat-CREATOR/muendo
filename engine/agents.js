@@ -48,6 +48,13 @@ function validAgents(json) {
   return list.map((a) => ({ name: a.name.trim(), names: strings(a.names), commandLine: strings(a.commandLine), notCommandLine: strings(a.notCommandLine) }));
 }
 
+// Save a new agent list (validated first; throws with a plain message if it isn't usable).
+async function saveAgents(file, agents) {
+  const list = validAgents({ agents });
+  await writeFileAtomic(file, `${JSON.stringify({ _help: HELP, agents: list }, null, 2)}\n`);
+  return list;
+}
+
 // The agent list; created with the defaults the first time. A file the user broke is never overwritten: the
 // caller keeps using the last good list and tells the user.
 async function loadAgents(file) {
@@ -179,4 +186,4 @@ function createAgentWatcher({ agentsFile, intervalMs = 5000, listProcesses, onCh
   };
 }
 
-module.exports = { createAgentWatcher, matchAgents, loadAgents, DEFAULT_AGENTS };
+module.exports = { createAgentWatcher, matchAgents, loadAgents, saveAgents, DEFAULT_AGENTS };

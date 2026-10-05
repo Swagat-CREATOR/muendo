@@ -10,6 +10,14 @@ const DEFAULT_IGNORE = [
 ];
 const DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024;
 
+// name -> true when it matches one of the patterns: a whole name, with * for any run of characters. Case is
+// ignored on Windows and macOS, where file names are case-insensitive.
+function patternMatcher(patterns) {
+  const flags = process.platform === 'linux' ? '' : 'i';
+  const res = patterns.filter(Boolean).map((p) => new RegExp(`^${p.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, flags));
+  return (name) => res.some((re) => re.test(name));
+}
+
 // An online-only cloud file (OneDrive "Files On-Demand" and similar): it has a size but takes no disk space.
 // Opening it would download it, so it is recorded as skipped instead. Tiny files can live inside the file table
 // with no space of their own, hence the 4 KB floor.
@@ -18,7 +26,8 @@ const isOnlineOnly = (st) => st.size > 4096 && st.blocks === 0;
 
 async function scan(root, {
   previous = {},
-  ignore = DEFAULT_IGNORE,
+  ignore = DEFAULT_IGNORE, // folder names
+  ignorePatterns = [], // extra: file or folder names, * matches anything (e.g. "*.log", "tmp")
   maxFileSize = DEFAULT_MAX_FILE_SIZE,
   concurrency = 4,
   hash = hashFile, // (file, realRoot); a store's put() can go here to hash and store in one read
@@ -32,6 +41,7 @@ async function scan(root, {
   const scanStart = Date.now();
   const realRoot = await fsp.realpath(root);
   const ignored = new Set(ignore);
+  const extra = patternMatcher(ignorePatterns);
   const manifest = {};
   const toHash = [];
   const progress = { phase: 'walking', found: 0, toHash: 0, hashed: 0 };
@@ -51,6 +61,7 @@ async function scan(root, {
       continue;
     }
     for (const name of names) {
+      if (extra(name)) continue;
       const rel = dir ? `${dir}/${name}` : name;
       const abs = path.join(root, rel);
       let st;
@@ -111,14 +122,16 @@ async function scan(root, {
 
 // Total size of the files in a folder, with the scan's ignore rules and never entering links. Stops early
 // once over stopAboveBytes. Returns { bytes, files, over }.
-async function folderSize(root, { ignore = DEFAULT_IGNORE, stopAboveBytes = Infinity, onProgress = () => {} } = {}) {
+async function folderSize(root, { ignore = DEFAULT_IGNORE, ignorePatterns = [], stopAboveBytes = Infinity, onProgress = () => {} } = {}) {
   const ignored = new Set(ignore);
+  const extra = patternMatcher(ignorePatterns);
   let bytes = 0;
   let files = 0;
   const dirs = [root];
   while (dirs.length) {
     const dir = dirs.pop();
     for (const name of await fsp.readdir(dir).catch(() => [])) {
+      if (extra(name)) continue;
       const st = await fsp.lstat(path.join(dir, name)).catch(() => null);
       if (!st || st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
@@ -134,4 +147,4 @@ async function folderSize(root, { ignore = DEFAULT_IGNORE, stopAboveBytes = Infi
   return { bytes, files, over: false };
 }
 
-module.exports = { scan, folderSize, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE };
+module.exports = { scan, folderSize, patternMatcher, DEFAULT_IGNORE, DEFAULT_MAX_FILE_SIZE };

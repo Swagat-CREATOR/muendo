@@ -11,6 +11,8 @@ const {
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 
 const APP_ID = 'com.mewndo.app';
+const GB = 1024 ** 3;
+const dataDir = () => path.join(app.getPath('userData'), 'data');
 const HOUR = 60 * 60 * 1000;
 
 // Dev and testing: a throwaway profile instead of the real one.
@@ -104,7 +106,7 @@ function startEngine() {
     notify('Mewndo', 'The Mewndo engine stopped unexpectedly and is restarting.');
     setTimeout(startEngine, 1000);
   });
-  call('start', { dataDir: path.join(app.getPath('userData'), 'data') })
+  call('start', { dataDir: dataDir(), budgetBytes: settings.budgetGB ? settings.budgetGB * GB : undefined, burst: settings.burst })
     .then(stateChanged, (e) => notify('Mewndo could not start protecting', e.message));
 }
 
@@ -207,7 +209,6 @@ async function createSavePointEverywhere() {
 
 // --- One-key undo (Ctrl+Alt+Z, and the tray's Undo Last) --------------------------------------------------
 
-const DEFAULT_UNDO_SHORTCUT = 'Control+Alt+Z';
 let undoWin = null;
 let shortcutProblem = null; // shown in the main window when the shortcut couldn't be registered
 
@@ -267,26 +268,50 @@ function openUndo(root) {
   undoWin.focus();
 }
 
-// Ctrl+Alt+Z (undo) and Ctrl+Alt+B (brief) by default. If another app already has one, say so; a setting to
-// pick another comes later.
-function registerShortcuts() {
-  const shortcuts = [
-    { accel: settings.undoShortcut ?? DEFAULT_UNDO_SHORTCUT, open: () => openUndo(), what: 'one-key undo', instead: 'Undo Last in the tray menu' },
-    { accel: settings.briefShortcut ?? DEFAULT_BRIEF_SHORTCUT, open: () => openBrief(), what: 'the brief helper', instead: 'Write a Brief in the tray menu' },
-  ];
+// --- Global shortcuts: Ctrl+Alt+Z (undo) and Ctrl+Alt+B (brief) by default, changeable in Settings -----------
+
+const SHORTCUTS = {
+  undo: { setting: 'undoShortcut', fallback: 'Control+Alt+Z', open: () => openUndo(), what: 'one-key undo', instead: 'Undo Last in the tray menu' },
+  brief: { setting: 'briefShortcut', fallback: 'Control+Alt+B', open: () => openBrief(), what: 'the brief helper', instead: 'Write a Brief in the tray menu' },
+};
+const registered = {}; // which -> accelerator Mewndo holds right now
+let shortcutTest = null; // { accel, pressed } while Settings tests a shortcut
+const shortcutFor = (which) => settings[SHORTCUTS[which].setting] ?? SHORTCUTS[which].fallback;
+
+function tryRegister(accel, fn) {
+  try { return globalShortcut.register(accel, fn); } catch { return false; }
+}
+function shortcutHandler(which, accel) {
+  return () => (shortcutTest?.accel === accel ? shortcutTest.pressed() : SHORTCUTS[which].open());
+}
+function unregisterShortcuts() {
+  for (const [which, accel] of Object.entries(registered)) { globalShortcut.unregister(accel); delete registered[which]; }
+}
+
+// (Re)register both. If another app already has one, say so in the main window and a notification.
+function registerShortcuts({ quiet = false } = {}) {
+  unregisterShortcuts();
   const problems = [];
-  for (const { accel, open, what, instead } of shortcuts) {
-    let ok = false;
-    try { ok = globalShortcut.register(accel, open); } catch { ok = false; }
-    if (!ok) problems.push(`${prettyShortcut(accel)} is already used by another app, so ${what} has no shortcut; use ${instead}.`);
+  for (const [which, def] of Object.entries(SHORTCUTS)) {
+    const accel = shortcutFor(which);
+    if (tryRegister(accel, shortcutHandler(which, accel))) registered[which] = accel;
+    else problems.push(`${prettyShortcut(accel)} is already used by another app, so ${def.what} has no shortcut; use ${def.instead}.`);
   }
-  shortcutProblem = problems.length ? `${problems.join(' ')} You'll be able to choose different shortcuts in Settings.` : null;
-  if (shortcutProblem) notify('Mewndo', shortcutProblem);
+  shortcutProblem = problems.length ? `${problems.join(' ')} You can choose different shortcuts in Settings.` : null;
+  if (shortcutProblem && !quiet) notify('Mewndo', shortcutProblem);
+  send('state-changed');
+}
+
+// "Control+Alt+U" style, with Control, Alt or Super, and a letter, digit, F-key or Space.
+const ACCEL = /^(?:(?:Control|Alt|Shift|Super)\+)+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Space)$/;
+function checkAccel(accel) {
+  if (typeof accel !== 'string' || !ACCEL.test(accel) || !/Control|Alt|Super/.test(accel)) {
+    throw new Error('Use Ctrl, Alt or the Windows key with a letter, number, F-key or Space.');
+  }
 }
 
 // --- The brief helper (Ctrl+Alt+B) ----------------------------------------------------------------------------
 
-const DEFAULT_BRIEF_SHORTCUT = 'Control+Alt+B';
 let briefWin = null;
 
 // Every protected folder, most recent activity first.
@@ -463,6 +488,7 @@ async function updateTray() {
     { label: 'Open Window', click: showWindow },
     { label: 'Create Save Point', click: run(createSavePointEverywhere) },
     { label: 'Write a Brief', click: () => openBrief() },
+    { label: 'Settings…', click: () => openSettings() },
     { label: 'Undo Last', click: () => openUndo() },
     { label: until ? 'Resume Protection' : 'Pause Protection for 1 Hour', click: run(togglePause) },
     { type: 'separator' },
@@ -577,8 +603,157 @@ const handlers = {
     return { rules: safetyRules(), defaults: DEFAULT_SAFETY_RULES, edited: safetyRules() !== DEFAULT_SAFETY_RULES };
   },
   claudeHooksInstall: () => call('claudeHooksInstall'),
+  openSettings: () => openSettings(),
   // A round trip to the engine process and back; the responsiveness check uses it.
   ping: () => call('ping'),
+};
+
+// --- Settings window --------------------------------------------------------------------------------------------
+
+let settingsWin = null;
+
+function openSettings() {
+  if (!settingsWin || settingsWin.isDestroyed()) {
+    settingsWin = new BrowserWindow({
+      width: 820, height: 860, minWidth: 600, minHeight: 500, show: false, title: 'Mewndo settings', icon: icon(),
+      webPreferences: { preload: path.join(__dirname, 'settings-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    settingsWin.removeMenu();
+    settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+    settingsWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    settingsWin.webContents.on('will-navigate', (e) => e.preventDefault());
+    settingsWin.once('ready-to-show', () => settingsWin.show());
+    settingsWin.on('closed', () => { settingsWin = null; if (!Object.keys(registered).length) registerShortcuts({ quiet: true }); });
+  } else {
+    settingsWin.show();
+    settingsWin.focus();
+  }
+}
+
+const BURST = { maxDeleted: 20, maxChanged: 50 };
+
+async function allSettings() {
+  const [config, folders, agents, report] = await Promise.all([
+    call('config'), call('folderSettings'), call('agentList'), call('storageReport').catch(() => null),
+  ]);
+  return {
+    shortcuts: Object.fromEntries(Object.keys(SHORTCUTS).map((w) => [w, { accel: shortcutFor(w), fallback: SHORTCUTS[w].fallback, working: registered[w] === shortcutFor(w) }])),
+    burst: config.burst, burstDefaults: BURST,
+    budgetGB: Math.round((config.budgetBytes / GB) * 10) / 10,
+    usage: report && { usedBytes: report.usedBytes, trashBytes: report.trashBytes, freeDiskBytes: report.freeDiskBytes },
+    folders: folders.map((f) => ({ ...f, name: folderName(f.root) })),
+    agents,
+    safetyRules: safetyRules(), safetyRulesDefault: DEFAULT_SAFETY_RULES,
+    openAtLogin: settings.openAtLogin, loginSupported: process.platform !== 'linux',
+    dataDir: dataDir(),
+  };
+}
+
+const settingsHandlers = {
+  getSettings: allSettings,
+
+  // Typing a new shortcut shouldn't fire the old ones; they come back when capture ends (or Settings closes).
+  suspendShortcuts() { unregisterShortcuts(); },
+  resumeShortcuts() { if (!Object.keys(registered).length) registerShortcuts({ quiet: true }); },
+
+  // Check for conflicts: the other Mewndo shortcut, then whether Windows lets Mewndo have it.
+  async setShortcut(which, accel) {
+    if (!SHORTCUTS[which]) throw new Error('unknown shortcut');
+    checkAccel(accel);
+    const other = Object.keys(SHORTCUTS).find((w) => w !== which && shortcutFor(w) === accel);
+    if (other) throw new Error(`${prettyShortcut(accel)} is already Mewndo's shortcut for ${SHORTCUTS[other].what}.`);
+    unregisterShortcuts();
+    const free = tryRegister(accel, () => {});
+    if (free) globalShortcut.unregister(accel); // only release what this check registered
+    if (!free) {
+      registerShortcuts({ quiet: true });
+      throw new Error(`${prettyShortcut(accel)} is already used by another app. Choose another.`);
+    }
+    if (accel === SHORTCUTS[which].fallback) delete settings[SHORTCUTS[which].setting];
+    else settings[SHORTCUTS[which].setting] = accel;
+    await saveSettings();
+    registerShortcuts({ quiet: true });
+    return allSettings();
+  },
+
+  // Registered isn't proof: another program can still intercept the keys first. Wait up to 10 s for a press.
+  async testShortcut(accel) {
+    checkAccel(accel);
+    const ours = Object.values(registered).includes(accel);
+    if (!ours && !tryRegister(accel, () => shortcutTest?.pressed())) return { ok: false, reason: 'taken' };
+    const pressed = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), 10_000);
+      shortcutTest = { accel, pressed: () => { clearTimeout(timer); resolve(true); } };
+    });
+    shortcutTest = null;
+    if (!ours) globalShortcut.unregister(accel);
+    return { ok: pressed, reason: pressed ? null : 'not-delivered' };
+  },
+
+  async setBurst(burst) {
+    const result = await call('configure', { burst });
+    settings.burst = result.burst;
+    await saveSettings();
+    return allSettings();
+  },
+
+  async setBudget(gb) {
+    if (!Number.isFinite(gb)) throw new Error('Enter the budget in GB.');
+    await call('configure', { budgetBytes: gb * GB });
+    settings.budgetGB = gb;
+    await saveSettings();
+    storage.at = 0;
+    return allSettings();
+  },
+
+  async setFolder(root, folder) {
+    await call('setFolderSettings', root, folder);
+    storage.at = 0;
+    return allSettings();
+  },
+
+  async setAgents(list) {
+    await call('setAgentList', list);
+    return allSettings();
+  },
+
+  async setRules(text) {
+    if (typeof text !== 'string' || text.length > 10_000) throw new Error('invalid rules');
+    settings.safetyRules = text.trim() ? text : undefined;
+    await saveSettings();
+    return allSettings();
+  },
+
+  async setOpenAtLogin(on) {
+    settings.openAtLogin = on === true;
+    await saveSettings();
+    applyOpenAtLogin();
+    send('state-changed');
+    return allSettings();
+  },
+
+  async openDataFolder() {
+    const err = await shell.openPath(dataDir());
+    if (err) throw new Error(err);
+  },
+
+  // Everything back to how Mewndo comes: shortcuts, alerts, budget, agents, every folder's settings, safety rules,
+  // start at login. Protected folders and their history stay.
+  async resetAll() {
+    for (const key of ['undoShortcut', 'briefShortcut', 'safetyRules', 'burst', 'budgetGB']) delete settings[key];
+    settings.openAtLogin = true;
+    await saveSettings();
+    applyOpenAtLogin();
+    registerShortcuts({ quiet: true });
+    await call('configure', { burst: BURST, budgetBytes: 10 * GB });
+    await call('setAgentList', null);
+    for (const f of await call('folderSettings')) {
+      await call('setFolderSettings', f.root, { retentionDays: 30, extraIgnore: [], maxFileSizeMB: 50 });
+    }
+    storage.at = 0;
+    send('state-changed');
+    return allSettings();
+  },
 };
 
 // --- Startup ---------------------------------------------------------------------------------------------------
@@ -614,6 +789,12 @@ if (!app.requestSingleInstanceLock()) {
       });
     }
     registerShortcuts();
+    for (const [name, fn] of Object.entries(settingsHandlers)) {
+      ipcMain.handle(`settings:${name}`, (event, ...args) => { // own prefix: names can't clash with the main window's
+        if (event.sender !== settingsWin?.webContents) throw new Error('unknown sender');
+        return fn(...args);
+      });
+    }
     app.on('will-quit', () => globalShortcut.unregisterAll());
 
     tray = new Tray(icon().resize({ width: 16, height: 16 }));

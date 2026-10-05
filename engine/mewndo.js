@@ -10,13 +10,16 @@ const { EventEmitter } = require('node:events');
 const { createStore, writeFileAtomic, isInside } = require('./store');
 const { createJournal, folderId } = require('./journal');
 const { folderSize, DEFAULT_IGNORE } = require('./scanner');
-const { createAgentWatcher } = require('./agents');
+const { createAgentWatcher, loadAgents, saveAgents, DEFAULT_AGENTS } = require('./agents');
+const { BURST_DEFAULTS } = require('./burst');
 const { startHookServer } = require('./hook-server');
 
 const FORWARDED = ['progress', 'savepoint', 'restored', 'retry', 'change'];
 
 const DAY = 24 * 60 * 60 * 1000;
 const GB = 1024 ** 3;
+const MB = 1024 ** 2;
+const DEFAULT_MAX_FILE_MB = 50;
 
 const gb = (bytes) => `${(bytes / GB).toFixed(1)} GB`;
 const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
@@ -70,6 +73,7 @@ function trashedAt(name) {
 function createMewndo({
   dataDir,
   budgetBytes = 10 * GB,
+  burst = {}, // { maxDeleted, maxChanged }: burst alert thresholds (see burst.js); changeable with configure()
   lowDiskBytes = 2 * GB,
   pruneEveryMs = DAY,
   maxFolderBytes = 20 * GB, // larger folders are refused
@@ -88,6 +92,8 @@ function createMewndo({
   let pausedUntil = null;
   let resumeTimer = null;
   const ready = new Map(); // root -> resolves when its first or catch-up scan is over
+  // Shared by every journal and read on every check, so configure() changes alerts at once.
+  const burstLimits = { ...BURST_DEFAULTS, ...journalOptions.burst, ...burst };
   const runningAgents = new Map(); // agent name -> since (ms)
   let agentWatcher = null;
   let agentTimer = null;
@@ -149,8 +155,13 @@ function createMewndo({
     const real = await mewndo.checkFolder(root, { resuming });
     // Remember it before the first scan, so a restart mid-scan still protects it.
     const dir = path.join(await realData(), 'folders', folderId(real));
-    await writeFileAtomic(settingsFile(dir), JSON.stringify({ root: real, retentionDays, protected: true }));
-    const journal = createJournal({ ...journalOptions, root: real, dataDir, store, likelyAgent });
+    const saved = (await readJson(settingsFile(dir))) ?? {}; // keeps this folder's own settings
+    const folder = { ...saved, root: real, retentionDays: saved.retentionDays ?? retentionDays, protected: true };
+    await writeFileAtomic(settingsFile(dir), JSON.stringify(folder));
+    const journal = createJournal({
+      ...journalOptions, root: real, dataDir, store, likelyAgent, burst: burstLimits,
+      ...folderScanOptions(folder),
+    });
     for (const ev of FORWARDED) journal.on(ev, (payload) => mewndo.emit(ev, real, payload));
     journal.on('burst', (payload) => { if (!pausedUntil) mewndo.emit('burst', real, payload); }); // not while paused
     journal.on('warning', (e) => warn('journal', e.message, { folder: real }));
@@ -159,7 +170,7 @@ function createMewndo({
     changed();
     const started = journal.start().then(() => journal, async (e) => {
       journals.delete(real);
-      await writeFileAtomic(settingsFile(dir), JSON.stringify({ root: real, retentionDays, protected: false }));
+      await writeFileAtomic(settingsFile(dir), JSON.stringify({ ...folder, protected: false }));
       throw e;
     }).finally(() => { starting.delete(real); changed(); });
     ready.set(real, started.then(() => {}, () => {}));
@@ -192,6 +203,66 @@ function createMewndo({
   };
 
   mewndo.journals = () => [...journals.values()];
+
+  // --- Settings ---------------------------------------------------------------------------------------------------
+
+  // A folder's own scan settings (from its settings.json), as journal options.
+  function folderScanOptions(folder) {
+    const opts = { ignorePatterns: Array.isArray(folder.extraIgnore) ? folder.extraIgnore : [] };
+    if (Number.isFinite(folder.maxFileSizeMB) && journalOptions.maxFileSize === undefined) opts.maxFileSize = folder.maxFileSizeMB * MB;
+    return opts;
+  }
+
+  // Burst thresholds and the storage budget, applied at once (the budget at the next cleanup).
+  mewndo.configure = ({ burst: b, budgetBytes: budget } = {}) => {
+    if (b) {
+      for (const k of ['maxDeleted', 'maxChanged']) {
+        if (b[k] === undefined) continue;
+        if (!Number.isInteger(b[k]) || b[k] < 1 || b[k] > 1_000_000) throw new Error(`${k} must be a whole number from 1 to 1,000,000`);
+        burstLimits[k] = b[k];
+      }
+    }
+    if (budget !== undefined) {
+      if (!Number.isFinite(budget) || budget < 100 * MB) throw new Error('The storage budget must be at least 0.1 GB');
+      budgetBytes = budget;
+    }
+    return mewndo.config();
+  };
+  mewndo.config = () => ({ burst: { maxDeleted: burstLimits.maxDeleted, maxChanged: burstLimits.maxChanged }, budgetBytes });
+
+  // Per-folder settings of every protected folder: [{ root, retentionDays, extraIgnore, maxFileSizeMB }].
+  mewndo.folderSettings = async () => {
+    const out = [];
+    for (const root of journals.keys()) {
+      const s = (await readJson(settingsFile(path.join(await realData(), 'folders', folderId(root))))) ?? {};
+      out.push({ root, retentionDays: s.retentionDays ?? 30, extraIgnore: s.extraIgnore ?? [], maxFileSizeMB: s.maxFileSizeMB ?? DEFAULT_MAX_FILE_MB });
+    }
+    return out;
+  };
+
+  // Change a folder's settings. Ignore patterns and the size limit apply at once: the folder's journal restarts
+  // and rescans. Retention applies at the next cleanup.
+  mewndo.setFolderSettings = async (root, { retentionDays, extraIgnore, maxFileSizeMB }) => {
+    const key = [...journals.keys()].find((r) => samePath(r, root));
+    if (!key) throw new Error(`not a protected folder: ${root}`);
+    if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) throw new Error('Retention must be 1 to 3,650 days');
+    if (!Number.isFinite(maxFileSizeMB) || maxFileSizeMB < 1 || maxFileSizeMB > 10_240) throw new Error('The file size limit must be 1 to 10,240 MB');
+    if (!Array.isArray(extraIgnore) || extraIgnore.length > 200
+      || !extraIgnore.every((p) => typeof p === 'string' && p.trim() && p.length <= 200 && !/[\\/]/.test(p))) {
+      throw new Error('Ignore patterns are file or folder names (no slashes), with * for any characters');
+    }
+    const patterns = [...new Set(extraIgnore.map((p) => p.trim()))];
+    const file = settingsFile(path.join(await realData(), 'folders', folderId(key)));
+    const saved = (await readJson(file)) ?? {};
+    await writeFileAtomic(file, JSON.stringify({ ...saved, root: key, retentionDays, extraIgnore: patterns, maxFileSizeMB }));
+    await journals.get(key).reconfigure({ ignorePatterns: patterns, maxFileSize: maxFileSizeMB * MB });
+    return { root: key, retentionDays, extraIgnore: patterns, maxFileSizeMB };
+  };
+
+  // The AI agent list (agents.json). null resets it to the defaults. Agent checks re-read it within seconds.
+  const agentsFile = () => path.join(dataDir, 'agents.json');
+  mewndo.agentList = () => loadAgents(agentsFile());
+  mewndo.setAgentList = (list) => saveAgents(agentsFile(), list ?? DEFAULT_AGENTS);
 
   // Protected folders for display: [{ root, status: scanning|restoring|paused|protected, files, lastChangeAt }].
   mewndo.folders = () => [...journals].map(([root, j]) => ({

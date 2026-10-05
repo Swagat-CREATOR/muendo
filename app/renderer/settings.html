@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <title>Mewndo settings</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="settings">
+  <h1>Settings</h1>
+  <p class="muted">Changes apply right away, no restart needed.</p>
+
+  <section>
+    <h2>Keyboard shortcuts</h2>
+    <p class="muted">Click a box and press the keys you want. Test checks that the keys really reach Mewndo: another program can
+      catch them first even when Windows says they're free.</p>
+    <div id="shortcuts"></div>
+  </section>
+
+  <section>
+    <h2>Burst alerts</h2>
+    <p class="muted">Warn me when, within one minute, in one protected folder:</p>
+    <div class="row">
+      <label class="inline"><input id="max-deleted" type="number" min="1" step="1"> or more files are deleted</label>
+      <label class="inline"><input id="max-changed" type="number" min="1" step="1"> or more files change in any way</label>
+      <button id="save-burst">Save</button>
+    </div>
+    <p id="burst-status" role="status"></p>
+  </section>
+
+  <section>
+    <h2>Storage</h2>
+    <p id="usage"></p>
+    <div class="row">
+      <label class="inline">Budget for history: <input id="budget" type="number" min="0.1" step="0.5"> GB</label>
+      <button id="save-budget">Save</button>
+    </div>
+    <p class="muted">When history passes the budget, the oldest automatic save points are removed first, at the daily cleanup.
+      Manual, brief and before-undo save points are kept for each folder's whole retention period.</p>
+    <p id="budget-status" role="status"></p>
+  </section>
+
+  <section>
+    <h2>Protected folders</h2>
+    <div id="folders"></div>
+  </section>
+
+  <section>
+    <h2>AI agents</h2>
+    <p class="muted">A running program counts as an agent when its file name is in "process names", or its path or command line
+      contains a text in "command line contains", and nothing in "but not". Separate several with commas.</p>
+    <table id="agents">
+      <thead><tr><th>Name</th><th>Process names</th><th>Command line contains</th><th>But not</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row">
+      <button id="add-agent">Add an agent</button>
+      <button id="save-agents" class="primary">Save agents</button>
+    </div>
+    <p id="agents-status" role="status"></p>
+  </section>
+
+  <section>
+    <h2>Brief safety rules</h2>
+    <p class="muted">These follow your task under "Safety rules from Mewndo:". <span class="mono">{folder}</span> becomes the folder's full path.</p>
+    <textarea id="rules" rows="8"></textarea>
+    <div class="row"><button id="save-rules">Save</button></div>
+    <p id="rules-status" role="status"></p>
+  </section>
+
+  <section>
+    <h2>General</h2>
+    <label id="login-wrap"><input type="checkbox" id="login"> Start Mewndo when I sign in</label>
+    <div class="row">
+      <button id="open-data">Open Mewndo's data folder</button>
+      <span id="data-dir" class="muted mono"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Reset</h2>
+    <p class="muted">Puts every setting on this page back to how Mewndo comes. Your protected folders and their history stay.</p>
+    <button id="reset" class="danger">Reset all settings to the defaults…</button>
+    <p id="reset-status" role="status"></p>
+  </section>
+
+  <dialog id="reset-dialog">
+    <form method="dialog">
+      <h2>Reset all settings?</h2>
+      <p>Shortcuts, burst alerts, storage budget, every folder's settings, the agent list, the brief safety rules and start at
+        sign-in go back to the defaults. Protected folders and their history stay.</p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Reset</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="settings.js"></script>
+</body>
+</html>

@@ -10,6 +10,7 @@ let mewndo = null;
 // Engine methods the main process may call. 'journal.X' calls journal X on the folder given as first argument.
 const MEWNDO = new Set([
   'unprotect', 'folders', 'pausedUntil', 'pauseProtection', 'resumeProtection', 'storageReport', 'prune', 'agents', 'hookServerProblem',
+  'configure', 'config', 'folderSettings', 'setFolderSettings', 'agentList', 'setAgentList',
 ]);
 const JOURNAL = new Set(['listSavePoints', 'createSavePoint', 'diffSince', 'planRestore', 'restore', 'listRestores']);
 

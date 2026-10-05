@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('mewndo', {
   claudeHooksPlan: call('claudeHooksPlan'),
   claudeHooksInstall: call('claudeHooksInstall'),
   safetyRules: call('safetyRules'),
+  openSettings: call('openSettings'),
   setSafetyRules: call('setSafetyRules'),
   on(event, fn) {
     if (!EVENTS.has(event)) throw new Error(`unknown event: ${event}`);
