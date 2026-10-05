@@ -10,6 +10,7 @@ const {
 } = require('electron');
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
+const { createCore } = require('./core');
 
 // Set up once the app is ready (the data folder depends on the profile). Until then, lines are dropped.
 let log = { info() {}, warn() {}, error() {}, file: null };
@@ -145,6 +146,21 @@ function startEngine() {
     .then(stateChanged, (e) => notify('Mewndo could not start protecting', e.message));
 }
 
+// --- mewndo-core, the Rust service for version 1 (core/). It does no file work yet. ----------------------------
+
+let core = null;
+
+// Installed: shipped next to the app. From source: what `npm start` at the repository root just built.
+function coreBinary() {
+  const exe = process.platform === 'win32' ? 'mewndo-core.exe' : 'mewndo-core';
+  return app.isPackaged ? path.join(process.resourcesPath, exe) : path.join(__dirname, '..', '..', '..', 'core', 'target', 'debug', exe);
+}
+
+function startCore() {
+  core = createCore({ binary: coreBinary(), runDir: app.getPath('userData'), logDir: path.dirname(log.file), log, onChange: stateChanged });
+  core.start();
+}
+
 // Windows and macOS; a no-op on Linux. Started at login, Mewndo opens hidden in the tray. Only for the installed app:
 // run from source, the entry would start a bare Electron. The name is what the uninstaller removes.
 function applyOpenAtLogin() {
@@ -226,6 +242,7 @@ async function state() {
     hookProblem,
     windows: process.platform === 'win32',
     pausedUntil,
+    core: core?.status() ?? null,
     suggestions: settings.setupDone ? [] : await suggestions(folders),
     folders: folders.map((f) => ({
       ...f, name: folderName(f.root), storageBytes: bytes.get(f.root) ?? null, progress: progress.get(f.root) ?? null,
@@ -511,8 +528,8 @@ function quit() {
   quitting = true;
   quitPromise ??= (async () => {
     try {
-      // Let the engine stop cleanly, but never hang quitting on it.
-      await Promise.race([call('stop'), new Promise((r) => setTimeout(r, 15_000))]);
+      // Let the engine and the core stop cleanly, but never hang quitting on them.
+      await Promise.race([Promise.allSettled([call('stop'), core?.stop()]), new Promise((r) => setTimeout(r, 15_000))]);
     } catch { /* not running */ } finally {
       engine?.kill();
       stopped = true;
@@ -850,6 +867,7 @@ if (process.argv.includes('--remove-claude-hooks')) {
     await loadSettings();
     if (settings.setupDone) applyOpenAtLogin(); // keeps the sign-in entry pointing at this copy of Mewndo
     startEngine(); // re-protects saved folders and prunes, all inside the engine process
+    startCore();
 
     for (const [name, fn] of Object.entries(handlers)) {
       ipcMain.handle(name, (event, ...args) => {

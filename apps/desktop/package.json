@@ -36,6 +36,12 @@
       "bin/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "../../core/target/release/mewndo-core.exe",
+        "to": "mewndo-core.exe"
+      }
+    ],
     "asarUnpack": [
       "bin/**"
     ],

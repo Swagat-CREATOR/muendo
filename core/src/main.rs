@@ -1,0 +1,191 @@
+// mewndo-core: Mewndo's background service for version 1. The desktop app starts it, talks to it over a Windows
+// named pipe (a Unix socket elsewhere) using the protocol in protocol.rs, checks it is alive and restarts it if it
+// stops. It does no file work yet: protection still runs in the Node engine.
+//
+//   mewndo-core --socket <pipe name or socket path> --log-dir <the app's log folder>
+//
+// It prints "ready" once it is listening, and stops when asked to, or when its stdin closes (the app is gone),
+// so it never outlives the app.
+mod log;
+mod protocol;
+
+use log::Log;
+use protocol::Info;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::watch;
+
+struct Args {
+    socket: String,
+    log_dir: PathBuf,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let (mut socket, mut log_dir) = (None, None);
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--socket" => socket = args.next(),
+            "--log-dir" => log_dir = args.next().map(PathBuf::from),
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    match (socket, log_dir) {
+        (Some(socket), Some(log_dir)) => Ok(Args { socket, log_dir }),
+        _ => {
+            Err("usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder>".into())
+        }
+    }
+}
+
+fn main() -> ExitCode {
+    let args = match parse_args() {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let log = Arc::new(Log::new(&args.log_dir));
+    let panic_log = log.clone();
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        panic_log.error(&format!("mewndo-core crashed: {info}"));
+        default_hook(info);
+    }));
+    log.info(&format!(
+        "mewndo-core {} starting (protocol {}, pid {})",
+        env!("CARGO_PKG_VERSION"),
+        protocol::PROTOCOL_VERSION,
+        std::process::id()
+    ));
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    match runtime.block_on(serve(&args.socket, log.clone())) {
+        Ok(()) => {
+            log.info("mewndo-core stopped");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            log.error(&format!("mewndo-core stopped: {e}"));
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn serve(address: &str, log: Arc<Log>) -> std::io::Result<()> {
+    let info = Arc::new(Info {
+        started: Instant::now(),
+    });
+    let (stop, stopped) = watch::channel(false);
+
+    // stdin closes when the app exits or crashes. A plain thread: a blocking read in tokio would hold up shutdown.
+    let parent_gone = stop.clone();
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+        let _ = parent_gone.send(true);
+    });
+
+    listen(address, &log, info, stop, stopped).await
+}
+
+#[cfg(unix)]
+async fn listen(
+    address: &str,
+    log: &Arc<Log>,
+    info: Arc<Info>,
+    stop: watch::Sender<bool>,
+    mut stopped: watch::Receiver<bool>,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    // A socket left behind by a crash. Only ever a socket: anything else at that path is not ours to remove.
+    if std::fs::symlink_metadata(address).is_ok_and(|m| m.file_type().is_socket()) {
+        std::fs::remove_file(address)?;
+    }
+    let listener = tokio::net::UnixListener::bind(address)?;
+    std::fs::set_permissions(address, std::fs::Permissions::from_mode(0o600))?; // only this user may connect
+    ready(log, address);
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                tokio::spawn(connection(stream, log.clone(), info.clone(), stop.clone()));
+            }
+            _ = stopped.wait_for(|s| *s) => break,
+        }
+    }
+    let _ = std::fs::remove_file(address);
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn listen(
+    address: &str,
+    log: &Arc<Log>,
+    info: Arc<Info>,
+    stop: watch::Sender<bool>,
+    mut stopped: watch::Receiver<bool>,
+) -> std::io::Result<()> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    // first_pipe_instance: fail if another process already made this pipe, rather than share it.
+    // Remote clients are rejected by default.
+    let mut server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(address)?;
+    ready(log, address);
+    loop {
+        tokio::select! {
+            connected = server.connect() => {
+                connected?;
+                let client = std::mem::replace(&mut server, ServerOptions::new().create(address)?);
+                tokio::spawn(connection(client, log.clone(), info.clone(), stop.clone()));
+            }
+            _ = stopped.wait_for(|s| *s) => break,
+        }
+    }
+    Ok(())
+}
+
+fn ready(log: &Log, address: &str) {
+    use std::io::Write;
+    log.info(&format!("listening on {address}"));
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "ready").and_then(|_| out.flush());
+}
+
+// One app connection: a request per line, a reply per line, in order.
+async fn connection<S: AsyncRead + AsyncWrite>(
+    stream: S,
+    log: Arc<Log>,
+    info: Arc<Info>,
+    stop: watch::Sender<bool>,
+) {
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut lines = BufReader::new(reader).lines(); // ponytail: no line length cap; the socket is this user's only
+    while let Ok(Some(line)) = lines.next_line().await {
+        let (reply, shutdown) = protocol::respond(&line, &info);
+        if reply.contains(r#""type":"error""#) {
+            log.warn(&format!("refused a request: {reply}"));
+        }
+        if writer
+            .write_all(format!("{reply}\n").as_bytes())
+            .await
+            .is_err()
+        {
+            break;
+        }
+        if shutdown {
+            log.info("shutdown requested by the app");
+            let _ = writer.flush().await;
+            let _ = stop.send(true);
+            break;
+        }
+    }
+}

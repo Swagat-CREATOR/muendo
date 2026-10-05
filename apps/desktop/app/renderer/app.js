@@ -182,6 +182,20 @@ function renderFolders() {
   $('storage-summary').textContent = s;
 }
 
+// mewndo-core, the version 1 service. It does no file work yet, so whatever its state, protection carries on.
+const CORE_TEXT = {
+  starting: 'Core: starting…', running: 'Core: running', 'not-responding': 'Core: not responding',
+  restarting: 'Core: restarting…', failed: 'Core: stopped', missing: 'Core: not built', stopped: 'Core: stopped',
+};
+function renderCore(core) {
+  $('core-status').hidden = !core;
+  if (!core) return;
+  $('core-status').textContent = CORE_TEXT[core.state] ?? `Core: ${core.state}`;
+  $('core-status').className = core.state === 'failed' || core.state === 'not-responding' ? 'error' : 'muted';
+  const what = core.state === 'running' ? `mewndo-core ${core.version} is running (process ${core.pid}).` : (core.message ?? '');
+  $('core-status').title = `${what} The core does no file work yet: your folders are protected by the engine either way.`.trim();
+}
+
 function renderHeader() {
   const until = state.pausedUntil;
   $('pause-status').textContent = until ? `Protection paused until ${new Date(until).toLocaleTimeString()}` : '';
@@ -195,6 +209,7 @@ function renderHeader() {
   $('shortcut-problem').textContent = state.shortcutProblem ?? '';
   $('hook-problem').hidden = !state.hookProblem;
   $('hook-problem').textContent = state.hookProblem ?? '';
+  renderCore(state.core);
   const names = (state.agents ?? []).map((a) => a.name);
   $('agents').textContent = names.length ? `AI agents running: ${names.join(', ')}` : 'No AI agents running';
   $('agents').className = names.length ? 'running' : 'muted';
