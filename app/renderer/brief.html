@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <title>Mewndo: brief</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="brief">
+  <h1>Brief for your AI agent</h1>
+  <label for="task">Task</label>
+  <textarea id="task" rows="6" placeholder="Type or dictate what the agent should do…" autofocus></textarea>
+  <label for="folder">Folder</label>
+  <select id="folder"></select>
+  <p id="status" role="status"></p>
+  <div class="row">
+    <button id="go" class="primary">Protect and copy (Ctrl+Enter)</button>
+    <button id="close">Close (Esc)</button>
+  </div>
+  <script src="brief.js"></script>
+</body>
+</html>

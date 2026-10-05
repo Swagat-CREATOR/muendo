@@ -467,6 +467,21 @@ $('claude-hooks').onclick = guard(async () => {
   await loadHookStatus();
 });
 
+// --- Brief safety rules ---------------------------------------------------------------------------------------
+
+$('edit-rules').onclick = guard(async () => {
+  const current = await api.safetyRules();
+  $('rules-text').value = current.rules;
+  const answer = await ask($('rules-dialog'));
+  if (answer === 'ok') {
+    await api.setSafetyRules($('rules-text').value);
+    toast('Safety rules saved. New briefs use them.');
+  } else if (answer === 'reset') {
+    await api.setSafetyRules(null);
+    toast('Safety rules reset to the defaults.');
+  }
+});
+
 // --- Keeping up to date ----------------------------------------------------------------------------------------
 
 let hookStatusLoaded = false;

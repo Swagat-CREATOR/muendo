@@ -6,8 +6,9 @@ const path = require('node:path');
 const fsp = require('node:fs/promises');
 const crypto = require('node:crypto');
 const {
-  app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut,
+  app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard,
 } = require('electron');
+const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 
 const APP_ID = 'com.mewndo.app';
 const HOUR = 60 * 60 * 1000;
@@ -266,16 +267,76 @@ function openUndo(root) {
   undoWin.focus();
 }
 
-// Ctrl+Alt+Z by default. If another app already has it, say so; a setting to pick another comes later.
-function registerUndoShortcut() {
-  const accel = settings.undoShortcut ?? DEFAULT_UNDO_SHORTCUT;
-  let ok = false;
-  try { ok = globalShortcut.register(accel, () => openUndo()); } catch { ok = false; }
-  shortcutProblem = ok ? null
-    : `${prettyShortcut(accel)} is already used by another app, so one-key undo has no shortcut. `
-      + "You'll be able to choose a different shortcut in Settings. Meanwhile, use Undo Last in the tray menu.";
+// Ctrl+Alt+Z (undo) and Ctrl+Alt+B (brief) by default. If another app already has one, say so; a setting to
+// pick another comes later.
+function registerShortcuts() {
+  const shortcuts = [
+    { accel: settings.undoShortcut ?? DEFAULT_UNDO_SHORTCUT, open: () => openUndo(), what: 'one-key undo', instead: 'Undo Last in the tray menu' },
+    { accel: settings.briefShortcut ?? DEFAULT_BRIEF_SHORTCUT, open: () => openBrief(), what: 'the brief helper', instead: 'Write a Brief in the tray menu' },
+  ];
+  const problems = [];
+  for (const { accel, open, what, instead } of shortcuts) {
+    let ok = false;
+    try { ok = globalShortcut.register(accel, open); } catch { ok = false; }
+    if (!ok) problems.push(`${prettyShortcut(accel)} is already used by another app, so ${what} has no shortcut; use ${instead}.`);
+  }
+  shortcutProblem = problems.length ? `${problems.join(' ')} You'll be able to choose different shortcuts in Settings.` : null;
   if (shortcutProblem) notify('Mewndo', shortcutProblem);
 }
+
+// --- The brief helper (Ctrl+Alt+B) ----------------------------------------------------------------------------
+
+const DEFAULT_BRIEF_SHORTCUT = 'Control+Alt+B';
+let briefWin = null;
+
+// Every protected folder, most recent activity first.
+async function briefFolders() {
+  const folders = (await call('folders')).filter((f) => f.status !== 'scanning');
+  return folders
+    .sort((a, b) => (b.lastChangeAt ?? 0) - (a.lastChangeAt ?? 0))
+    .map((f) => ({ root: f.root, name: folderName(f.root) }));
+}
+
+function createBriefWindow() {
+  briefWin = new BrowserWindow({
+    width: 560, height: 400, show: false, frame: false, resizable: false, minimizable: false, maximizable: false,
+    fullscreenable: false, alwaysOnTop: true, skipTaskbar: true, title: 'Mewndo: brief', icon: icon(),
+    webPreferences: { preload: path.join(__dirname, 'brief-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  briefWin.loadFile(path.join(__dirname, 'renderer', 'brief.html'));
+  briefWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  briefWin.webContents.on('will-navigate', (e) => e.preventDefault());
+  briefWin.on('close', (e) => { if (!quitting) { e.preventDefault(); briefWin.hide(); } });
+}
+
+function openBrief() {
+  if (!briefWin || briefWin.isDestroyed()) createBriefWindow();
+  else briefWin.webContents.send('brief:open');
+  briefWin.center();
+  briefWin.show();
+  // Again once it is on screen: some Linux window managers ignore it until the window has appeared.
+  briefWin.setAlwaysOnTop(true, 'floating');
+  setTimeout(() => { if (!briefWin.isDestroyed() && briefWin.isVisible()) briefWin.setAlwaysOnTop(true, 'floating'); }, 150);
+  briefWin.focus();
+}
+
+const safetyRules = () => (typeof settings.safetyRules === 'string' && settings.safetyRules.trim() ? settings.safetyRules : DEFAULT_SAFETY_RULES);
+
+const briefHandlers = {
+  briefFolders,
+  // Save point first (trigger brief), then copy the brief and hide. If the save point fails, nothing is copied.
+  async briefCreate(root, task) {
+    if (typeof task !== 'string' || !task.trim() || task.length > 20_000) throw new Error('Type the task first.');
+    if (!(await briefFolders()).some((f) => f.root === root)) throw new Error('That folder is not protected.');
+    const sp = await call('journal.createSavePoint', root, { trigger: 'brief', label: briefLabel(task) });
+    clipboard.writeText(buildBrief(task, root, safetyRules()));
+    briefWin?.hide();
+    notify('Mewndo', 'Protected. Brief copied, paste it into your agent.');
+    storage.at = 0;
+    return { savePointId: sp.id };
+  },
+  briefHide() { briefWin?.hide(); },
+};
 
 // --- Burst alerts -----------------------------------------------------------------------------------------------
 
@@ -401,6 +462,7 @@ async function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Window', click: showWindow },
     { label: 'Create Save Point', click: run(createSavePointEverywhere) },
+    { label: 'Write a Brief', click: () => openBrief() },
     { label: 'Undo Last', click: () => openUndo() },
     { label: until ? 'Resume Protection' : 'Pause Protection for 1 Hour', click: run(togglePause) },
     { type: 'separator' },
@@ -506,6 +568,14 @@ const handlers = {
     if (err) throw new Error(err);
   },
   claudeHooksPlan: () => call('claudeHooksPlan'),
+  // The brief's safety rules: the user's own, or the defaults. Saving empty text (or null) resets them.
+  safetyRules: () => ({ rules: safetyRules(), defaults: DEFAULT_SAFETY_RULES, edited: safetyRules() !== DEFAULT_SAFETY_RULES }),
+  async setSafetyRules(text) {
+    if (text !== null && (typeof text !== 'string' || text.length > 10_000)) throw new Error('invalid rules');
+    settings.safetyRules = text?.trim() ? text : undefined;
+    await saveSettings();
+    return { rules: safetyRules(), defaults: DEFAULT_SAFETY_RULES, edited: safetyRules() !== DEFAULT_SAFETY_RULES };
+  },
   claudeHooksInstall: () => call('claudeHooksInstall'),
   // A round trip to the engine process and back; the responsiveness check uses it.
   ping: () => call('ping'),
@@ -531,13 +601,19 @@ if (!app.requestSingleInstanceLock()) {
         return fn(...args);
       });
     }
+    for (const [name, fn] of Object.entries(briefHandlers)) {
+      ipcMain.handle(name, (event, ...args) => {
+        if (event.sender !== briefWin?.webContents) throw new Error('unknown sender');
+        return fn(...args);
+      });
+    }
     for (const [name, fn] of Object.entries(undoHandlers)) {
       ipcMain.handle(name, (event, ...args) => {
         if (event.sender !== undoWin?.webContents) throw new Error('unknown sender');
         return fn(...args);
       });
     }
-    registerUndoShortcut();
+    registerShortcuts();
     app.on('will-quit', () => globalShortcut.unregisterAll());
 
     tray = new Tray(icon().resize({ width: 16, height: 16 }));

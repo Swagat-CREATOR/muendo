@@ -40,6 +40,9 @@
         <p class="muted">Exact save points: one when a session starts and one right before every command Claude Code runs.</p>
         <button id="claude-hooks">Set up Claude Code save points…</button>
         <p id="claude-hooks-status" class="muted"></p>
+        <h2>Briefs</h2>
+        <p class="muted">Ctrl+Alt+B: type a task, and Mewndo makes a save point and copies the task with these safety rules for your agent.</p>
+        <button id="edit-rules">Edit brief safety rules…</button>
       </nav>
 
       <section id="detail">
@@ -121,6 +124,19 @@
       <menu>
         <button value="cancel">Cancel</button>
         <button value="ok" id="hooks-ok" class="primary">Add the hooks</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="rules-dialog">
+    <form method="dialog">
+      <h2>Brief safety rules</h2>
+      <p>These follow your task under "Safety rules from Mewndo:". <span class="mono">{folder}</span> becomes the protected folder's full path.</p>
+      <textarea id="rules-text" rows="10" aria-label="Safety rules"></textarea>
+      <menu>
+        <button value="reset">Reset to the defaults</button>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Save</button>
       </menu>
     </form>
   </dialog>

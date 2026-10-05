@@ -69,3 +69,11 @@ body.undo #details p { margin: 3px 0; }
 body.undo .summary { margin-top: 8px !important; font-weight: 600; }
 body.undo .warning { color: var(--bad); margin: 10px 0 4px; }
 body.undo .keys { margin-top: 10px; }
+
+/* Brief window */
+body.brief { padding: 14px 18px; border: 2px solid var(--accent); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+body.brief h1 { font-size: 16px; margin-bottom: 8px; }
+body.brief label { margin: 6px 0 2px; font-weight: 600; }
+body.brief textarea { font: inherit; width: 100%; flex: 1; min-height: 90px; resize: none; padding: 6px; }
+body.brief select { font: inherit; width: 100%; padding: 4px; }
+#rules-text { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }

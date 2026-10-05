@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('mewndo', {
   ping: call('ping'),
   claudeHooksPlan: call('claudeHooksPlan'),
   claudeHooksInstall: call('claudeHooksInstall'),
+  safetyRules: call('safetyRules'),
+  setSafetyRules: call('setSafetyRules'),
   on(event, fn) {
     if (!EVENTS.has(event)) throw new Error(`unknown event: ${event}`);
     const listener = (_e, payload) => fn(payload);
