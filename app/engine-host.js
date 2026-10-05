@@ -15,6 +15,15 @@ const MEWNDO = new Set([
 const JOURNAL = new Set(['listSavePoints', 'createSavePoint', 'diffSince', 'planRestore', 'restore', 'listRestores']);
 
 const emit = (event, ...args) => port.postMessage({ event, args });
+const log = (level, message, details) => emit('log', level, message, details);
+
+// An unexpected error leaves the engine in an unknown state: log it and exit, and the app starts a fresh engine,
+// which finishes any interrupted restore and catches up on changes (that's what it's built for).
+process.on('uncaughtException', (e) => {
+  log('error', 'Unexpected error in the engine; restarting it', e?.stack ?? String(e));
+  setTimeout(() => process.exit(1), 100);
+});
+process.on('unhandledRejection', (e) => log('error', 'Unhandled promise rejection in the engine', e?.stack ?? String(e)));
 
 // Scans report progress for every file and changes arrive in bursts. Send a few a second per folder,
 // but always send phase changes, so the window shows each phase.
@@ -38,7 +47,12 @@ const methods = {
     mewndo.on('progress', (root, p) => throttled('progress', root, p, 150));
     mewndo.on('change', (root, c) => throttled('change', root, c, 1000));
     for (const event of ['savepoint', 'restored', 'retry', 'burst']) mewndo.on(event, (root, payload) => emit(event, root, payload));
-    for (const event of ['warning', 'folders-changed', 'pruned', 'agents-changed']) mewndo.on(event, (payload) => emit(event, payload ?? null));
+    for (const event of ['warning', 'resolved', 'folders-changed', 'pruned', 'agents-changed']) mewndo.on(event, (payload) => emit(event, payload ?? null));
+    mewndo.on('restored', (root, r) => log('info', `Restore ${r.verified ? 'verified' : 'NOT verified'} in ${root}`, { written: r.counts.written, trashed: r.counts.trashed, failures: r.failures.length }));
+    mewndo.on('savepoint', (root, sp) => log('info', `Save point (${sp.trigger}) in ${root}: ${sp.label}`, sp.agent ? { agent: sp.agent } : undefined));
+    mewndo.on('agents-changed', (list) => log('info', `AI agents running: ${list.map((a) => a.name).join(', ') || 'none'}`));
+    mewndo.on('recovered', (r) => log('warn', 'Checked recent file versions after an unclean shutdown', r));
+    mewndo.on('pruned', (r) => r.pruned?.length && log('info', `Cleanup removed ${r.pruned.length} save points`, { removedObjects: r.removedObjects, usedBytes: r.usedBytes }));
     await mewndo.start();
   },
 
@@ -79,6 +93,7 @@ port.on('message', async ({ data }) => {
     }
     port.postMessage({ id, result: result ?? null });
   } catch (e) {
+    if (!e.code) log('warn', `Engine call ${method} failed`, e.stack ?? e.message);
     port.postMessage({ id, error: e.message, code: e.code });
   }
 });

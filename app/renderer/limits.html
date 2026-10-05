@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'">
+  <title>What Mewndo can and can't undo</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="settings">
+  <h1>What Mewndo can and can't undo</h1>
+
+  <h2>Mewndo can undo</h2>
+  <ul>
+    <li><strong>Changes to files in your protected folders:</strong> files an agent (or anyone) deleted, edited, moved or
+      created. Mewndo puts back any saved version, byte for byte, and checks every file it restores.</li>
+    <li>The whole folder, just the files you choose, or a copy into a separate folder.</li>
+    <li>Its own restores: anything a restore replaces goes to Mewndo's trash, and a save point is made first.</li>
+    <li>Changes made while Mewndo was closed, and to the <span class="mono">.git</span> folder, so damage to your repository
+      history can be undone too.</li>
+  </ul>
+
+  <h2>Mewndo can't undo</h2>
+  <ul>
+    <li><strong>Emails or messages</strong> an agent sent.</li>
+    <li><strong>Payments</strong> or purchases.</li>
+    <li><strong>Changes to websites or online accounts</strong>, including cloud services, databases and anything an agent
+      did over the internet.</li>
+    <li><strong>Changes outside your protected folders</strong>, anywhere else on this computer.</li>
+    <li><strong>Files Mewndo skipped:</strong> files over the size limit (50 MB unless you changed it), files and folders
+      matched by ignore rules (such as <span class="mono">node_modules</span>, <span class="mono">dist</span>,
+      <span class="mono">build</span>, and patterns you added in Settings), and online-only OneDrive files that aren't on
+      this computer.</li>
+  </ul>
+
+  <h2>Good to know</h2>
+  <ul>
+    <li>Mewndo keeps history for each folder's retention period (30 days unless you changed it). Older save points are
+      removed, and automatic ones may go sooner if storage passes the budget.</li>
+    <li>While a folder can't be found (for example an unplugged drive), changes to it can't be recorded. Its save points
+      are kept, and Mewndo resumes as soon as it's back.</li>
+    <li>After a power cut or system crash, file versions saved in the last few minutes may not have reached the disk.
+      Mewndo checks them at the next start, saves the files again where it can, and tells you if any versions were lost.</li>
+    <li>Which agent made a change is only certain when the agent reports itself (Claude Code with Mewndo's hooks set up).
+      Otherwise Mewndo shows the agent that was running, marked "likely".</li>
+    <li>Stop the agent before undoing, or it may keep changing files while Mewndo puts them back.</li>
+  </ul>
+</body>
+</html>

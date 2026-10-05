@@ -9,10 +9,20 @@ const {
   app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard,
 } = require('electron');
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
+const { createLog } = require('../engine/log'); // async file appends only, no engine work
+
+// Set up once the app is ready (the data folder depends on the profile). Until then, lines are dropped.
+let log = { info() {}, warn() {}, error() {}, file: null };
+
+// Problems Mewndo shows in the main window until they're resolved: key -> { code, message, folder }.
+const alerts = new Map();
+const alertKey = (code, folder) => `${code}|${folder ?? ''}`;
 
 const APP_ID = 'com.mewndo.app';
 const GB = 1024 ** 3;
 const dataDir = () => path.join(app.getPath('userData'), 'data');
+// Storage numbers in the windows may be this old: measuring big folders with long histories takes seconds.
+const REPORT_MAX_AGE = 10 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 
 // Dev and testing: a throwaway profile instead of the real one.
@@ -77,8 +87,30 @@ function onEngineMessage(msg) {
     case 'burst': burstAlert(a, b).catch(() => {}); break;
     case 'folders-changed': storage.at = 0; stateChanged(); break;
     case 'agents-changed': stateChanged(); break;
-    case 'pruned': storage.at = 0; break;
-    case 'warning': notify('Mewndo', a.message); send('toast', a.message); break;
+    case 'pruned':
+      storage.at = 0;
+      if (a && !a.overBudget && alerts.delete(alertKey('over-budget'))) stateChanged();
+      break;
+    case 'warning': {
+      log.warn(a.message, { code: a.code, folder: a.folder });
+      // Most warnings stay in the main window until resolved; a notification says it once.
+      const key = alertKey(a.code, a.folder);
+      const fresh = !alerts.has(key);
+      if (a.code !== 'journal' && a.code !== 'agents') alerts.set(key, { code: a.code, message: a.message, folder: a.folder ?? null });
+      if (fresh) notify('Mewndo', a.message);
+      send('toast', a.message);
+      stateChanged();
+      break;
+    }
+    case 'resolved':
+      log.info(a.message, { code: a.code, folder: a.folder });
+      if (alerts.delete(alertKey(a.code, a.folder))) {
+        notify('Mewndo', a.message);
+        send('toast', a.message);
+        stateChanged();
+      }
+      break;
+    case 'log': log[a === 'error' ? 'error' : a === 'warn' ? 'warn' : 'info'](b, msg.args[2]); break;
     default: break;
   }
 }
@@ -93,6 +125,7 @@ function startEngine() {
   });
   engine.on('message', onEngineMessage);
   engine.on('exit', (code) => {
+    if (!quitting) log.error(`The engine process stopped (exit code ${code})`);
     engine = null;
     for (const { reject } of calls.values()) reject(new Error('The Mewndo engine stopped.'));
     calls.clear();
@@ -137,6 +170,11 @@ function createWindow(show) {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // A crashed window is reloaded; Mewndo itself keeps running.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    log.error('The main window crashed; reloading it', details);
+    if (!win.isDestroyed()) win.reload();
+  });
   win.on('close', (e) => { // closing keeps Mewndo running in the tray
     if (!quitting) { e.preventDefault(); win.hide(); }
   });
@@ -151,7 +189,7 @@ function showWindow() {
 
 async function storageReport(maxAgeMs = 30_000) {
   if (!storage.report || Date.now() - storage.at > maxAgeMs) {
-    storage = { at: Date.now(), report: await call('storageReport') };
+    storage = { at: Date.now(), report: await call('storageReport', { maxAgeMs: REPORT_MAX_AGE }) };
   }
   return storage.report;
 }
@@ -179,6 +217,7 @@ async function state() {
     openAtLogin: settings.openAtLogin,
     loginSupported: process.platform !== 'linux',
     shortcutProblem,
+    alerts: [...alerts.values()],
     agents,
     hookProblem,
     windows: process.platform === 'win32',
@@ -201,7 +240,7 @@ function stateChanged() {
 // --- Actions shared by the window and the tray -------------------------------------------------------------
 
 async function createSavePointEverywhere() {
-  const folders = (await call('folders')).filter((f) => f.status !== 'scanning');
+  const folders = (await call('folders')).filter((f) => !['scanning', 'unavailable'].includes(f.status));
   if (!folders.length) return notify('Mewndo', 'No folders are protected yet.');
   for (const f of folders) await call('journal.createSavePoint', f.root, { label: 'From the tray', trigger: 'manual' });
   notify('Save point created', `${folders.length} folder${folders.length > 1 ? 's' : ''}: ${folders.map((f) => folderName(f.root)).join(', ')}`);
@@ -316,7 +355,7 @@ let briefWin = null;
 
 // Every protected folder, most recent activity first.
 async function briefFolders() {
-  const folders = (await call('folders')).filter((f) => f.status !== 'scanning');
+  const folders = (await call('folders')).filter((f) => !['scanning', 'unavailable'].includes(f.status));
   return folders
     .sort((a, b) => (b.lastChangeAt ?? 0) - (a.lastChangeAt ?? 0))
     .map((f) => ({ root: f.root, name: folderName(f.root) }));
@@ -353,7 +392,7 @@ const briefHandlers = {
   async briefCreate(root, task) {
     if (typeof task !== 'string' || !task.trim() || task.length > 20_000) throw new Error('Type the task first.');
     if (!(await briefFolders()).some((f) => f.root === root)) throw new Error('That folder is not protected.');
-    const sp = await call('journal.createSavePoint', root, { trigger: 'brief', label: briefLabel(task) });
+    const sp = await call('journal.createSavePoint', root, { trigger: 'brief', label: briefLabel(task), quick: true });
     clipboard.writeText(buildBrief(task, root, safetyRules()));
     briefWin?.hide();
     notify('Mewndo', 'Protected. Brief copied, paste it into your agent.');
@@ -489,6 +528,7 @@ async function updateTray() {
     { label: 'Create Save Point', click: run(createSavePointEverywhere) },
     { label: 'Write a Brief', click: () => openBrief() },
     { label: 'Settings…', click: () => openSettings() },
+    { label: "What Mewndo can and can't undo", click: () => openLimits() },
     { label: 'Undo Last', click: () => openUndo() },
     { label: until ? 'Resume Protection' : 'Pause Protection for 1 Hour', click: run(togglePause) },
     { type: 'separator' },
@@ -604,9 +644,27 @@ const handlers = {
   },
   claudeHooksInstall: () => call('claudeHooksInstall'),
   openSettings: () => openSettings(),
+  openLimits: () => openLimits(),
+  dismissAlert(code, folder) { alerts.delete(alertKey(code, folder ?? undefined)); stateChanged(); },
   // A round trip to the engine process and back; the responsiveness check uses it.
   ping: () => call('ping'),
 };
+
+// --- "What Mewndo can and can't undo" ---------------------------------------------------------------------------
+
+let limitsWin = null;
+function openLimits() {
+  if (limitsWin && !limitsWin.isDestroyed()) { limitsWin.show(); limitsWin.focus(); return; }
+  limitsWin = new BrowserWindow({
+    width: 720, height: 760, title: "What Mewndo can and can't undo", icon: icon(), show: false,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  limitsWin.removeMenu();
+  limitsWin.loadFile(path.join(__dirname, 'renderer', 'limits.html'));
+  limitsWin.webContents.on('will-navigate', (e) => e.preventDefault());
+  limitsWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  limitsWin.once('ready-to-show', () => limitsWin.show());
+}
 
 // --- Settings window --------------------------------------------------------------------------------------------
 
@@ -634,7 +692,7 @@ const BURST = { maxDeleted: 20, maxChanged: 50 };
 
 async function allSettings() {
   const [config, folders, agents, report] = await Promise.all([
-    call('config'), call('folderSettings'), call('agentList'), call('storageReport').catch(() => null),
+    call('config'), call('folderSettings'), call('agentList'), call('storageReport', { maxAgeMs: REPORT_MAX_AGE }).catch(() => null),
   ]);
   return {
     shortcuts: Object.fromEntries(Object.keys(SHORTCUTS).map((w) => [w, { accel: shortcutFor(w), fallback: SHORTCUTS[w].fallback, working: registered[w] === shortcutFor(w) }])),
@@ -732,6 +790,13 @@ const settingsHandlers = {
     return allSettings();
   },
 
+  async openLog() {
+    await log.flush();
+    const err = await shell.openPath(log.file);
+    if (err) throw new Error(err);
+  },
+  openLimits: () => openLimits(),
+
   async openDataFolder() {
     const err = await shell.openPath(dataDir());
     if (err) throw new Error(err);
@@ -765,8 +830,16 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => { /* keep running in the tray */ });
   app.on('before-quit', (e) => { if (!stopped) { e.preventDefault(); quit(); } });
 
+  // Never crash on an unexpected error in this process: log it and carry on. The engine runs separately, so
+  // protection continues regardless.
+  process.on('uncaughtException', (e) => log.error('Unexpected error in the main process', e?.stack ?? String(e)));
+  process.on('unhandledRejection', (e) => log.error('Unhandled promise rejection in the main process', e?.stack ?? String(e)));
+
   app.whenReady().then(async () => {
     if (process.platform === 'win32') app.setAppUserModelId(APP_ID); // needed for notifications
+    log = createLog(path.join(dataDir(), 'logs'));
+    log.info(`Mewndo ${app.getVersion()} starting`, { platform: process.platform, electron: process.versions.electron });
+    app.on('will-quit', () => log.info('Mewndo quitting'));
     await loadSettings();
     startEngine(); // re-protects saved folders and prunes, all inside the engine process
 
@@ -803,6 +876,7 @@ if (!app.requestSingleInstanceLock()) {
 
     createWindow(!(process.argv.includes('--hidden') && settings.setupDone));
   }).catch((e) => {
+    log.error('Mewndo could not start', e?.stack ?? String(e));
     dialog.showErrorBox('Mewndo could not start', String(e?.stack ?? e));
     app.exit(1);
   });

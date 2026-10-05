@@ -2,6 +2,8 @@
 // contents are all in the store), watches for changes, and writes save points. Events:
 //   'progress' scan/restore progress · 'change' { path, type: added|changed|deleted } · 'savepoint' metadata ·
 //   'restored' restore result · 'retry' { path, op, attempt, error } while waiting for a locked file ·
+//   'watcher-error' Error when the watcher fails (it restarts by itself) · 'watcher-restarted' ·
+//   'gone' when the folder itself disappears (deleted, or its drive unplugged) ·
 //   'burst' { deleted, changed } once when many files change within a minute (not from restores) ·
 //   'warning' Error from background work (watcher or sync) that did not stop it.
 const fs = require('node:fs');
@@ -39,8 +41,8 @@ function ignoreFn(root, names) {
 
 const MAX_WAIT_MS = 30_000; // under constant change, still sync at least this often
 
-// Call onChange whenever anything under root may have changed. The journal then rescans, so the details of
-// each event don't matter. Returns close().
+// Call onChange(relPath) whenever something under root may have changed, or onChange(null) when it isn't known
+// what (then everything is rescanned). Returns close().
 //   native (Windows, macOS): one recursive OS watch handle. Nothing to walk and no file work at start,
 //     however big the folder.
 //   chokidar (Linux, which has no native recursive watching): walks the tree and stats every file first to
@@ -49,12 +51,22 @@ const MAX_WAIT_MS = 30_000; // under constant change, still sync at least this o
 async function watchTree(root, { mode, ignore, writeFinishMs, onChange, onError }) {
   const names = new Set(ignore);
   if (mode === 'native') {
+    let gone = false;
     const w = fs.watch(root, { recursive: true }, (type, name) => {
-      if (name && String(name).split(/[\\/]/).slice(0, -1).some((s) => names.has(s))) return; // inside an ignored folder
-      if (type !== 'change' || !name) return onChange();
+      if (gone) return;
+      if (!name) return onChange(null); // e.g. Windows' event buffer overflowed: what changed is unknown
+      // Windows names the watched folder itself, by its full path, when it is deleted or its drive is unplugged,
+      // and then repeats that thousands of times a second. Report it once.
+      if (path.isAbsolute(String(name))) {
+        gone = true;
+        return onError(Object.assign(new Error(`The folder was removed or its drive unplugged: ${root}`), { code: 'ENOENT' }));
+      }
+      const rel = String(name).replace(/\\/g, '/');
+      if (rel.split('/').slice(0, -1).some((s) => names.has(s))) return; // inside an ignored folder
+      if (type !== 'change') return onChange(rel);
       // Windows reports a "change" on a folder when it is merely listed (its last-access time). Content changes
       // always come with events for the files themselves, so folder "change" events can be ignored.
-      fsp.lstat(path.join(root, String(name))).then((st) => { if (!st.isDirectory()) onChange(); }, () => onChange());
+      fsp.lstat(path.join(root, rel)).then((st) => { if (!st.isDirectory()) onChange(rel); }, () => onChange(rel));
     });
     w.on('error', onError);
     return async () => w.close();
@@ -65,7 +77,7 @@ async function watchTree(root, { mode, ignore, writeFinishMs, onChange, onError 
     ignored: ignoreFn(root, names),
     awaitWriteFinish: { stabilityThreshold: writeFinishMs, pollInterval: Math.min(100, writeFinishMs / 2) },
   });
-  w.on('all', onChange).on('error', onError);
+  w.on('all', () => onChange(null)).on('error', onError); // ponytail: Linux (dev only) always rescans all
   await new Promise((resolve) => w.once('ready', resolve));
   return () => w.close();
 }
@@ -81,6 +93,8 @@ function createJournal({
   quietMs = 30_000, // an activity save point is made when changes start after this much quiet
   debounceMs = 300, // batch watcher events into one sync
   writeFinishMs = 2000, // a file must stop changing this long before it is captured
+  // Linux keeps Chokidar: Node's recursive watching there sometimes names nested files by their bare name, which
+  // partial rescans can't rely on. (Tests use 'native' on Linux too; the events they need come through.)
   watcher: watchMode = process.platform === 'win32' || process.platform === 'darwin' ? 'native' : 'chokidar',
   burst: burstOptions, // thresholds for burst alerts (an object read on every check, so settings apply live)
   likelyAgent = () => null, // the AI agent most likely making changes right now, if any (see agents.js)
@@ -89,6 +103,18 @@ function createJournal({
   const journal = new EventEmitter();
   let realRoot, indexFile, savePointDir, closeWatcher, timer;
   let waitingSince = null; // first event of the current wait for quiet; reset when that wait ends
+  // Folders the native watcher reported changes in since the last scan, so background syncs and quick save points
+  // read only those. Everything is rescanned when that isn't enough to go on: at start, after the watcher
+  // failed or reported an unknown change, while not watching, and with the Linux watcher.
+  const changedDirs = new Set();
+  let fullRescan = true;
+  const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
+  function noteChange(rel) {
+    if (rel === null) fullRescan = true;
+    else changedDirs.add(parentOf(rel));
+    if (changedDirs.size > 2000) fullRescan = true; // reading them one by one would cost more than a full walk
+    schedule();
+  }
   let unsettledSince = null; // when files were first left for later as still being written
   let syncQueued = false; // at most one background sync waits in the queue, however many events arrive
   let index = null;
@@ -111,22 +137,45 @@ function createJournal({
   // A stopped journal cancels its running scan instead of waiting for it; the next start scans again.
   let scanAbort = new AbortController();
   const isAbort = (e) => e?.name === 'AbortError';
-  const warn = (e) => { if (!isAbort(e)) journal.emit('warning', e); };
+  // A folder that disappeared (deleted, or its drive unplugged) isn't an error to report: Mewndo marks it
+  // unavailable (see 'gone') and resumes when it's back.
+  const rootGone = (e) => e?.code === 'ENOENT' && realRoot && (e.path === realRoot || e.path === root || /removed or its drive/.test(e.message));
+  const warn = (e) => {
+    if (isAbort(e)) return;
+    if (rootGone(e)) journal.emit('gone');
+    else journal.emit('warning', e);
+  };
 
   // Scan against the index (only changed files are rehashed and stored), then record the result.
   // settle: leave files modified within writeFinishMs at their previous version and look again soon, because
   // they may still be being written (used by background syncs with the native watcher, see schedule).
-  async function sync({ settle = false } = {}) {
-    const next = await scan(realRoot, {
-      previous: index ?? {}, ignore, ignorePatterns, maxFileSize, concurrency, signal: scanAbort.signal,
-      settleMs: settle ? writeFinishMs : 0,
-      hash: store.put,
-      onProgress: (p) => journal.emit('progress', p),
-    });
+  // partial: read only the folders the watcher reported (see changedDirs) when that's enough to go on.
+  async function sync({ settle = false, partial = false } = {}) {
+    const usePartial = partial && watchMode === 'native' && closeWatcher && !fullRescan && index;
+    if (usePartial && !changedDirs.size) {
+      await new Promise((r) => setTimeout(r, 100)); // a file written a moment ago: let its event arrive
+      if (!changedDirs.size && !fullRescan) return; // nothing changed since the last scan
+    }
+    const dirs = usePartial && !fullRescan ? [...changedDirs] : undefined;
+    changedDirs.clear(); // changes from here on are noted for the next sync
+    if (!dirs) fullRescan = false;
+    let next;
+    try {
+      next = await scan(realRoot, {
+        previous: index ?? {}, dirs, ignore, ignorePatterns, maxFileSize, concurrency, signal: scanAbort.signal,
+        settleMs: settle ? writeFinishMs : 0,
+        hash: store.put,
+        onProgress: (p) => journal.emit('progress', p),
+      });
+    } catch (e) {
+      fullRescan = true; // what was noted is lost: look at everything next time
+      throw e;
+    }
     let unsettled = false;
     for (const [rel, e] of Object.entries(next)) {
       if (!e.pending) continue;
       unsettled = true;
+      changedDirs.add(parentOf(rel)); // look at it again next time
       if (index?.[rel]) next[rel] = index[rel];
       else delete next[rel];
     }
@@ -187,38 +236,78 @@ function createJournal({
     const left = waitingSince + maxWaitMs - Date.now();
     timer = setTimeout(() => {
       waitingSince = null;
+      // During an in-place restore, syncing only competes with it for the disk: when it ends, setRestoring(false)
+      // rescans everything anyway.
+      if (restoring) return;
       // Files left unsettled for maxWaitMs (e.g. a log written all the time) are captured as they are.
       const forced = left <= settleMs || (unsettledSince !== null && Date.now() - unsettledSince >= maxWaitMs);
       if (syncQueued) return; // one is already waiting and will see these changes too
       syncQueued = true;
       enqueue(() => {
         syncQueued = false;
-        return sync({ settle: native && !forced });
+        return sync({ settle: native && !forced, partial: true });
       }).catch(warn);
     }, Math.max(0, Math.min(settleMs, left)));
   }
 
-  // Protect the folder: catch up with (or, the first time, capture) its contents, then watch it.
-  journal.start = async () => {
-    realRoot = await fsp.realpath(root);
+  // Where this folder's data lives (index, save points, restore logs, trash), and its last known index.
+  async function attach(real) {
     await fsp.mkdir(dataDir, { recursive: true });
     const realData = await fsp.realpath(dataDir);
-    if (realData === realRoot || isInside(realData, realRoot)) {
+    if (realData === real || isInside(realData, real)) {
       throw new Error(`Mewndo's data folder must not be inside a protected folder: ${realData}`);
     }
+    realRoot = real;
     const dir = path.join(realData, 'folders', folderId(realRoot));
     journal.root = realRoot;
-    journal.folderDir = dir; // this folder's index, save points, restore logs and trash
+    journal.folderDir = dir;
     indexFile = path.join(dir, 'index.json');
     savePointDir = path.join(dir, 'savepoints');
     await removeStaleTemp(dir);
     await removeStaleTemp(savePointDir);
-
     index = (await readJson(indexFile))?.index ?? null;
     indexJson = index && JSON.stringify(index);
+  }
 
+  // For a folder that can't be reached right now (e.g. its drive is unplugged): its save points can still be
+  // listed and restored into a separate folder. root must be the folder's real path, as remembered.
+  journal.attachOffline = () => attach(root);
+
+  // If the watcher fails, say so and start a new one: after 2 s, then backing off to 1 min. Each restart is
+  // followed by a sync that catches up on whatever happened meanwhile.
+  let watcherRetry = null;
+  let watcherDelay = 2000;
+  function watcherFailed(e) {
+    if (!watching || watcherRetry) return;
+    // A folder that vanished: Mewndo marks it unavailable (stopping this journal). If it's still there after all,
+    // the restart below brings the watcher back.
+    if (rootGone(e)) journal.emit('gone');
+    else journal.emit('watcher-error', e);
+    const failed = closeWatcher;
+    closeWatcher = null;
+    Promise.resolve(failed?.()).catch(() => {});
+    watcherRetry = setTimeout(async () => {
+      watcherRetry = null;
+      if (!watching) return;
+      try {
+        fullRescan = true; // changes while it was down weren't seen
+        closeWatcher = await watchTree(realRoot, { mode: watchMode, ignore, writeFinishMs, onChange: noteChange, onError: watcherFailed });
+        watcherDelay = 2000;
+        journal.emit('watcher-restarted');
+        schedule();
+      } catch (err) {
+        watcherDelay = Math.min(watcherDelay * 2, 60_000);
+        watching && watcherFailed(err);
+      }
+    }, watcherDelay);
+  }
+
+  // Protect the folder: catch up with (or, the first time, capture) its contents, then watch it.
+  journal.start = async () => {
+    await attach(await fsp.realpath(root));
     // Watch first, so nothing that changes during the initial scan is missed.
-    closeWatcher = await watchTree(realRoot, { mode: watchMode, ignore, writeFinishMs, onChange: schedule, onError: warn });
+    fullRescan = true; // nothing was watched before now
+    closeWatcher = await watchTree(realRoot, { mode: watchMode, ignore, writeFinishMs, onChange: noteChange, onError: watcherFailed });
     watching = true;
     // Finish an interrupted restore first, so its writes don't look like new activity.
     if (index) await resumeRestores(journal);
@@ -237,6 +326,9 @@ function createJournal({
     waitingSince = null;
     unsettledSince = null;
     watching = false;
+    fullRescan = true; // changes from now on aren't watched
+    clearTimeout(watcherRetry);
+    watcherRetry = null;
     scanAbort.abort();
     await closeWatcher?.();
     closeWatcher = null;
@@ -245,11 +337,13 @@ function createJournal({
   };
 
   // onlyIfChanged: skip it (resolving null) when nothing changed since the newest save point made since start,
-  // e.g. for a hook that asks before every command an agent runs.
-  journal.createSavePoint = async ({ label, trigger = 'manual', agent, agentLikely, onlyIfChanged = false } = {}) => {
+  // e.g. for a hook that asks before every command an agent runs. quick: rely on what the watcher reported
+  // instead of rescanning everything, so it's ready in milliseconds even in big folders (agents and hooks,
+  // where the agent doesn't wait).
+  journal.createSavePoint = async ({ label, trigger = 'manual', agent, agentLikely, onlyIfChanged = false, quick = false } = {}) => {
     if (!TRIGGERS.includes(trigger)) throw new Error(`unknown trigger: ${trigger}`);
     return enqueue(async () => {
-      await sync(); // catch anything the watcher hasn't reported yet
+      await sync({ partial: quick }); // catch anything the watcher hasn't reported yet
       if (onlyIfChanged && indexJson === savedJson) return null;
       return writeSavePoint(index, { label, trigger, agent, agentLikely }, indexJson);
     });
@@ -292,7 +386,7 @@ function createJournal({
   journal.lastChangeAt = () => (lastChangeAt === -Infinity ? null : lastChangeAt);
 
   // Scan now and return the up-to-date index.
-  journal.sync = () => enqueue(sync).then(() => index);
+  journal.sync = () => enqueue(() => sync()).then(() => index); // not enqueue(sync): it'd get the last task's result
 
   // Hold the journal's work (syncs, save points) until the returned resume() is called. Watcher events
   // still queue up and run after. Used so pruning sees indexes and save points that can't change under it.

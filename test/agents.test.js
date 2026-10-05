@@ -11,6 +11,11 @@ const {
 const { tempDir } = require('./helpers');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Wait for a condition rather than a fixed time, so a busy machine doesn't fail the test (gives up after 10 s).
+async function until(fn, ms = 10_000) {
+  for (const t = Date.now(); Date.now() - t < ms; await sleep(25)) if (await fn()) return true;
+  return false;
+}
 const SCRIPT = path.join(__dirname, '..', 'bin', 'mewndo-savepoint.js');
 
 // --- Recognising agents ---------------------------------------------------------------------------------------
@@ -92,7 +97,8 @@ test('an agent starting makes a save point in every protected folder; while it r
     const jb = await mewndo.protect(b);
     await mewndo.start();
     processes = [{ name: 'codex', exe: 'codex', cmd: 'codex' }];
-    await sleep(400);
+    const startedEverywhere = async () => (await ja.listSavePoints()).length && (await jb.listSavePoints()).length;
+    assert.ok(await until(startedEverywhere), 'a save point in each folder');
     assert.deepStrictEqual(mewndo.agents().map((x) => x.name), ['Codex']);
     assert.deepStrictEqual(agentEvents.at(-1), ['Codex']);
     for (const j of [ja, jb]) {
@@ -101,7 +107,9 @@ test('an agent starting makes a save point in every protected folder; while it r
     }
 
     fs.writeFileSync(path.join(a, 'x.txt'), 'changed by the agent');
-    await sleep(1000); // two or more periodic ticks
+    const periodicIn = async (j) => (await j.listSavePoints()).filter((sp) => sp.label === 'While Codex was running');
+    assert.ok(await until(async () => (await periodicIn(ja)).length), 'a periodic save point for the folder that changed');
+    await sleep(1000); // two or more further ticks: nothing changed since, so no more
     const aPoints = await ja.listSavePoints();
     const periodic = aPoints.filter((s) => s.label === 'While Codex was running');
     assert.strictEqual(periodic.length, 1, 'one periodic save point, only because a changed');
@@ -111,8 +119,7 @@ test('an agent starting makes a save point in every protected folder; while it r
     assert.ok(!(await jb.listSavePoints()).some((s) => s.label === 'While Codex was running'), 'b did not change');
 
     processes = [];
-    await sleep(300);
-    assert.deepStrictEqual(mewndo.agents(), []);
+    assert.ok(await until(() => mewndo.agents().length === 0), 'the agent stopped');
   } finally { await mewndo.stop(); }
 });
 

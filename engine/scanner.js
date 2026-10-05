@@ -26,10 +26,13 @@ const isOnlineOnly = (st) => st.size > 4096 && st.blocks === 0;
 
 async function scan(root, {
   previous = {},
+  // Only these folders changed (relative paths, '' = the top): read just them, keep everything else from
+  // `previous`. New subfolders found there are walked whole. Without it, the whole folder is walked.
+  dirs: changedDirs,
   ignore = DEFAULT_IGNORE, // folder names
   ignorePatterns = [], // extra: file or folder names, * matches anything (e.g. "*.log", "tmp")
   maxFileSize = DEFAULT_MAX_FILE_SIZE,
-  concurrency = 4,
+  concurrency = 16, // files stored at once: on Windows (Defender checks every file) 16 was 2.3x faster than 4
   hash = hashFile, // (file, realRoot); a store's put() can go here to hash and store in one read
   onProgress = () => {},
   signal, // an AbortSignal: stops the scan between files with an AbortError
@@ -42,55 +45,110 @@ async function scan(root, {
   const realRoot = await fsp.realpath(root);
   const ignored = new Set(ignore);
   const extra = patternMatcher(ignorePatterns);
-  const manifest = {};
+  const manifest = changedDirs ? { ...previous } : {};
   const toHash = [];
   const progress = { phase: 'walking', found: 0, toHash: 0, hashed: 0 };
   const report = () => onProgress({ ...progress });
+  const walk = []; // folders to read, walking every subfolder below them
 
-  const dirs = [''];
-  while (dirs.length) {
+  // Record one entry (lstat only). Subfolders are queued for walking when `walkAll`, or when they're new.
+  async function visit(rel, name, walkAll) {
+    const abs = path.join(root, rel);
+    let st;
+    try {
+      st = await fsp.lstat(abs);
+    } catch (e) {
+      if (e.code !== 'ENOENT') manifest[rel] = { type: 'unknown', error: e.code };
+      return;
+    }
+    const prev = previous[rel];
+    if (st.isSymbolicLink()) { // junctions report as symbolic links too
+      try { manifest[rel] = { type: 'link', target: await fsp.readlink(abs) }; }
+      catch (e) { if (e.code !== 'ENOENT') manifest[rel] = { type: 'link', error: e.code }; }
+    } else if (st.isDirectory()) {
+      if (ignored.has(name)) return;
+      manifest[rel] = { type: 'directory' };
+      if (walkAll || prev?.type !== 'directory') walk.push(rel);
+    } else if (st.isFile()) {
+      if (name.endsWith(TEMP_SUFFIX)) return; // Mewndo's own in-progress restore writes
+      const entry = { type: 'file', size: st.size, mtimeMs: st.mtimeMs };
+      manifest[rel] = entry;
+      const age = scanStart - st.mtimeMs;
+      if (st.size > maxFileSize) entry.skipped = 'too-large';
+      else if (skipOnlineOnly && isOnlineOnly(st)) entry.skipped = 'online-only';
+      else if (settleMs && age < settleMs && age > -1000) entry.pending = true;
+      else if (prev?.type === 'file' && prev.hash && prev.size === st.size && prev.mtimeMs === st.mtimeMs) entry.hash = prev.hash;
+      else toHash.push(rel);
+    } // ponytail: sockets, FIFOs and devices are not user files; skipped
+    progress.found++;
+  }
+
+  if (changedDirs) {
+    // Children of each folder in `previous`, to find what was removed.
+    const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
+    const kids = new Map();
+    for (const rel of Object.keys(previous)) {
+      const p = parentOf(rel);
+      if (!kids.has(p)) kids.set(p, []);
+      kids.get(p).push(rel);
+    }
+    const removeTree = (rel) => {
+      delete manifest[rel];
+      for (const k of kids.get(rel) ?? []) removeTree(k);
+    };
+    const inIgnored = (rel) => rel.split('/').some((part) => extra(part) || ignored.has(part));
+    // A changed folder Mewndo didn't know as a folder is read from the nearest known folder above it.
+    const todo = new Set();
+    for (let d of changedDirs) {
+      while (d !== '' && previous[d]?.type !== 'directory') d = parentOf(d);
+      if (d === '' || !inIgnored(d)) todo.add(d);
+    }
+    for (const d of todo) {
+      signal?.throwIfAborted();
+      let names;
+      try {
+        names = await fsp.readdir(path.join(root, d));
+      } catch (e) {
+        if (d === '') throw e;
+        if (e.code === 'ENOENT') removeTree(d);
+        else manifest[d] = { ...manifest[d], error: e.code };
+        continue;
+      }
+      const present = new Set(names.filter((n) => !extra(n)));
+      for (const child of kids.get(d) ?? []) {
+        if (!present.has(child.slice(d ? d.length + 1 : 0))) removeTree(child); // gone (or renamed)
+      }
+      for (const name of present) {
+        const rel = d ? `${d}/${name}` : name;
+        const wasDir = previous[rel]?.type === 'directory';
+        await visit(rel, name, false);
+        if (wasDir && manifest[rel]?.type !== 'directory') { // a folder replaced by something else
+          const entry = manifest[rel];
+          removeTree(rel);
+          if (entry) manifest[rel] = entry;
+        }
+      }
+      report();
+    }
+  } else {
+    walk.push('');
+  }
+
+  while (walk.length) {
     signal?.throwIfAborted();
-    const dir = dirs.pop();
+    const dir = walk.pop();
     let names;
     try {
       names = await fsp.readdir(path.join(root, dir));
     } catch (e) {
       if (dir === '') throw e;
       if (e.code === 'ENOENT') delete manifest[dir];
-      else manifest[dir].error = e.code;
+      else manifest[dir] = { ...manifest[dir], error: e.code };
       continue;
     }
     for (const name of names) {
       if (extra(name)) continue;
-      const rel = dir ? `${dir}/${name}` : name;
-      const abs = path.join(root, rel);
-      let st;
-      try {
-        st = await fsp.lstat(abs);
-      } catch (e) {
-        if (e.code !== 'ENOENT') manifest[rel] = { type: 'unknown', error: e.code };
-        continue;
-      }
-      if (st.isSymbolicLink()) { // junctions report as symbolic links too
-        try { manifest[rel] = { type: 'link', target: await fsp.readlink(abs) }; }
-        catch (e) { if (e.code !== 'ENOENT') manifest[rel] = { type: 'link', error: e.code }; }
-      } else if (st.isDirectory()) {
-        if (ignored.has(name)) continue;
-        manifest[rel] = { type: 'directory' };
-        dirs.push(rel);
-      } else if (st.isFile()) {
-        if (name.endsWith(TEMP_SUFFIX)) continue; // Mewndo's own in-progress restore writes
-        const entry = { type: 'file', size: st.size, mtimeMs: st.mtimeMs };
-        manifest[rel] = entry;
-        const prev = previous[rel];
-        const age = scanStart - st.mtimeMs;
-        if (st.size > maxFileSize) entry.skipped = 'too-large';
-        else if (skipOnlineOnly && isOnlineOnly(st)) entry.skipped = 'online-only';
-        else if (settleMs && age < settleMs && age > -1000) entry.pending = true;
-        else if (prev?.type === 'file' && prev.hash && prev.size === st.size && prev.mtimeMs === st.mtimeMs) entry.hash = prev.hash;
-        else toHash.push(rel);
-      } // ponytail: sockets, FIFOs and devices are not user files; skipped
-      progress.found++;
+      await visit(dir ? `${dir}/${name}` : name, name, true);
     }
     report();
   }

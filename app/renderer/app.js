@@ -153,6 +153,7 @@ function statusText(f) {
     return 'Restoring: verifying…';
   }
   if (f.status === 'paused') return 'Paused';
+  if (f.status === 'unavailable') return "Unavailable: can't be found (unplugged drive?). Resumes when it's back.";
   return 'Protected';
 }
 
@@ -172,7 +173,7 @@ function renderFolders() {
   },
   h('div', { class: 'name' }, f.name),
   h('div', { class: 'muted' }, `${f.files.toLocaleString()} file${f.files === 1 ? '' : 's'} protected · ${size(f.storageBytes)}`),
-  h('div', { class: f.status === 'paused' ? 'error' : '' }, statusText(f)),
+  h('div', { class: f.status === 'paused' || f.status === 'unavailable' ? 'error' : '' }, statusText(f)),
   progressBar(f))));
   if (!state.folders.length) $('folders').append(h('li', { class: 'muted' }, 'No folders yet.'));
   const s = state.usedBytes != null
@@ -186,6 +187,10 @@ function renderHeader() {
   $('pause-status').textContent = until ? `Protection paused until ${new Date(until).toLocaleTimeString()}` : '';
   $('pause').textContent = until ? 'Resume protection' : 'Pause protection for 1 hour';
   $('login-wrap').hidden = !state.loginSupported;
+  // Warnings from Mewndo (storage, low disk, unavailable folders, watcher trouble) stay until resolved or dismissed.
+  $('alerts').hidden = !state.alerts?.length;
+  $('alerts').replaceChildren(...(state.alerts ?? []).map((a) => h('li', { class: 'error' }, a.message, ' ',
+    h('button', { onclick: guard(() => api.dismissAlert(a.code, a.folder)), 'aria-label': 'Dismiss this warning' }, 'Dismiss'))));
   $('shortcut-problem').hidden = !state.shortcutProblem;
   $('shortcut-problem').textContent = state.shortcutProblem ?? '';
   $('hook-problem').hidden = !state.hookProblem;
@@ -198,6 +203,7 @@ function renderHeader() {
 
 $('pause').onclick = guard(async () => { await api.togglePause(); await refresh(); });
 $('open-settings').onclick = guard(() => api.openSettings());
+$('open-limits').onclick = guard((e) => { e.preventDefault(); return api.openLimits(); });
 $('login').onchange = guard(async (e) => api.setOpenAtLogin(e.target.checked));
 
 $('add-folder').onclick = guard(async () => {
@@ -516,5 +522,6 @@ api.on('progress', (p) => {
 api.on('savepoints-changed', (root) => { if (root === selected && !busy) loadSavePoints(); });
 api.on('restores-changed', (root) => { if (root === selected) loadRestores(); });
 api.on('toast', toast);
-setInterval(guard(refresh), 3000);
+setInterval(() => { if (!document.hidden) guard(refresh)(); }, 3000); // nothing to show while hidden in the tray
+document.addEventListener('visibilitychange', () => { if (!document.hidden) guard(refresh)(); });
 guard(refresh)();

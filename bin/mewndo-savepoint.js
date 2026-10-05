@@ -10,7 +10,9 @@ const http = require('node:http');
 
 // The time budget counts from when this process started (performance.now() is 0 then), not from when this code
 // began running: on Windows, Node alone takes about a quarter of a second to start.
-const DEADLINE_MS = 850; // whatever happens, exit by then
+// 700 leaves room for Windows creating the process under load (measured up to ~180 ms) within the 1 s promise.
+// Mewndo answers in milliseconds: hook save points rely on what its watcher already saw (see quick save points).
+const DEADLINE_MS = 700; // whatever happens, exit by then
 const left = () => DEADLINE_MS - performance.now();
 const verbose = process.argv.includes('--verbose');
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };

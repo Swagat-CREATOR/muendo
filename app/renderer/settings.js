@@ -176,6 +176,8 @@ $('save-rules').onclick = async () => {
 
 $('login').onchange = async (e) => { render(await api.setOpenAtLogin(e.target.checked)); };
 $('open-data').onclick = () => api.openDataFolder().catch(() => {});
+$('open-log').onclick = () => api.openLog().catch(() => {});
+$('open-limits').onclick = () => api.openLimits().catch(() => {});
 
 $('reset').onclick = async () => {
   const d = $('reset-dialog');

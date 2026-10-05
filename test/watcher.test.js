@@ -95,7 +95,7 @@ test('native watcher: syncs at least every 30 s even under constant change', asy
 
 // Regression: past the wait cap, every watcher event during a running sync used to queue another full rescan:
 // 558 rescans for one 5,000-file restore (about 8x slower). Scaled down: 600 files, a 200 ms cap. The broken
-// version made 226 rescans here; the fixed one about 11.
+// version did 226 full rescans' worth of work here; the fixed one about 11.
 for (const watcher of ['native', 'chokidar']) {
   test(`${watcher} watcher: a restore that writes many files doesn't trigger a rescan storm`, async () => {
     const base = tempDir();
@@ -115,11 +115,71 @@ for (const watcher of ['native', 'chokidar']) {
       const sp = await journal.createSavePoint();
       for (let i = 0; i < 600; i++) fs.rmSync(path.join(root, `d${i % 20}`, `f${i}.txt`));
       await sleep(500); // the watcher is still busy with the deletions when the restore starts
-      let scans = 0;
-      journal.on('progress', (p) => { if (p.phase === 'done') scans++; });
+      // Work done by syncs during the restore, in entries looked at: a full rescan is 620. Many small partial
+      // rescans are fine; hundreds of full ones are the storm.
+      let looked = 0;
+      journal.on('progress', (p) => { if (p.phase === 'done') looked += p.found; });
       const result = await journal.restore(sp.id);
       assert.strictEqual(result.verified, true);
-      assert.ok(scans <= 40, `${scans} rescans during the restore`);
+      assert.ok(looked <= 40 * 620, `${looked} entries looked at during the restore (${(looked / 620).toFixed(1)} full rescans' worth)`);
     } finally { await journal.stop(); }
   });
 }
+
+// --- Rescanning only what changed (native watcher) -------------------------------------------------------------
+
+async function bigJournal(dirs) {
+  const files = {};
+  for (let i = 0; i < dirs; i++) files[`d${i}/f.txt`] = `file ${i}`;
+  return nativeJournal(files, { writeFinishMs: 100 });
+}
+const scanned = (journal) => {
+  const runs = [];
+  journal.on('progress', (p) => { if (p.phase === 'done') runs.push(p.found); });
+  return runs;
+};
+
+test('native watcher: a change is captured by reading only its folder', async () => {
+  const { root, journal } = await bigJournal(30);
+  const runs = scanned(journal);
+  try {
+    const changed = nextChange(journal, 'd7/f.txt');
+    fs.writeFileSync(path.join(root, 'd7/f.txt'), 'edited');
+    await changed;
+    assert.deepStrictEqual(runs, [1], 'one entry looked at, not 60');
+    assert.strictEqual(journal.getIndex()['d7/f.txt'].hash, await hashFile(path.join(root, 'd7/f.txt')));
+  } finally { await journal.stop(); }
+});
+
+test('native watcher: a quick save point with nothing pending scans nothing, and still sees a file written just before', async () => {
+  const { root, journal } = await bigJournal(30);
+  const runs = scanned(journal);
+  try {
+    const first = await journal.createSavePoint({ trigger: 'hook', quick: true });
+    assert.deepStrictEqual(runs, [], 'nothing changed: no scan at all');
+    fs.writeFileSync(path.join(root, 'd3/new.txt'), 'written right before the hook');
+    const second = await journal.createSavePoint({ trigger: 'hook', quick: true, onlyIfChanged: true });
+    assert.ok(second && second.id !== first.id, 'the new file made it into a new save point');
+    assert.ok(journal.getIndex()['d3/new.txt']?.hash);
+    assert.ok(runs.every((n) => n < 10), `only the changed folder was read: ${runs}`);
+  } finally { await journal.stop(); }
+});
+
+test('native watcher: an unknown change (event overflow) makes the next sync read everything', async () => {
+  const realWatch = fs.watch;
+  let fire;
+  // The journal's own watch is the first call (on Linux, Node then watches each subfolder itself).
+  fs.watch = (p, o, cb) => { fire ??= cb; return realWatch(p, o, cb); };
+  let parts;
+  try { parts = await bigJournal(10); } finally { fs.watch = realWatch; }
+  const { root, journal } = parts;
+  const runs = scanned(journal);
+  try {
+    fs.writeFileSync(path.join(root, 'd2/f.txt'), 'changed while the event buffer overflowed');
+    await sleep(50);
+    runs.length = 0;
+    fire('rename', null); // what Windows sends when its event buffer overflowed
+    await nextChange(journal, 'd2/f.txt');
+    assert.ok(runs.includes(20), `a full rescan (20 entries): ${runs}`);
+  } finally { await journal.stop(); }
+});

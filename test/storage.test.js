@@ -17,7 +17,7 @@ async function setup({ files = { 'a.txt': 'A' }, retentionDays, ...opts } = {}) 
   fs.mkdirSync(root);
   for (const [rel, content] of Object.entries(files)) fs.writeFileSync(path.join(root, rel), content);
   const clock = { now: Date.now() };
-  const mewndo = createMewndo({ dataDir: path.join(base, 'data'), now: () => clock.now, journalOptions, ...opts });
+  const mewndo = createMewndo({ dataDir: path.join(base, 'data'), now: () => clock.now, journalOptions, lowDiskBytes: 0, ...opts }); // the test machine's own free space doesn't matter here
   const warnings = [];
   mewndo.on('warning', (w) => warnings.push(w));
   const journal = await mewndo.protect(root, { retentionDays });

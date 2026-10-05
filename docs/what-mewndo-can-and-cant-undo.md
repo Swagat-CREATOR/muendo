@@ -21,6 +21,21 @@
 
 ## Can't
 
+Mewndo only undoes changes to files in protected folders. It can't undo:
+
+- **Emails or messages** an agent sent.
+- **Payments** or purchases.
+- **Changes to websites or online accounts**, including cloud services and databases.
+- **Changes outside protected folders**, anywhere else on the computer.
+- **Files it skipped** because of their size or ignore rules (details below).
+
+In more detail:
+
+- **After a power cut or system crash**, file versions saved in the last few minutes may not have reached the
+  disk. Mewndo checks them at the next start: damaged ones are removed, files still on disk are saved again, and
+  it tells you if any versions were lost.
+- **While a protected folder can't be found** (for example an unplugged drive), changes to it can't be recorded.
+  Its save points are kept, and Mewndo resumes protecting it as soon as it's back.
 - **Files over 50 MB** are skipped by default. Mewndo records that they were skipped, so you can see it.
 - **Online-only OneDrive files** (and other cloud placeholders that aren't on this PC) are skipped and recorded,
   because reading them would download them. Files kept on this device are protected normally.

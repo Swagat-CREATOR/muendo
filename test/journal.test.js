@@ -152,20 +152,24 @@ test('activity save point holds the index from just before changes start after q
   } finally { await j.stop(); }
 });
 
-test('while restoring, the index updates but no activity save point is made', async () => {
+test("while restoring, Mewndo doesn't sync in the background (it competes for the disk); afterwards it catches up, with no activity save point", async () => {
   const s = setup();
   const j = journalFor(s);
   await j.start();
+  const scans = [];
+  j.on('progress', (p) => { if (p.phase === 'done') scans.push(p); });
   try {
+    const before = j.getIndex()['a.txt'].hash;
     await j.setRestoring(true);
-    const changed = waitFor(j, 'change', (c) => c.path === 'a.txt');
     fs.writeFileSync(path.join(s.root, 'a.txt'), 'restored content');
-    await changed;
+    fs.writeFileSync(path.join(s.root, 'docs/b.txt'), 'restored too');
+    await sleep(500); // well past the debounce: a background sync would have run by now
+    assert.deepStrictEqual(scans, [], 'no background sync during the restore');
+    assert.strictEqual(j.getIndex()['a.txt'].hash, before);
+    await j.setRestoring(false); // catches up on everything, still flagged as a restore
     assert.strictEqual(j.getIndex()['a.txt'].hash, await hashFile(path.join(s.root, 'a.txt')));
-    fs.writeFileSync(path.join(s.root, 'docs/b.txt'), 'restored too'); // not yet seen by the watcher
-    await j.setRestoring(false); // absorbs it while still flagged
     assert.strictEqual(j.getIndex()['docs/b.txt'].hash, await hashFile(path.join(s.root, 'docs/b.txt')));
-    await sleep(300); // let the late watcher event arrive
+    await sleep(300); // let late watcher events arrive
     assert.deepStrictEqual(await j.listSavePoints(), []);
   } finally { await j.stop(); }
 });
@@ -248,4 +252,16 @@ test('ignored folders do not trigger changes', async () => {
     await sleep(400);
     assert.deepStrictEqual(changes, []);
   } finally { await j.stop(); }
+});
+
+test('a sync right after a skipped save point works (the queue passes no stale value)', async () => {
+  const journal = journalFor(setup({ 'a.txt': 'A' }));
+  await journal.start();
+  try {
+    await journal.createSavePoint();
+    const skipped = journal.createSavePoint({ onlyIfChanged: true }); // nothing changed: resolves null
+    const synced = journal.sync();
+    assert.strictEqual(await skipped, null);
+    assert.ok((await synced)['a.txt']);
+  } finally { await journal.stop(); }
 });

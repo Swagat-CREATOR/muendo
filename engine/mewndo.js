@@ -76,6 +76,8 @@ function createMewndo({
   burst = {}, // { maxDeleted, maxChanged }: burst alert thresholds (see burst.js); changeable with configure()
   lowDiskBytes = 2 * GB,
   pruneEveryMs = DAY,
+  availabilityCheckMs = 5000, // how often to look for protected folders that disappeared or came back
+  diskCheckMs = 10 * 60 * 1000, // how often to check free disk space
   maxFolderBytes = 20 * GB, // larger folders are refused
   now = Date.now,
   journalOptions = {}, // passed to every journal (timings in tests)
@@ -99,13 +101,25 @@ function createMewndo({
   let agentTimer = null;
   let hookServerHandle = null;
   let hookServerProblem = null;
+  const unavailable = new Map(); // root -> since when it couldn't be found (e.g. an unplugged drive)
+  const watcherTrouble = new Set(); // roots whose watcher failed and is restarting
+  let availabilityTimer = null;
+  let diskTimer = null;
+  let checkingAvailability = false;
+  let lowDisk = false;
+  // A problem that went away: { code, folder?, message }. The app clears the matching warning.
+  const resolved = (code, message, extra = {}) => mewndo.emit('resolved', { code, message, ...extra });
+  const nameOf = (root) => path.basename(root) || root;
+  const unavailableMessage = (root) => `${nameOf(root)} can't be found at ${root}. If its drive is unplugged, Mewndo `
+    + "resumes protecting it as soon as it's back. Its save points are kept.";
 
   // The agent most likely making changes: the most recently started one still running. A guess, shown as such.
   const likelyAgent = () => [...runningAgents].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
   const warn = (code, message, extra = {}) => mewndo.emit('warning', { code, message, ...extra });
   const settingsFile = (dir) => path.join(dir, 'settings.json');
-  const changed = () => mewndo.emit('folders-changed');
+  let reportCache = null; // see storageReport
+  const changed = () => { reportCache = null; mewndo.emit('folders-changed'); };
 
   async function realData() {
     await fsp.mkdir(dataDir, { recursive: true });
@@ -158,14 +172,7 @@ function createMewndo({
     const saved = (await readJson(settingsFile(dir))) ?? {}; // keeps this folder's own settings
     const folder = { ...saved, root: real, retentionDays: saved.retentionDays ?? retentionDays, protected: true };
     await writeFileAtomic(settingsFile(dir), JSON.stringify(folder));
-    const journal = createJournal({
-      ...journalOptions, root: real, dataDir, store, likelyAgent, burst: burstLimits,
-      ...folderScanOptions(folder),
-    });
-    for (const ev of FORWARDED) journal.on(ev, (payload) => mewndo.emit(ev, real, payload));
-    journal.on('burst', (payload) => { if (!pausedUntil) mewndo.emit('burst', real, payload); }); // not while paused
-    journal.on('warning', (e) => warn('journal', e.message, { folder: real }));
-    journals.set(real, journal);
+    const journal = makeJournal(real, folder);
     starting.add(real);
     changed();
     const started = journal.start().then(() => journal, async (e) => {
@@ -178,6 +185,88 @@ function createMewndo({
     started.catch((e) => warn('folder-unavailable', `Can't protect ${real}: ${e.message}`, { root: real }));
     return journal;
   };
+
+  // A journal for a protected folder, with its events passed on. Registered, not started.
+  function makeJournal(real, folder) {
+    const journal = createJournal({
+      ...journalOptions, root: real, dataDir, store, likelyAgent, burst: burstLimits,
+      ...folderScanOptions(folder),
+    });
+    for (const ev of FORWARDED) journal.on(ev, (payload) => mewndo.emit(ev, real, payload));
+    journal.on('burst', (payload) => { if (!pausedUntil) mewndo.emit('burst', real, payload); }); // not while paused
+    journal.on('warning', (e) => warn('journal', e.message, { folder: real }));
+    journal.on('watcher-error', (e) => {
+      watcherTrouble.add(real);
+      warn('watcher', `Mewndo stopped seeing changes in ${nameOf(real)} (${e.code ?? e.message}). It is restarting the watcher `
+        + 'and will catch up on anything it missed.', { folder: real });
+    });
+    journal.on('gone', () => checkAvailability().catch(() => {})); // mark it unavailable now, not at the next check
+    journal.on('watcher-restarted', () => {
+      if (watcherTrouble.delete(real)) resolved('watcher', `Mewndo is watching ${nameOf(real)} again.`, { folder: real });
+    });
+    journals.set(real, journal);
+    return journal;
+  }
+
+  // A remembered folder that can't be found at launch: listed as unavailable (its save points still work, e.g.
+  // to restore into a separate folder) until it's back.
+  async function registerOffline(folder) {
+    if (journals.has(folder.root)) return;
+    const journal = makeJournal(folder.root, folder);
+    await journal.attachOffline().catch(() => {});
+    ready.set(folder.root, Promise.resolve());
+    unavailable.set(folder.root, now());
+    warn('folder-unavailable', unavailableMessage(folder.root), { folder: folder.root });
+    changed();
+  }
+
+  // Folders that disappeared (stop watching) or came back (start again, catching up on what changed meanwhile).
+  async function checkAvailability() {
+    if (checkingAvailability) return;
+    checkingAvailability = true;
+    try {
+      for (const [root, j] of journals) {
+        if (starting.has(root) || j.isRestoring()) continue;
+        const here = await fsp.stat(root).then((st) => st.isDirectory(), () => false);
+        if (!here && !unavailable.has(root)) {
+          unavailable.set(root, now());
+          await j.stop();
+          watcherTrouble.delete(root);
+          warn('folder-unavailable', unavailableMessage(root), { folder: root });
+          changed();
+        } else if (here && unavailable.has(root)) {
+          unavailable.delete(root);
+          if (pausedUntil) { changed(); continue; } // resuming protection starts it
+          starting.add(root);
+          changed();
+          try {
+            await j.start();
+            resolved('folder-unavailable', `${nameOf(root)} is back. Mewndo is protecting it again.`, { folder: root });
+          } catch {
+            unavailable.set(root, now()); // still not usable; try again next time
+          } finally {
+            starting.delete(root);
+            changed();
+          }
+        }
+      }
+    } finally {
+      checkingAvailability = false;
+    }
+  }
+
+  // Low disk space: warn once, and say when it's resolved.
+  async function checkDisk() {
+    const free = await freeDiskBytes().catch(() => null);
+    if (free === null) return;
+    if (free < lowDiskBytes && !lowDisk) {
+      lowDisk = true;
+      warn('low-disk', `Only ${gb(free)} free on the disk Mewndo uses. Free up space so Mewndo can keep saving versions.`, { freeBytes: free });
+    } else if (free >= lowDiskBytes && lowDisk) {
+      lowDisk = false;
+      resolved('low-disk', 'There is enough free disk space again.');
+    }
+  }
 
   // Stop protecting a folder. keepHistory: save points stay and can still be restored or protected again.
   // Otherwise its index, save points and restore logs are deleted. Its trash is kept either way: it holds
@@ -267,7 +356,8 @@ function createMewndo({
   // Protected folders for display: [{ root, status: scanning|restoring|paused|protected, files, lastChangeAt }].
   mewndo.folders = () => [...journals].map(([root, j]) => ({
     root,
-    status: starting.has(root) ? 'scanning' : j.isRestoring() ? 'restoring' : pausedUntil ? 'paused' : 'protected',
+    status: unavailable.has(root) ? 'unavailable' : starting.has(root) ? 'scanning' : j.isRestoring() ? 'restoring'
+      : pausedUntil ? 'paused' : 'protected',
     files: Object.values(j.getIndex() ?? {}).filter((e) => e.type === 'file').length,
     lastChangeAt: j.lastChangeAt(),
   }));
@@ -290,15 +380,21 @@ function createMewndo({
     for (const [root, j] of journals) {
       starting.add(root);
       changed();
+      if (unavailable.has(root)) continue; // started when it's back
       try { await j.start(); } catch (e) { warn('folder-unavailable', `Can't protect ${root}: ${e.message}`, { root }); }
       finally { starting.delete(root); changed(); }
     }
   };
 
   mewndo.pausedUntil = () => pausedUntil;
+  mewndo.checkAvailability = () => checkAvailability(); // runs every availabilityCheckMs after start()
 
-  // Everything every folder still refers to, including folders that are no longer protected.
-  async function loadFolders() {
+  // Everything every folder still refers to, including folders that are no longer protected: refs counts how many
+  // indexes and save points use each hash, and each folder's `uses` holds every hash it uses. Save points are read
+  // one at a time and only counted, so memory doesn't grow with how many there are; sp.hashes() reads one again.
+  async function measure() {
+    const sizes = await store.objects();
+    const refs = new Map();
     const folders = [];
     for (const id of await fsp.readdir(foldersDir).catch(() => [])) {
       const dir = path.join(foldersDir, id);
@@ -309,8 +405,10 @@ function createMewndo({
       const restoresDir = path.join(dir, 'restores');
       for (const name of await fsp.readdir(restoresDir).catch(() => [])) {
         const log = await readJson(path.join(restoresDir, name));
-        if (log?.status === 'running') for (const s of log.steps) if (s.hash) pinned.add(s.hash);
+        if (log?.status === 'running') for (const st of log.steps) if (st.hash) pinned.add(st.hash);
       }
+      const uses = new Set(pinned);
+      for (const h of pinned) refs.set(h, (refs.get(h) ?? 0) + 1);
       const savePoints = [];
       const spDir = path.join(dir, 'savepoints');
       for (const name of (await fsp.readdir(spDir).catch(() => [])).filter((n) => n.endsWith('.json'))) {
@@ -318,25 +416,17 @@ function createMewndo({
         const sp = await readJson(file); // a damaged file throws: never prune without knowing every reference
         const bytes = (await fsp.lstat(file)).size;
         jsonBytes += bytes;
+        for (const h of new Set(hashesOf(sp.index))) {
+          refs.set(h, (refs.get(h) ?? 0) + 1);
+          uses.add(h);
+        }
         savePoints.push({
           id: sp.id, createdAt: sp.createdAt, trigger: sp.trigger, label: sp.label, file, bytes,
-          hashes: new Set(hashesOf(sp.index)),
+          hashes: async () => new Set(hashesOf((await readJson(file)).index)),
         });
       }
       savePoints.sort(byAge);
-      folders.push({ root: settings?.root ?? index?.root, retentionDays: settings?.retentionDays ?? 30, pinned, jsonBytes, savePoints });
-    }
-    return folders;
-  }
-
-  // What counts toward the budget: referenced stored content plus Mewndo's JSON files. Not the trash.
-  async function measure() {
-    const folders = await loadFolders();
-    const sizes = await store.objects();
-    const refs = new Map(); // hash -> how many save points/indexes refer to it
-    for (const f of folders) {
-      for (const h of f.pinned) refs.set(h, (refs.get(h) ?? 0) + 1);
-      for (const sp of f.savePoints) for (const h of sp.hashes) refs.set(h, (refs.get(h) ?? 0) + 1);
+      folders.push({ root: settings?.root ?? index?.root, retentionDays: settings?.retentionDays ?? 30, jsonBytes, savePoints, uses });
     }
     let used = folders.reduce((n, f) => n + f.jsonBytes, 0);
     for (const h of refs.keys()) used += sizes.get(h) ?? 0;
@@ -352,9 +442,9 @@ function createMewndo({
     const { folders, sizes, refs, used: usedBefore } = await measure();
     let used = usedBefore;
     const pruned = [];
-    const drop = (c) => {
+    const drop = async (c) => {
       used -= c.sp.bytes;
-      for (const h of c.sp.hashes) {
+      for (const h of await c.sp.hashes()) {
         const n = refs.get(h) - 1;
         if (n > 0) refs.set(h, n);
         else { refs.delete(h); used -= sizes.get(h) ?? 0; }
@@ -365,11 +455,11 @@ function createMewndo({
       .flatMap((f) => f.savePoints.filter((sp) => !isKept(sp, f, t)).map((sp) => ({ f, sp })))
       .sort((a, b) => byAge(a.sp, b.sp));
     // Retention: everything unprotected past its folder's retention period.
-    for (const c of candidates) if (t - Date.parse(c.sp.createdAt) > c.f.retentionDays * DAY) drop(c);
+    for (const c of candidates) if (t - Date.parse(c.sp.createdAt) > c.f.retentionDays * DAY) await drop(c);
     // Budget: what's left unprotected is activity, agent and hook save points within retention. Oldest first.
     for (const c of candidates) {
       if (used <= budgetBytes) break;
-      if (!pruned.includes(c)) drop(c);
+      if (!pruned.includes(c)) await drop(c);
     }
 
     for (const c of pruned) await fsp.rm(c.sp.file, { force: true });
@@ -392,6 +482,7 @@ function createMewndo({
       release();
     }
 
+    reportCache = null;
     const result = {
       pruned: pruned.map(({ f, sp }) => ({ folder: f.root, id: sp.id, createdAt: sp.createdAt, trigger: sp.trigger, label: sp.label })),
       removedObjects, sweepSkipped, usedBytes: used, budgetBytes, overBudget: used > budgetBytes,
@@ -401,8 +492,7 @@ function createMewndo({
         + 'without removing protected save points (manual, brief, before-undo, or recent ones), so they were kept.',
       { usedBytes: used, budgetBytes });
     }
-    const free = await freeDiskBytes();
-    if (free < lowDiskBytes) warn('low-disk', `Only ${gb(free)} free on the disk Mewndo uses.`, { freeBytes: free });
+    await checkDisk();
     mewndo.emit('pruned', result);
     return result;
   }
@@ -464,20 +554,27 @@ function createMewndo({
 
   // Storage at a glance. The budget covers save point history; the trash is reported separately.
   // Per folder, `bytes` counts all content its history and index use, even if another folder shares it.
-  mewndo.storageReport = async () => {
+  // maxAgeMs: a report up to this old may be reused. Measuring reads every save point, which for big folders with
+  // long histories takes seconds; the app asks with a few minutes, cleanups and changes to folders start afresh.
+  mewndo.storageReport = async ({ maxAgeMs = 0 } = {}) => {
+    if (reportCache && now() - reportCache.at <= maxAgeMs) {
+      const { report } = reportCache; // with the budget as it is now (it can change in settings)
+      return { ...report, budgetBytes, overBudget: report.usedBytes > budgetBytes };
+    }
     const { used, folders: all, sizes } = await measure();
     const trash = await mewndo.trashReport();
     const folders = all.filter((f) => f.root).map((f) => {
-      const hashes = new Set([...f.pinned, ...f.savePoints.flatMap((sp) => [...sp.hashes])]);
       let bytes = f.jsonBytes;
-      for (const h of hashes) bytes += sizes.get(h) ?? 0;
+      for (const h of f.uses) bytes += sizes.get(h) ?? 0;
       return { folder: f.root, bytes, savePoints: f.savePoints.length };
     });
-    return {
+    const report = {
       usedBytes: used, budgetBytes, overBudget: used > budgetBytes, folders,
       trashBytes: trash.reduce((n, t) => n + t.bytes, 0), trash,
       freeDiskBytes: await freeDiskBytes(),
     };
+    reportCache = { at: now(), report };
+    return report;
   };
 
   // --- AI agents ------------------------------------------------------------------------------------------------
@@ -498,7 +595,7 @@ function createMewndo({
     for (const name of stopped) runningAgents.delete(name);
     for (const name of started) {
       runningAgents.set(name, now());
-      savePointEverywhere({ trigger: 'agent', agent: name, label: `${name} started` });
+      savePointEverywhere({ trigger: 'agent', agent: name, label: `${name} started`, quick: true });
     }
     mewndo.emit('agents-changed', mewndo.agents());
   }
@@ -506,7 +603,7 @@ function createMewndo({
   // While agents run: every saveEveryMs, a save point in each folder that changed since its newest one.
   function agentTick() {
     const agent = likelyAgent();
-    if (agent) savePointEverywhere({ trigger: 'agent', agent, agentLikely: true, label: `While ${agent} was running`, onlyIfChanged: true });
+    if (agent) savePointEverywhere({ trigger: 'agent', agent, agentLikely: true, label: `While ${agent} was running`, onlyIfChanged: true, quick: true });
   }
 
   // An agent's hook asked for a save point (hook-server.js), in the protected folder the agent works in.
@@ -522,30 +619,73 @@ function createMewndo({
       : oneLine ? `Before ${agent} runs: ${oneLine.length > 100 ? `${oneLine.slice(0, 100)}…` : oneLine}`
         : `${agent}${event ? `: ${event}` : ''}`;
     // Before every command: only when something changed since the newest save point, or they'd pile up.
-    const savePoint = await j.createSavePoint({ trigger: 'hook', agent, label, onlyIfChanged: event !== 'SessionStart' });
+    const savePoint = await j.createSavePoint({ trigger: 'hook', agent, label, onlyIfChanged: event !== 'SessionStart', quick: true });
     return { folder: root, savePoint };
   }
 
   // null, or why exact save points for agents aren't available.
   mewndo.hookServerProblem = () => hookServerProblem;
 
+  // --- Unclean shutdowns ------------------------------------------------------------------------------------------
+  // Stored objects aren't flushed to disk one by one (see store.js), so a power cut can damage the newest ones.
+  // running.json exists while Mewndo runs and says from when objects may not be on disk yet; a clean stop deletes
+  // it. Found at launch, it means the last run ended uncleanly: those objects are checked, damaged ones removed,
+  // and index entries that point at missing content dropped, so the catch-up scan stores those files again.
+  // ponytail: assumes the OS writes data to disk within 5 minutes (Linux: 30 s, Windows: seconds); checkpoints
+  // could fsync instead if that ever proves too optimistic.
+  const markerFile = path.join(dataDir, 'running.json');
+  let checkpointTimer = null;
+  const writeMarker = (since) => writeFileAtomic(markerFile, JSON.stringify({ since }));
+
+  async function recoverIfUnclean() {
+    const marker = await readJson(markerFile);
+    if (!marker) return;
+    const damaged = await store.verifySince(marker.since ?? 0);
+    const stored = await store.hashes();
+    let dropped = 0;
+    for (const id of await fsp.readdir(foldersDir).catch(() => [])) {
+      const file = path.join(foldersDir, id, 'index.json');
+      const saved = await readJson(file).catch(() => null);
+      if (!saved?.index) continue;
+      const before = Object.keys(saved.index).length;
+      for (const [rel, e] of Object.entries(saved.index)) if (e.hash && !stored.has(e.hash)) delete saved.index[rel];
+      const n = before - Object.keys(saved.index).length;
+      if (n) { dropped += n; await writeFileAtomic(file, JSON.stringify(saved)); }
+    }
+    mewndo.emit('recovered', { damaged: damaged.length, dropped });
+    if (damaged.length || dropped) {
+      warn('unclean-shutdown', `Mewndo didn't shut down cleanly last time (for example a power cut). ${damaged.length} recently saved `
+        + `file version${damaged.length === 1 ? ' was' : 's were'} damaged and removed; files still on disk are being saved again. `
+        + 'Restoring one of those versions will report it as missing.');
+    }
+  }
+
   // At launch: clean temp files, protect the remembered folders again (catch-up scans run in the
   // background), prune, then prune once a day.
   mewndo.start = async () => {
     await fsp.mkdir(dataDir, { recursive: true });
     await store.cleanTemp();
+    await recoverIfUnclean();
+    await writeMarker(now());
+    checkpointTimer = setInterval(() => writeMarker(now() - 5 * 60 * 1000).catch(() => {}), 10 * 60 * 1000);
+    checkpointTimer.unref();
     for (const id of await fsp.readdir(foldersDir).catch(() => [])) {
       const settings = await readJson(settingsFile(path.join(foldersDir, id)));
-      if (!settings?.protected) continue;
+      if (!settings?.protected || [...journals.keys()].some((r) => samePath(r, settings.root))) continue; // already running
       try {
         await mewndo.protect(settings.root, { retentionDays: settings.retentionDays, background: true, resuming: true });
       } catch (e) {
-        warn('folder-unavailable', `Can't protect ${settings.root}: ${e.message}`, { root: settings.root });
+        if (['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO', 'ENODEV', 'ENXIO'].includes(e.code)) await registerOffline(settings);
+        else warn('folder-unavailable', `Can't protect ${settings.root}: ${e.message}`, { root: settings.root });
       }
     }
     await mewndo.prune();
     timer = setInterval(() => mewndo.prune().catch((e) => warn('prune-failed', e.message)), pruneEveryMs);
     timer.unref();
+    availabilityTimer = setInterval(() => checkAvailability().catch((e) => warn('journal', e.message)), availabilityCheckMs);
+    availabilityTimer.unref();
+    diskTimer = setInterval(() => checkDisk().catch(() => {}), diskCheckMs);
+    diskTimer.unref();
     if (agents) {
       agentWatcher = createAgentWatcher({
         agentsFile: path.join(dataDir, 'agents.json'), intervalMs: agents.intervalMs, listProcesses: agents.listProcesses,
@@ -572,6 +712,9 @@ function createMewndo({
     clearInterval(timer);
     clearTimeout(resumeTimer);
     clearInterval(agentTimer);
+    clearInterval(availabilityTimer);
+    clearInterval(diskTimer);
+    clearInterval(checkpointTimer);
     agentWatcher?.stop();
     runningAgents.clear();
     await hookServerHandle?.close();
@@ -579,6 +722,8 @@ function createMewndo({
     await pruning;
     for (const j of mewndo.journals()) await j.stop();
     journals.clear();
+    if (checkpointTimer) await fsp.rm(markerFile, { force: true }); // a clean stop
+    checkpointTimer = null;
   };
 
   mewndo.store = store;

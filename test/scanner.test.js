@@ -157,3 +157,46 @@ test('online-only cloud files (size but no disk space) are recorded as skipped, 
   assert.deepStrictEqual(opened.sort(), ['local.txt', 'tiny.txt']);
   assert.ok(m['local.txt'].hash && m['tiny.txt'].hash);
 });
+
+test('rescanning only the changed folders gives exactly what a full scan gives', async () => {
+  const root = tempDir();
+  const write = (rel, text = rel) => { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); };
+  for (const rel of ['a.txt', 'docs/b.md', 'docs/old/c.md', 'src/x.js', 'src/lib/y.js', 'src/lib/deep/z.js', 'gone/q.txt', 'swap/inner.txt', 'Case.txt']) write(rel);
+  fs.writeFileSync(path.join(root, 'swapfile'), 'a file that becomes a folder');
+  const before = await scan(root, opts);
+
+  // What an agent might do; `changed` is what a watcher reports (each path's folder).
+  const changed = new Set();
+  const touch = (rel) => changed.add(rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
+  write('src/x.js', 'edited'); touch('src/x.js');
+  write('src/new/deeper/n.js'); touch('src/new');
+  fs.rmSync(path.join(root, 'docs/b.md')); touch('docs/b.md');
+  fs.rmSync(path.join(root, 'gone'), { recursive: true }); touch('gone');
+  fs.renameSync(path.join(root, 'src/lib'), path.join(root, 'src/library')); touch('src/lib'); touch('src/library');
+  fs.rmSync(path.join(root, 'swap'), { recursive: true }); fs.writeFileSync(path.join(root, 'swap'), 'a folder that became a file'); touch('swap');
+  fs.rmSync(path.join(root, 'swapfile')); write('swapfile/now-a-folder.txt'); touch('swapfile');
+  fs.renameSync(path.join(root, 'Case.txt'), path.join(root, 'case-tmp')); fs.renameSync(path.join(root, 'case-tmp'), path.join(root, 'case.txt')); touch('case.txt');
+  write('node_modules/pkg/i.js'); touch('node_modules/pkg/i.js'); // ignored
+  fs.symlinkSync(path.join(root, 'docs'), path.join(root, 'src/docs-link'), 'junction'); touch('src/docs-link');
+
+  const partial = await scan(root, { ...opts, previous: before, dirs: [...changed] });
+  const full = await scan(root, opts);
+  assert.deepStrictEqual(partial, full);
+  assert.ok(!partial['docs/b.md'] && !partial['src/lib/deep/z.js'] && partial['src/library/deep/z.js'].hash);
+  assert.strictEqual(partial['src/docs-link'].type, 'link');
+});
+
+test('a partial rescan reads only the changed folders', async () => {
+  const root = tempDir();
+  for (let i = 0; i < 20; i++) {
+    fs.mkdirSync(path.join(root, `d${i}`));
+    fs.writeFileSync(path.join(root, `d${i}`, 'f.txt'), `${i}`);
+  }
+  const before = await scan(root, opts);
+  fs.writeFileSync(path.join(root, 'd3', 'f.txt'), 'changed');
+  let found = 0;
+  const after = await scan(root, { ...opts, previous: before, dirs: ['d3'], onProgress: (p) => { found = p.found; } });
+  assert.strictEqual(found, 1, 'only d3/f.txt was looked at');
+  assert.notStrictEqual(after['d3/f.txt'].hash, before['d3/f.txt'].hash);
+  assert.strictEqual(after['d4/f.txt'], before['d4/f.txt']);
+});
