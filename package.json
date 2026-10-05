@@ -11,13 +11,46 @@
     "start": "electron .",
     "test": "node --test \"test/**/*.test.js\"",
     "reliability": "node scripts/reliability.js",
-    "responsiveness": "node scripts/responsiveness.js"
+    "responsiveness": "node scripts/responsiveness.js",
+    "dist": "electron-builder --win --x64"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "chokidar": "^4.0.3"
   },
   "devDependencies": {
-    "electron": "^44.5.1"
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.mewndo.app",
+    "productName": "Mewndo",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "app/**",
+      "engine/**",
+      "bin/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "bin/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createStartMenuShortcut": true,
+      "createDesktopShortcut": false,
+      "shortcutName": "Mewndo",
+      "uninstallDisplayName": "Mewndo",
+      "include": "build/installer.nsh"
+    }
   }
 }

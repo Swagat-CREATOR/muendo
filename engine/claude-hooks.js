@@ -7,7 +7,8 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { writeFileAtomic } = require('./store');
 
-const SCRIPT = path.join(__dirname, '..', 'bin', 'mewndo-savepoint.js');
+// In the installed app, bin/ is unpacked next to app.asar (Node can't run a file inside the archive).
+const SCRIPT = path.join(__dirname, '..', 'bin', 'mewndo-savepoint.js').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 const MARK = 'mewndo-savepoint'; // how Mewndo recognises its own hook entries
 
 // Claude Code reads ~/.claude/settings.json, or CLAUDE_CONFIG_DIR when set.
@@ -87,4 +88,34 @@ async function installClaudeHooks(options) {
   return { ...plan, backup };
 }
 
-module.exports = { planClaudeHooks, installClaudeHooks, claudeSettingsPath, hookCommand, SCRIPT };
+// Take Mewndo's hooks out again (uninstalling Mewndo), keeping everything else. Returns { removed, backup }.
+async function removeClaudeHooks({ settingsPath = claudeSettingsPath() } = {}) {
+  let current;
+  try {
+    current = JSON.parse(await fsp.readFile(settingsPath, 'utf8'));
+  } catch {
+    return { removed: 0, backup: null }; // no settings file, or not one Mewndo can safely change
+  }
+  if (!current?.hooks || typeof current.hooks !== 'object') return { removed: 0, backup: null };
+  const next = structuredClone(current);
+  let removed = 0;
+  for (const [event, groups] of Object.entries(next.hooks)) {
+    if (!Array.isArray(groups)) continue;
+    const kept = groups.flatMap((g) => {
+      if (!Array.isArray(g?.hooks)) return [g];
+      const hooks = g.hooks.filter((h) => !String(h?.command ?? '').includes(MARK));
+      removed += g.hooks.length - hooks.length;
+      return hooks.length ? [{ ...g, hooks }] : [];
+    });
+    if (kept.length) next.hooks[event] = kept;
+    else delete next.hooks[event];
+  }
+  if (!removed) return { removed: 0, backup: null };
+  if (!Object.keys(next.hooks).length) delete next.hooks;
+  const backup = `${settingsPath}.mewndo-uninstall-backup`;
+  await fsp.copyFile(settingsPath, backup);
+  await writeFileAtomic(settingsPath, `${JSON.stringify(next, null, 2)}\n`);
+  return { removed, backup };
+}
+
+module.exports = { planClaudeHooks, installClaudeHooks, removeClaudeHooks, claudeSettingsPath, hookCommand, SCRIPT };

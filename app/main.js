@@ -26,7 +26,9 @@ const REPORT_MAX_AGE = 10 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 
 // Dev and testing: a throwaway profile instead of the real one.
-if (process.env.MEWNDO_USER_DATA) app.setPath('userData', path.resolve(process.env.MEWNDO_USER_DATA));
+// Always %APPDATA%\mewndo (the hook script and the uninstaller look there), however the app is named or started.
+// Dev and testing: MEWNDO_USER_DATA picks a throwaway profile instead.
+app.setPath('userData', process.env.MEWNDO_USER_DATA ? path.resolve(process.env.MEWNDO_USER_DATA) : path.join(app.getPath('appData'), 'mewndo'));
 
 let win = null;
 let tray = null;
@@ -143,9 +145,11 @@ function startEngine() {
     .then(stateChanged, (e) => notify('Mewndo could not start protecting', e.message));
 }
 
+// Windows and macOS; a no-op on Linux. Started at login, Mewndo opens hidden in the tray. Only for the installed app:
+// run from source, the entry would start a bare Electron. The name is what the uninstaller removes.
 function applyOpenAtLogin() {
-  // Windows and macOS; a no-op on Linux. Started at login, Mewndo opens hidden in the tray.
-  app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, openAsHidden: true, args: ['--hidden'] });
+  if (!app.isPackaged) return;
+  app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, openAsHidden: true, args: ['--hidden'], name: 'Mewndo' });
 }
 
 // A plain ring-and-dot icon drawn in code, so there is no image file to ship yet. Design comes later.
@@ -823,7 +827,10 @@ const settingsHandlers = {
 
 // --- Startup ---------------------------------------------------------------------------------------------------
 
-if (!app.requestSingleInstanceLock()) {
+if (process.argv.includes('--remove-claude-hooks')) {
+  // Run by the uninstaller: take Mewndo's hooks out of Claude Code's settings, then exit. No window, no engine.
+  require('../engine/claude-hooks').removeClaudeHooks().catch(() => {}).finally(() => app.exit(0));
+} else if (!app.requestSingleInstanceLock()) {
   app.quit(); // another copy is running; it shows its window
 } else {
   app.on('second-instance', () => showWindow());
@@ -841,6 +848,7 @@ if (!app.requestSingleInstanceLock()) {
     log.info(`Mewndo ${app.getVersion()} starting`, { platform: process.platform, electron: process.versions.electron });
     app.on('will-quit', () => log.info('Mewndo quitting'));
     await loadSettings();
+    if (settings.setupDone) applyOpenAtLogin(); // keeps the sign-in entry pointing at this copy of Mewndo
     startEngine(); // re-protects saved folders and prunes, all inside the engine process
 
     for (const [name, fn] of Object.entries(handlers)) {

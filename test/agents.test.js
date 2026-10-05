@@ -285,3 +285,23 @@ test('Claude Code hooks: a settings file that is not valid JSON is refused and l
   assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), '{ "model": "opus", // a comment }');
   assert.deepStrictEqual(fs.readdirSync(dir), ['settings.json'], 'no backup or temp files left');
 });
+
+test('Claude Code hooks: uninstalling removes only Mewndo\'s hooks, keeps everything else, and backs up the file', async () => {
+  const { removeClaudeHooks } = require('../engine');
+  const dir = tempDir();
+  const settingsPath = path.join(dir, 'settings.json');
+  assert.deepStrictEqual(await removeClaudeHooks({ settingsPath }), { removed: 0, backup: null }, 'no file: nothing to do');
+  const own = { model: 'opus', hooks: { PreToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'my-linter' }] }] } };
+  fs.writeFileSync(settingsPath, JSON.stringify(own));
+  await installClaudeHooks({ settingsPath, nodePath: '/usr/bin/node' });
+  const before = fs.readFileSync(settingsPath, 'utf8');
+  const result = await removeClaudeHooks({ settingsPath });
+  assert.strictEqual(result.removed, 2);
+  assert.strictEqual(fs.readFileSync(result.backup, 'utf8'), before);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')), own, 'exactly the user\'s own settings again');
+  assert.deepStrictEqual(await removeClaudeHooks({ settingsPath }), { removed: 0, backup: null }, 'twice changes nothing');
+
+  fs.writeFileSync(settingsPath, '{ not json');
+  assert.deepStrictEqual(await removeClaudeHooks({ settingsPath }), { removed: 0, backup: null });
+  assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), '{ not json', 'a file Mewndo can\'t read is left alone');
+});
