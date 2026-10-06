@@ -1,9 +1,15 @@
 // The messages between the desktop app and mewndo-core. One JSON object per line, both ways.
 //   app  -> core  {"v":1,"id":7,"type":"status"}
 //   core -> app   {"v":1,"id":7,"type":"status","version":"0.1.0","pid":1234,"uptime_ms":5000}
+//   app  -> core  {"v":1,"id":8,"type":"store_put","store":"<data>/store","files":["C:\\a.txt"],"within":"C:\\"}
+//   core -> app   {"v":1,"id":8,"type":"stored","results":[{"hash":"9f86…"}]}  or [{"error":"…","code":"changed"}]
 // Every message carries the protocol version `v`; a request with another version gets an `unsupported_version`
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
+use crate::store::{self, Store, StoreError};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -15,6 +21,21 @@ pub enum Request {
     Status,
     /// Stop cleanly. The reply comes first.
     Shutdown,
+    /// Store files in the content store at `store` (a v0-format store folder), many at once. `within`: the
+    /// protected folder each file must really be inside. Replies `stored`, one result per file, in order.
+    StorePut {
+        store: PathBuf,
+        files: Vec<PathBuf>,
+        within: Option<PathBuf>,
+    },
+    /// Replies `has`.
+    StoreHas { store: PathBuf, hash: String },
+    /// Write stored content to `dest`, which must not exist yet, verifying it. Replies `ok`.
+    StoreCopyOut {
+        store: PathBuf,
+        hash: String,
+        dest: PathBuf,
+    },
     /// Any type this version doesn't know. Only for reading requests; never sent.
     #[serde(other)]
     Unknown,
@@ -29,6 +50,12 @@ pub enum Response {
         uptime_ms: u64,
     },
     Ok,
+    Stored {
+        results: Vec<PutResult>,
+    },
+    Has {
+        stored: bool,
+    },
     Error {
         code: ErrorCode,
         message: String,
@@ -42,6 +69,19 @@ pub enum ErrorCode {
     BadRequest,
     UnsupportedVersion,
     UnknownType,
+    /// The request was understood but failed; `message` says why.
+    Failed,
+}
+
+/// One file's result in a batch: its hash, or why it wasn't stored (`code`: changed, not_found, io…).
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct PutResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 /// What every message looks like on the wire: the version and id around the message itself.
@@ -114,9 +154,40 @@ pub fn encode(id: Option<u64>, body: Response) -> String {
 
 pub struct Info {
     pub started: Instant,
+    /// Content stores opened so far. Each is cleaned of stale temp files the first time it's used.
+    stores: Mutex<HashMap<PathBuf, Arc<Store>>>,
+}
+
+impl Info {
+    pub fn new() -> Info {
+        Info {
+            started: Instant::now(),
+            stores: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn store(&self, dir: &Path) -> Arc<Store> {
+        let mut stores = self.stores.lock().unwrap_or_else(|e| e.into_inner());
+        stores
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| {
+                let store = Arc::new(Store::new(dir));
+                let _ = store.clean_temp(store::TEMP_MAX_AGE); // startup cleanup, as v0 does
+                store
+            })
+            .clone()
+    }
+}
+
+fn failed(e: StoreError) -> Response {
+    Response::Error {
+        code: ErrorCode::Failed,
+        message: format!("{} ({})", e, e.code()),
+    }
 }
 
 /// Answer one request line. Returns the reply line and whether the core should now stop.
+/// May take a while (store work): run it off the async threads.
 pub fn respond(line: &str, info: &Info) -> (String, bool) {
     match decode(line) {
         Err(e) => (
@@ -138,6 +209,47 @@ pub fn respond(line: &str, info: &Info) -> (String, bool) {
             (encode(Some(id), status), false)
         }
         Ok((id, Request::Shutdown)) => (encode(Some(id), Response::Ok), true),
+        Ok((
+            id,
+            Request::StorePut {
+                store,
+                files,
+                within,
+            },
+        )) => {
+            let results = info
+                .store(&store)
+                .put_batch(&files, within.as_deref())
+                .into_iter()
+                .map(|r| match r {
+                    Ok(hash) => PutResult {
+                        hash: Some(hash),
+                        error: None,
+                        code: None,
+                    },
+                    Err(e) => PutResult {
+                        hash: None,
+                        error: Some(e.to_string()),
+                        code: Some(e.code().into()),
+                    },
+                })
+                .collect();
+            (encode(Some(id), Response::Stored { results }), false)
+        }
+        Ok((id, Request::StoreHas { store, hash })) => {
+            let reply = info
+                .store(&store)
+                .has(&hash)
+                .map_or_else(failed, |stored| Response::Has { stored });
+            (encode(Some(id), reply), false)
+        }
+        Ok((id, Request::StoreCopyOut { store, hash, dest })) => {
+            let reply = info
+                .store(&store)
+                .copy_out(&hash, &dest)
+                .map_or_else(failed, |()| Response::Ok);
+            (encode(Some(id), reply), false)
+        }
         Ok((_, Request::Unknown)) => unreachable!("decode turns unknown types into errors"),
     }
 }
@@ -147,12 +259,7 @@ mod tests {
     use super::*;
 
     fn reply(line: &str) -> (serde_json::Value, bool) {
-        let (out, stop) = respond(
-            line,
-            &Info {
-                started: Instant::now(),
-            },
-        );
+        let (out, stop) = respond(line, &Info::new());
         assert!(!out.contains('\n'), "a reply is exactly one line");
         (serde_json::from_str(&out).unwrap(), stop)
     }

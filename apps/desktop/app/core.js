@@ -46,14 +46,15 @@ function createCore({
     pending.clear();
   }
 
-  // Every request has a deadline: a core that doesn't answer counts as not responding.
-  function request(type) {
+  // Every request has a deadline: a core that doesn't answer counts as not responding. fields: the request's own
+  // fields (see core/src/protocol.rs). within: a longer deadline for slow work such as storing a batch of files.
+  function request(type, fields = {}, { within = answerWithinMs } = {}) {
     return new Promise((resolve, reject) => {
       if (!socket) return reject(new Error('mewndo-core is not connected'));
       const id = ++nextId;
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error('mewndo-core did not answer in time')); }, answerWithinMs);
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('mewndo-core did not answer in time')); }, within);
       pending.set(id, { resolve, reject, timer });
-      socket.write(`${JSON.stringify({ v: PROTOCOL_VERSION, id, type })}\n`);
+      socket.write(`${JSON.stringify({ ...fields, v: PROTOCOL_VERSION, id, type })}\n`);
     });
   }
 

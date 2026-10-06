@@ -8,13 +8,13 @@
 // so it never outlives the app.
 mod log;
 mod protocol;
+mod store;
 
 use log::Log;
 use protocol::Info;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::watch;
 
@@ -81,9 +81,7 @@ fn main() -> ExitCode {
 }
 
 async fn serve(address: &str, log: Arc<Log>) -> std::io::Result<()> {
-    let info = Arc::new(Info {
-        started: Instant::now(),
-    });
+    let info = Arc::new(Info::new());
     let (stop, stopped) = watch::channel(false);
 
     // stdin closes when the app exits or crashes. A plain thread: a blocking read in tokio would hold up shutdown.
@@ -170,7 +168,13 @@ async fn connection<S: AsyncRead + AsyncWrite>(
     let (reader, mut writer) = tokio::io::split(stream);
     let mut lines = BufReader::new(reader).lines(); // ponytail: no line length cap; the socket is this user's only
     while let Ok(Some(line)) = lines.next_line().await {
-        let (reply, shutdown) = protocol::respond(&line, &info);
+        let info = info.clone();
+        let Ok((reply, shutdown)) =
+            tokio::task::spawn_blocking(move || protocol::respond(&line, &info)).await
+        else {
+            log.error("a request handler crashed");
+            break;
+        };
         if reply.contains(r#""type":"error""#) {
             log.warn(&format!("refused a request: {reply}"));
         }
