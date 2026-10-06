@@ -14,8 +14,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -24,9 +24,22 @@ jobs:
       - run: npm ci
       - name: clippy
         run: cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
+      # Each step's output also goes to ci.log; on a failure the last step posts the failing lines as an annotation,
+      # which anyone can read without signing in (the full log needs a GitHub login).
       - name: unit tests (core, then the app and v0 engine)
-        run: npm test
+        shell: bash
+        run: npm test 2>&1 | tee -a ci.log; exit ${PIPESTATUS[0]}
       - name: reliability (agent disaster, 5,000-file burst, crash during restore, locked files)
-        run: npm run reliability
+        shell: bash
+        run: npm run reliability 2>&1 | tee -a ci.log; exit ${PIPESTATUS[0]}
       - name: responsiveness (the real Electron app)
-        run: npm run responsiveness
+        shell: bash
+        run: npm run responsiveness 2>&1 | tee -a ci.log; exit ${PIPESTATUS[0]}
+      - name: show what failed
+        if: failure()
+        shell: bash
+        run: |
+          lines=$(grep -E -A25 '^✖|FAILED|panicked|^error|^  FAIL|^FAIL' ci.log | head -150)
+          lines=${lines//'%'/%25}
+          lines=${lines//$'\r'/}
+          echo "::error title=What failed::${lines//$'\n'/%0A}"
