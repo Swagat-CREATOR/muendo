@@ -131,4 +131,4 @@ async function removeClaudeHooks({ settingsPath = claudeSettingsPath() } = {}) {
   return { removed, backup };
 }
 
-module.exports = { planClaudeHooks, installClaudeHooks, removeClaudeHooks, claudeSettingsPath, hookCommand, SCRIPT, GUARD_MATCHER };
+module.exports = { planClaudeHooks, installClaudeHooks, removeClaudeHooks, claudeSettingsPath, hookCommand, findNode, SCRIPT, GUARD_MATCHER };

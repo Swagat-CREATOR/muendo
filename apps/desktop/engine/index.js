@@ -1,5 +1,5 @@
 // Mewndo engine: all file logic. Plain Node only, never imports Electron.
 module.exports = {
   ...require('./store'), ...require('./scanner'), ...require('./journal'), ...require('./diff'), ...require('./mewndo'),
-  ...require('./agents'), ...require('./core-client'), ...require('./hook-server'), ...require('./claude-hooks'), ...require('./brief'),
+  ...require('./agents'), ...require('./core-client'), ...require('./hook-server'), ...require('./claude-hooks'), ...require('./agent-hooks'), ...require('./brief'),
 };

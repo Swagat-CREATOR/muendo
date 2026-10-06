@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('mewndo', {
   ping: call('ping'),
   claudeHooksPlan: call('claudeHooksPlan'),
   claudeHooksInstall: call('claudeHooksInstall'),
+  agentHooksPlan: call('agentHooksPlan'),
+  agentHooksInstall: call('agentHooksInstall'),
   safetyRules: call('safetyRules'),
   openSettings: call('openSettings'),
   openLimits: call('openLimits'),

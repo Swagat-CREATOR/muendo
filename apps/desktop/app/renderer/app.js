@@ -461,11 +461,19 @@ async function loadHookStatus() {
   }
 }
 
-$('claude-hooks').onclick = guard(async () => {
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' };
+
+// Show exactly what will be added to the agent's settings, then add it only if the user says so.
+async function setupHooks(agent) {
+  const name = AGENT_NAMES[agent];
+  $('hooks-title').textContent = agent === 'claude' ? 'Add Mewndo to Claude Code?' : `Add Mewndo's Guard to ${name}?`;
+  $('hooks-about-claude').hidden = agent !== 'claude';
+  $('hooks-about-agent').hidden = agent === 'claude';
+  for (const el of document.querySelectorAll('.agent-name')) el.textContent = name;
   $('hooks-error').textContent = '';
   let plan;
   try {
-    plan = await api.claudeHooksPlan();
+    plan = agent === 'claude' ? await api.claudeHooksPlan() : await api.agentHooksPlan(agent);
   } catch (e) {
     $('hooks-path').textContent = '';
     $('hooks-note').textContent = '';
@@ -483,11 +491,14 @@ $('claude-hooks').onclick = guard(async () => {
   $('hooks-preview').textContent = plan.preview;
   $('hooks-ok').disabled = plan.installed;
   if ((await ask($('hooks-dialog'))) !== 'ok') return;
-  const result = await api.claudeHooksInstall();
-  toast(result.backup ? `Added. The previous settings were saved to ${result.backup}. New Claude Code sessions make exact save points.`
-    : 'Added. New Claude Code sessions make exact save points.');
-  await loadHookStatus();
-});
+  const result = agent === 'claude' ? await api.claudeHooksInstall() : await api.agentHooksInstall(agent);
+  const after = agent === 'claude' ? 'New Claude Code sessions make exact save points and ask Mewndo first.' : `New ${name} sessions ask Mewndo first.`;
+  toast(result.backup ? `Added. The previous settings were saved to ${result.backup}. ${after}` : `Added. ${after}`);
+  if (agent === 'claude') await loadHookStatus();
+}
+$('claude-hooks').onclick = guard(() => setupHooks('claude'));
+$('codex-hooks').onclick = guard(() => setupHooks('codex'));
+$('cursor-hooks').onclick = guard(() => setupHooks('cursor'));
 
 // --- Brief safety rules ---------------------------------------------------------------------------------------
 

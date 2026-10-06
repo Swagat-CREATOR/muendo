@@ -11,7 +11,7 @@ const { createStore, writeFileAtomic, isInside } = require('./store');
 const { createJournal, folderId } = require('./journal');
 const { defaultCore } = require('./core-client');
 const { compareEngines } = require('./shadow');
-const { actionFor, judge, claudeOutput } = require('./guard');
+const { actionsFor, strictest, judge, outputFor } = require('./guard');
 const { folderSize, DEFAULT_IGNORE } = require('./scanner');
 const { createAgentWatcher, loadAgents, saveAgents, DEFAULT_AGENTS } = require('./agents');
 const { BURST_DEFAULTS } = require('./burst');
@@ -648,22 +648,28 @@ function createMewndo({
   // the folder, the files the brief names, and its rules; with no brief written yet, deletes are allowed (with a
   // save point first) but everything else is checked. Outside protected folders only secrets, destructive commands
   // and bursts are checked. An allowed delete gets a save point before the answer goes back.
-  mewndo.guard = async (input, { agent = 'Claude Code' } = {}) => {
+  const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' };
+  mewndo.guard = async (input, { agent = 'claude' } = {}) => {
+    const name = AGENT_NAMES[agent] ?? agent;
+    const actions = actionsFor(agent, input);
+    if (!actions.length) return {}; // nothing to judge: an empty answer lets it go ahead
     const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : '.';
-    const action = actionFor(input.tool_name, input.tool_input ?? {}, cwd);
-    if (!action) return {}; // nothing to judge: an empty answer lets it go ahead
     const real = await fsp.realpath(cwd).catch(() => path.resolve(cwd));
     const root = [...journals.keys()].find((r) => samePath(r, real) || isInside(real, r)) ?? null;
     const saved = root ? await readBrief(root) : null;
     const brief = root ? { roots: [root], text: saved?.task ?? '', allow_deletes: !saved } : {};
-    const verdict = await judge(core, { session: String(input.session_id || 'unknown'), brief, action }, { failOpen: guardFailOpen });
+    const session = `${agent}:${input.session_id ?? input.conversation_id ?? 'unknown'}`;
+    const verdicts = [];
+    for (const action of actions) verdicts.push(await judge(core, { session, brief, action }, { failOpen: guardFailOpen }));
+    const verdict = strictest(verdicts);
     if (verdict.decision === 'allow' && verdict.deletes > 0 && root) {
-      const what = action.kind === 'shell' ? action.command.replace(/\s+/g, ' ').trim().slice(0, 100) : action.path;
-      await journals.get(root)?.createSavePoint({ trigger: 'hook', agent, label: `Before ${agent} deletes: ${what}`, quick: true })
+      const a = actions[0];
+      const what = a.kind === 'shell' ? a.command.replace(/\s+/g, ' ').trim().slice(0, 100) : a.path;
+      await journals.get(root)?.createSavePoint({ trigger: 'hook', agent: name, label: `Before ${name} deletes: ${what}`, quick: true })
         .catch((e) => warn('guard', `No save point before a delete: ${e.message}`, { folder: root }));
     }
-    mewndo.emit('guard', { folder: root, agent, action, verdict });
-    return claudeOutput(verdict);
+    mewndo.emit('guard', { folder: root, agent: name, actions, verdict });
+    return outputFor(agent, verdict);
   };
 
   // null, or why exact save points for agents aren't available.

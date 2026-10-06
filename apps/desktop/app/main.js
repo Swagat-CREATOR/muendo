@@ -673,6 +673,8 @@ const handlers = {
     await saveSettings();
     return { rules: safetyRules(), defaults: DEFAULT_SAFETY_RULES, edited: safetyRules() !== DEFAULT_SAFETY_RULES };
   },
+  agentHooksPlan: (agent) => call('agentHooksPlan', String(agent)),
+  agentHooksInstall: (agent) => call('agentHooksInstall', String(agent)),
   claudeHooksInstall: () => call('claudeHooksInstall'),
   openSettings: () => openSettings(),
   openLimits: () => openLimits(),

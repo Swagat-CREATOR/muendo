@@ -40,8 +40,10 @@ async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePo
     // A web page can't read the token, but it could still try requests through a hostname that points at this
     // computer (DNS rebinding); only accept the names a local program uses.
     if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)) return reply(res, 403, { error: 'wrong host' });
-    const guard = req.url === '/guard' && onGuard;
+    const url = new URL(req.url, 'http://localhost');
+    const guard = url.pathname === '/guard' && onGuard;
     if (req.method !== 'POST' || (req.url !== '/savepoint' && !guard)) return reply(res, 404, { error: 'not found' });
+    const agent = ['claude', 'codex', 'cursor'].includes(url.searchParams.get('agent')) ? url.searchParams.get('agent') : 'claude';
     if (!sameToken(req.headers['x-mewndo-token'], token)) return reply(res, 401, { error: 'wrong token' });
     let body = '';
     let tooBig = false;
@@ -57,7 +59,7 @@ async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePo
       const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
       if (guard) {
         try {
-          const answer = await onGuard(input && typeof input === 'object' ? input : {});
+          const answer = await onGuard(input && typeof input === 'object' ? input : {}, { agent });
           if (!res.destroyed) reply(res, 200, answer);
         } catch (e) {
           if (!res.destroyed) reply(res, 500, { error: e.message });

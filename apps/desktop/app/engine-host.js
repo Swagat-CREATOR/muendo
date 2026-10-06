@@ -2,7 +2,7 @@
 // big JSON indexes, pruning) can ever freeze the window. The main process talks to it with messages:
 //   main -> engine  { id, method, args }        engine -> main  { id, result } or { id, error, code }
 //   engine -> main  { event, args }             (progress, save points, restores, warnings...)
-const { createMewndo, HOOK_PORT, planClaudeHooks, installClaudeHooks } = require('../engine');
+const { createMewndo, HOOK_PORT, planClaudeHooks, installClaudeHooks, planAgentHooks, installAgentHooks, AGENT_HOOKS } = require('../engine');
 
 const port = process.parentPort;
 let mewndo = null;
@@ -69,6 +69,17 @@ const methods = {
   async claudeHooksPlan() {
     const { merged, ...plan } = await planClaudeHooks({ dataDir });
     return plan;
+  },
+  // The same for Codex and Cursor (agent-hooks.js).
+  async agentHooksPlan(agent) {
+    if (!AGENT_HOOKS.includes(agent)) throw new Error('unknown agent');
+    const { merged, ...plan } = await planAgentHooks(agent);
+    return plan;
+  },
+  async agentHooksInstall(agent) {
+    if (!AGENT_HOOKS.includes(agent)) throw new Error('unknown agent');
+    const { merged, ...result } = await installAgentHooks(agent);
+    return result;
   },
   async claudeHooksInstall() {
     const { merged, ...result } = await installClaudeHooks({ dataDir });

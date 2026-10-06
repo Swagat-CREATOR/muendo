@@ -43,6 +43,8 @@
         <h2>Claude Code</h2>
         <p class="muted">Exact save points when a session starts, and Guard: Claude Code asks Mewndo before every command, edit or read.</p>
         <button id="claude-hooks">Set up Claude Code save points…</button>
+        <button id="codex-hooks">Set up Guard for Codex…</button>
+        <button id="cursor-hooks">Set up Guard for Cursor…</button>
         <p id="claude-hooks-status" class="muted"></p>
         <h2>Briefs</h2>
         <p class="muted">Ctrl+Alt+B: type a task, and Mewndo makes a save point and copies the task with these safety rules for your agent.</p>
@@ -117,13 +119,24 @@
 
   <dialog id="hooks-dialog">
     <form method="dialog">
-      <h2>Add Mewndo to Claude Code?</h2>
+      <h2 id="hooks-title">Add Mewndo to Claude Code?</h2>
+      <div id="hooks-about-claude">
       <p>Claude Code will run Mewndo's save point script when a session starts, and ask Mewndo before every command,
         file edit or file read (Guard). Mewndo answers allow, deny or ask, with a reason Claude reads: it refuses secrets
         (.env files, keys), changes outside the folder, and deletes your brief didn't name, and asks you before recursive
         deletes, hard resets and force-pushes. Deletes it allows get a save point first.</p>
       <p class="muted">What it can't do: while Mewndo isn't running, Claude Code isn't checked and goes ahead as usual.
         The address includes a private token so only Claude Code on this computer can ask.</p>
+      </div>
+      <div id="hooks-about-agent" hidden>
+      <p>Before every shell command, file edit and tool call, <span class="agent-name"></span> will run Mewndo's guard
+        script, which asks Mewndo and answers allow, deny or ask with a reason the agent reads. It refuses secrets,
+        changes outside the folder and deletes your brief didn't name, and stops recursive deletes, hard resets and
+        force-pushes until you confirm.</p>
+      <p class="muted">What it can't do: while Mewndo isn't running, the script lets harmless actions through and refuses
+        deletes and other destructive commands. Codex can't pause to ask you, so "ask" reaches it as a refusal telling it
+        to ask you. Codex's hosted tools (such as web search) don't go through hooks.</p>
+      </div>
       <p><strong>File:</strong> <span id="hooks-path" class="mono"></span></p>
       <p id="hooks-note"></p>
       <p><strong>Exactly this will be added:</strong></p>
