@@ -12,8 +12,8 @@ test('bottom right by default, docks to the side edge it is dropped near, stays 
     assert.ok(home.x > wa.width / 2 + 200, "clear of Wispr Flow's bar at bottom centre");
     assert.strictEqual(dropBar(d, { x: 10, y: 300 }).bounds.x, MARGIN, 'docks left');
     assert.strictEqual(dropBar(d, { x: wa.width - SIZE.width - 5, y: 300 }).saved.dock, 'right', 'docks right');
-    const free = dropBar(d, { x: 500, y: 300 });
-    assert.deepStrictEqual([free.saved.dock, free.bounds.x, free.bounds.y], [null, 500, 300]);
+    const free = dropBar(d, { x: 500, y: 150 }); // the window is 480 tall: y 150 fits at both scales
+    assert.deepStrictEqual([free.saved.dock, free.bounds.x, free.bounds.y], [null, 500, 150]);
     const lost = placeBar(d, { dock: null, x: 99999, y: -50 });
     assert.ok(lost.x + lost.width <= wa.width && lost.y >= 0, 'kept on screen');
   }
