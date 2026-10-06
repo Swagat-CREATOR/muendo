@@ -29,6 +29,13 @@ and writes the result to the restore log. Kept from v0: the before-undo save poi
 retries for locked files, crash recovery from the log. `apps/desktop/test/restore.test.js` runs every v0 restore
 test on both engines.
 
+Process control (`src/process.rs`, Windows, for Brake in spec §24.3): `process_freeze`, `process_resume` and
+`process_end` act on a process and all its descendants. Freeze uses `NtSuspendProcess` and re-reads the tree
+until no new child turns up; resume thaws every thread fully, so a tree frozen twice comes back with one resume;
+end freezes, then terminates. It refuses system processes (pids 0 and 4, session 0 services, critical processes,
+the Windows shell and its helpers) and Mewndo itself (the core, everything it runs under, and every process
+running the app's program), and says why.
+
 What it can't do yet:
 - The app doesn't use any of it. Protection, scanning and restores still run in the v0 Node engine
   (`apps/desktop/engine`), which stays the reference until this core passes every v0 test (cutover: P1.7).
@@ -43,7 +50,10 @@ What it can't do yet:
   reconciliation scan of those folders finds the rest. Drives without a journal (FAT, exFAT, network folders), a
   journal that was reset or has moved past the saved position, and more than 2,000 changed folders all mean
   rescanning everything.
-- The change feed runs on Windows only (Mewndo v1 is a Windows app).
+- The change feed and process control run on Windows only (Mewndo v1 is a Windows app).
+- Process control: a write already in progress finishes before a freeze takes hold. A process that's elevated
+  or another user's can't be frozen by a core that isn't; it's listed as skipped. A frozen process stays frozen
+  if Mewndo closes; resuming it later still works, from any run of the core.
 - Nothing has been measured against v0's speed yet (P1.6 benchmarks); restore results carry `ladder` and
   `timings` for that.
 

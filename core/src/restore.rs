@@ -257,7 +257,13 @@ fn set_mtime(p: &Path, ms: f64) -> io::Result<()> {
 
 /// Remove a link: a file symlink, or a junction or folder symlink (a folder to Windows).
 fn remove_link(p: &Path) -> io::Result<()> {
-    fs::remove_file(p).or_else(|e| if cfg!(windows) { fs::remove_dir(p) } else { Err(e) })
+    fs::remove_file(p).or_else(|e| {
+        if cfg!(windows) {
+            fs::remove_dir(p)
+        } else {
+            Err(e)
+        }
+    })
 }
 
 /// Move an item into the trash folder, keeping its relative path (numbered if that name is taken). Returns where
@@ -289,7 +295,10 @@ fn move_to_trash(abs: &Path, rel: &str, trash_root: &Path) -> io::Result<Option<
                 let mut s = dest.as_os_str().to_owned();
                 s.push(".link.json");
                 let target = display(&fs::read_link(abs)?);
-                write_file_atomic(Path::new(&s), json!({ "target": target }).to_string().as_bytes())?;
+                write_file_atomic(
+                    Path::new(&s),
+                    json!({ "target": target }).to_string().as_bytes(),
+                )?;
                 remove_link(abs)?;
                 return Ok(None); // not a file that can be renamed back
             }
@@ -336,7 +345,9 @@ fn junction(target: &Path, at: &Path) -> io::Result<()> {
     const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
     let shown = display(target);
     let print: Vec<u16> = std::ffi::OsStr::new(&shown).encode_wide().collect();
-    let substitute: Vec<u16> = std::ffi::OsStr::new(&format!(r"\??\{shown}")).encode_wide().collect();
+    let substitute: Vec<u16> = std::ffi::OsStr::new(&format!(r"\??\{shown}"))
+        .encode_wide()
+        .collect();
     let len = |v: &[u16]| (v.len() * 2) as u16;
     // REPARSE_DATA_BUFFER for a mount point: the tag, the data length, a reserved word, then where each name sits
     // in the path buffer (bytes), then both names, each ending in a NUL.
@@ -411,14 +422,22 @@ fn selector(paths: &Option<Vec<String>>) -> impl Fn(&str) -> bool + '_ {
     });
     move |p: &str| {
         clean.as_ref().is_none_or(|ps| {
-            ps.iter()
-                .any(|s| p == s || p.strip_prefix(s.as_str()).is_some_and(|r| r.starts_with('/')))
+            ps.iter().any(|s| {
+                p == s
+                    || p.strip_prefix(s.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            })
         })
     }
 }
 
 /// Paths in the folder that differ from the save point. Unrestorable entries are left out (v0's verify).
-fn mismatches(target: &Manifest, now: &Manifest, paths: &Option<Vec<String>>, base: &Path) -> Vec<String> {
+fn mismatches(
+    target: &Manifest,
+    now: &Manifest,
+    paths: &Option<Vec<String>>,
+    base: &Path,
+) -> Vec<String> {
     let sel = selector(paths);
     let mut out: Vec<String> = Vec::new();
     for (p, want) in target.iter().filter(|(p, _)| sel(p)) {
@@ -443,7 +462,11 @@ fn mismatches(target: &Manifest, now: &Manifest, paths: &Option<Vec<String>>, ba
             out.push(p.clone());
         }
     }
-    out.extend(now.keys().filter(|p| sel(p) && !target.contains_key(*p)).cloned());
+    out.extend(
+        now.keys()
+            .filter(|p| sel(p) && !target.contains_key(*p))
+            .cloned(),
+    );
     out.sort();
     out
 }
@@ -459,7 +482,9 @@ fn remove_own_temps(log: &Log) {
     dirs.sort();
     dirs.dedup();
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             if is_own_temp(&entry.file_name().to_string_lossy()) {
                 let _ = remove_link(&entry.path());
@@ -480,7 +505,12 @@ fn flush(base: &Path, placed: &[PathBuf]) {
         }
     }
     let _ = base;
-    parallel_map(placed, |p| File::options().write(true).open(p).and_then(|f| f.sync_all()));
+    parallel_map(placed, |p| {
+        File::options()
+            .write(true)
+            .open(p)
+            .and_then(|f| f.sync_all())
+    });
 }
 
 /// Now, as JavaScript's toISOString gives it: 2026-10-05T12:34:56.789Z.
@@ -548,7 +578,12 @@ impl Run<'_> {
     }
 
     /// Retry `f` for step i, telling the app about each retry.
-    fn retry<T>(&self, step: &Step, attempts: &mut u32, f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    fn retry<T>(
+        &self,
+        step: &Step,
+        attempts: &mut u32,
+        f: impl FnMut() -> io::Result<T>,
+    ) -> io::Result<T> {
         retry(
             self.opts.retry_delay_ms,
             attempts,
@@ -578,7 +613,9 @@ impl Run<'_> {
                     } += 1;
                 }
                 if attempts > 1 {
-                    o.retried.push(json!({ "path": step.path, "op": step.op.name(), "attempts": attempts }));
+                    o.retried.push(
+                        json!({ "path": step.path, "op": step.op.name(), "attempts": attempts }),
+                    );
                 }
             }
             Err(e) => {
@@ -645,11 +682,15 @@ impl Run<'_> {
         } else {
             drop(trashed);
         }
-        self.log.trash_from.iter().map(|root| to_abs(root, &step.path)).find(|p| {
-            lstat(p).ok().flatten().is_some_and(|m| {
-                m.is_file() && Some(m.len()) == step.size && mtime_ms(&m) == mtime
+        self.log
+            .trash_from
+            .iter()
+            .map(|root| to_abs(root, &step.path))
+            .find(|p| {
+                lstat(p).ok().flatten().is_some_and(|m| {
+                    m.is_file() && Some(m.len()) == step.size && mtime_ms(&m) == mtime
+                })
             })
-        })
     }
 
     /// Get a file ready next to its place (or find it in the trash). Touches nothing the user has.
@@ -661,7 +702,9 @@ impl Run<'_> {
         let st = lstat(&abs)?;
         // Only a resumed restore can find a file already right; a new plan lists only files that differ.
         if self.opts.resuming
-            && st.as_ref().is_some_and(|m| m.is_file() && Some(m.len()) == step.size)
+            && st
+                .as_ref()
+                .is_some_and(|m| m.is_file() && Some(m.len()) == step.size)
             && store::hash_file(&abs, None).ok().as_ref() == Some(hash)
         {
             return Ok(Staged::Done);
@@ -693,7 +736,10 @@ impl Run<'_> {
     }
 
     fn link(&self, step: &Step) -> io::Result<bool> {
-        let target = step.target.as_deref().ok_or_else(|| other("the log has no link target"))?;
+        let target = step
+            .target
+            .as_deref()
+            .ok_or_else(|| other("the log has no link target"))?;
         let abs = self.abs(step);
         let st = lstat(&abs)?;
         if let Some(m) = &st {
@@ -763,7 +809,11 @@ impl Run<'_> {
                         let _ = fs::remove_file(tmp);
                     } else {
                         let mut o = self.outcome.lock().unwrap_or_else(|e| e.into_inner());
-                        *if *unpacked { &mut o.ladder.unpacked } else { &mut o.ladder.copied } += 1;
+                        *if *unpacked {
+                            &mut o.ladder.unpacked
+                        } else {
+                            &mut o.ladder.copied
+                        } += 1;
                     }
                     r.map(|()| true)
                 }
@@ -771,14 +821,22 @@ impl Run<'_> {
                     // A failure leaves it in the trash: never lost.
                     let r = self.retry(step, &mut attempts, || self.place(step, from));
                     if r.is_ok() {
-                        self.outcome.lock().unwrap_or_else(|e| e.into_inner()).ladder.from_trash += 1;
+                        self.outcome
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .ladder
+                            .from_trash += 1;
                     }
                     r.map(|()| true)
                 }
             };
             if result.as_ref().is_ok_and(|did| *did) {
                 let abs = self.abs(step);
-                self.outcome.lock().unwrap_or_else(|e| e.into_inner()).placed.push(abs);
+                self.outcome
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .placed
+                    .push(abs);
             }
             self.finish(step, result, attempts);
         });
@@ -794,7 +852,8 @@ fn clone_err(e: &io::Error) -> io::Error {
 }
 
 fn read_json(p: &Path) -> io::Result<Value> {
-    serde_json::from_slice(&fs::read(exact(p))?).map_err(|e| other(&format!("{}: {e}", p.display())))
+    serde_json::from_slice(&fs::read(exact(p))?)
+        .map_err(|e| other(&format!("{}: {e}", p.display())))
 }
 
 /// Run, or finish (resuming), the restore whose log is at `log_file`, in <folder data>/restores/. Files go in place
@@ -803,7 +862,8 @@ fn read_json(p: &Path) -> io::Result<Value> {
 pub fn run(log_file: &Path, store: &Store, opts: &Options, emit: Emit) -> io::Result<Value> {
     let started = Instant::now();
     let mut log_value = read_json(log_file)?;
-    let log: Log = serde_json::from_value(log_value.clone()).map_err(|e| other(&format!("restore log: {e}")))?;
+    let log: Log = serde_json::from_value(log_value.clone())
+        .map_err(|e| other(&format!("restore log: {e}")))?;
     let folder_dir = log_file
         .parent()
         .and_then(Path::parent)
@@ -857,7 +917,11 @@ pub fn run(log_file: &Path, store: &Store, opts: &Options, emit: Emit) -> io::Re
 
     // Verify what is really on disk, not what the index assumes: a fresh scan with full rehash.
     tell("verifying");
-    let save_point = read_json(&folder_dir.join("savepoints").join(format!("{}.json", log.save_point_id)))?;
+    let save_point = read_json(
+        &folder_dir
+            .join("savepoints")
+            .join(format!("{}.json", log.save_point_id)),
+    )?;
     let target: Manifest = serde_json::from_value(save_point["index"].clone())
         .map_err(|e| other(&format!("save point: {e}")))?;
     let (now, _) = scanner::scan(&log.base, &Manifest::new(), None, &opts.scan, None)?;
@@ -894,7 +958,9 @@ mod tests {
             N.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&d).unwrap();
-        Dir(fs::canonicalize(&d).map(|p| PathBuf::from(display(&p))).unwrap())
+        Dir(fs::canonicalize(&d)
+            .map(|p| PathBuf::from(display(&p)))
+            .unwrap())
     }
     fn write(root: &Path, rel: &str, content: &[u8]) {
         let p = root.join(rel);
@@ -903,7 +969,10 @@ mod tests {
     }
     fn opts() -> Options {
         Options {
-            scan: ScanOptions { skip_online_only: false, ..ScanOptions::default() },
+            scan: ScanOptions {
+                skip_online_only: false,
+                ..ScanOptions::default()
+            },
             resuming: false,
             retry_delay_ms: 1,
             crash_after_steps: None,
@@ -928,10 +997,23 @@ mod tests {
             }
             let data = base.0.join("data");
             let store = Store::new(&data.join("store"));
-            Setup { root, store, data, _base: base }
+            Setup {
+                root,
+                store,
+                data,
+                _base: base,
+            }
         }
         fn scan(&self) -> Manifest {
-            scanner::scan(&self.root, &Manifest::new(), None, &opts().scan, Some(&self.store)).unwrap().0
+            scanner::scan(
+                &self.root,
+                &Manifest::new(),
+                None,
+                &opts().scan,
+                Some(&self.store),
+            )
+            .unwrap()
+            .0
         }
         fn save(&self, id: &str) -> Manifest {
             let index = self.scan();
@@ -965,7 +1047,11 @@ mod tests {
 
     #[test]
     fn copies_or_unpacks_from_the_store_trashes_what_is_new_verifies_and_writes_the_log() {
-        let s = Setup::new(&[("a.txt", b"A text"), ("photo.png", b"png bytes"), ("docs/b.md", b"B")]);
+        let s = Setup::new(&[
+            ("a.txt", b"A text"),
+            ("photo.png", b"png bytes"),
+            ("docs/b.md", b"B"),
+        ]);
         let want = s.save("sp");
         fs::remove_file(s.root.join("a.txt")).unwrap();
         fs::remove_file(s.root.join("photo.png")).unwrap();
@@ -981,17 +1067,34 @@ mod tests {
         let events = Mutex::new(Vec::new());
         let r = run(&log, &s.store, &opts(), &|e| events.lock().unwrap().push(e)).unwrap();
         assert_eq!(r["verified"], true, "{r}");
-        assert_eq!(r["counts"], json!({ "written": 3, "linked": 0, "trashed": 1, "foldersCreated": 1, "foldersRemoved": 1 }));
-        assert_eq!(r["ladder"], json!({ "fromTrash": 0, "copied": 1, "unpacked": 2 })); // .png is stored as is
+        assert_eq!(
+            r["counts"],
+            json!({ "written": 3, "linked": 0, "trashed": 1, "foldersCreated": 1, "foldersRemoved": 1 })
+        );
+        assert_eq!(
+            r["ladder"],
+            json!({ "fromTrash": 0, "copied": 1, "unpacked": 2 })
+        ); // .png is stored as is
         assert_eq!(fs::read(s.root.join("docs/b.md")).unwrap(), b"B");
         assert!(!s.root.join("new").exists());
-        assert_eq!(fs::read(s.data.join("trash/r1/new/agent.txt")).unwrap(), b"agent");
+        assert_eq!(
+            fs::read(s.data.join("trash/r1/new/agent.txt")).unwrap(),
+            b"agent"
+        );
         let m = fs::symlink_metadata(s.root.join("a.txt")).unwrap();
-        assert_eq!(Some(mtime_ms(&m)).map(|t| (t - want["a.txt"].mtime_ms.unwrap()).abs() < 1.0), Some(true));
+        assert_eq!(
+            Some(mtime_ms(&m)).map(|t| (t - want["a.txt"].mtime_ms.unwrap()).abs() < 1.0),
+            Some(true)
+        );
         let written = read_json(&log).unwrap();
         assert_eq!(written["status"], "done");
         assert_eq!(written["result"]["verified"], true);
-        let phases: Vec<Value> = events.lock().unwrap().iter().map(|e| e["phase"].clone()).collect();
+        let phases: Vec<Value> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e["phase"].clone())
+            .collect();
         assert!(phases.contains(&json!("restored")) && phases.last() == Some(&json!("verifying")));
     }
 
@@ -1002,7 +1105,14 @@ mod tests {
         let want = s.save("sp");
         fs::rename(s.root.join("c.txt"), s.root.join("c-renamed.txt")).unwrap();
         let now = s.scan();
-        let log = s.log("sp", json!([trash_step(&now, "c-renamed.txt"), write_step(&want, "c.txt")]), json!([]));
+        let log = s.log(
+            "sp",
+            json!([
+                trash_step(&now, "c-renamed.txt"),
+                write_step(&want, "c.txt")
+            ]),
+            json!([]),
+        );
         let r = run(&log, &s.store, &opts(), &nothing).unwrap();
         assert_eq!(r["verified"], true, "{r}");
         assert_eq!(r["ladder"]["fromTrash"], 1);
@@ -1014,7 +1124,11 @@ mod tests {
         fs::remove_file(s.root.join("c.txt")).unwrap();
         let file = earlier.join("c.txt");
         set_mtime(&file, want["c.txt"].mtime_ms.unwrap()).unwrap();
-        let log = s.log("sp", json!([write_step(&want, "c.txt")]), json!([display(&earlier)]));
+        let log = s.log(
+            "sp",
+            json!([write_step(&want, "c.txt")]),
+            json!([display(&earlier)]),
+        );
         let r = run(&log, &s.store, &opts(), &nothing).unwrap();
         assert_eq!(r["verified"], true, "{r}");
         assert_eq!(r["ladder"]["fromTrash"], 1);
@@ -1028,10 +1142,17 @@ mod tests {
         let earlier = s.data.join("earlier-trash");
         write(&earlier, "c.txt", b"other bytes"); // size and time differ
         fs::remove_file(s.root.join("c.txt")).unwrap();
-        let log = s.log("sp", json!([write_step(&want, "c.txt")]), json!([display(&earlier)]));
+        let log = s.log(
+            "sp",
+            json!([write_step(&want, "c.txt")]),
+            json!([display(&earlier)]),
+        );
         let r = run(&log, &s.store, &opts(), &nothing).unwrap();
         assert_eq!(r["verified"], true, "{r}");
-        assert_eq!(r["ladder"], json!({ "fromTrash": 0, "copied": 0, "unpacked": 1 }));
+        assert_eq!(
+            r["ladder"],
+            json!({ "fromTrash": 0, "copied": 0, "unpacked": 1 })
+        );
         assert_eq!(fs::read(earlier.join("c.txt")).unwrap(), b"other bytes");
     }
 
@@ -1041,21 +1162,47 @@ mod tests {
         let want = s.save("sp");
         fs::remove_file(s.root.join("a.txt")).unwrap();
         fs::write(s.root.join("b.txt"), b"B edited").unwrap();
-        let log = s.log("sp", json!([write_step(&want, "a.txt"), write_step(&want, "b.txt")]), json!([]));
-        let crash = Options { crash_after_steps: Some(0), ..opts() };
-        assert_eq!(run(&log, &s.store, &crash, &nothing).unwrap_err().to_string(), "simulated crash");
+        let log = s.log(
+            "sp",
+            json!([write_step(&want, "a.txt"), write_step(&want, "b.txt")]),
+            json!([]),
+        );
+        let crash = Options {
+            crash_after_steps: Some(0),
+            ..opts()
+        };
+        assert_eq!(
+            run(&log, &s.store, &crash, &nothing)
+                .unwrap_err()
+                .to_string(),
+            "simulated crash"
+        );
         assert_eq!(read_json(&log).unwrap()["status"], "running");
-        let leftover = s.root.join("a.txt.12345678-1234-1234-1234-123456789abc.mewndo-tmp");
+        let leftover = s
+            .root
+            .join("a.txt.12345678-1234-1234-1234-123456789abc.mewndo-tmp");
         fs::write(&leftover, "half-written").unwrap();
         let not_ours = s.root.join("notes.mewndo-tmp");
         fs::write(&not_ours, "a user's file").unwrap();
 
-        let r = run(&log, &s.store, &Options { resuming: true, ..opts() }, &nothing).unwrap();
+        let r = run(
+            &log,
+            &s.store,
+            &Options {
+                resuming: true,
+                ..opts()
+            },
+            &nothing,
+        )
+        .unwrap();
         assert_eq!(r["resumed"], true);
         assert_eq!(fs::read(s.root.join("b.txt")).unwrap(), b"B");
         assert!(!leftover.exists());
         assert!(not_ours.exists());
-        assert_eq!(fs::read(s.data.join("trash/r1/b.txt")).unwrap(), b"B edited");
+        assert_eq!(
+            fs::read(s.data.join("trash/r1/b.txt")).unwrap(),
+            b"B edited"
+        );
     }
 
     #[test]
@@ -1070,11 +1217,20 @@ mod tests {
         let want = s.save("sp");
         let target = want["shared"].target.clone().unwrap();
         remove_link(&s.root.join("shared")).unwrap();
-        let log = s.log("sp", json!([{ "op": "link", "path": "shared", "target": target }]), json!([]));
+        let log = s.log(
+            "sp",
+            json!([{ "op": "link", "path": "shared", "target": target }]),
+            json!([]),
+        );
         let r = run(&log, &s.store, &opts(), &nothing).unwrap();
         assert_eq!(r["verified"], true, "{r}");
         assert_eq!(r["counts"]["linked"], 1);
-        assert!(fs::symlink_metadata(s.root.join("shared")).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(s.root.join("shared"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read(s.root.join("shared/x.txt")).unwrap(), b"outside");
         // Already right: nothing to do.
         let r = run(&log, &s.store, &opts(), &nothing).unwrap();
@@ -1083,11 +1239,15 @@ mod tests {
 
     #[test]
     fn own_temp_names_only() {
-        assert!(is_own_temp("a.txt.12345678-1234-1234-1234-123456789abc.mewndo-tmp"));
+        assert!(is_own_temp(
+            "a.txt.12345678-1234-1234-1234-123456789abc.mewndo-tmp"
+        ));
         assert!(is_own_temp(&temp_name(Path::new("x")).to_string_lossy()));
         assert!(!is_own_temp("notes.mewndo-tmp"));
         assert!(!is_own_temp("a.txt.12345678-1234-1234-1234-123456789abc"));
-        assert!(!is_own_temp("a.12345678x1234-1234-1234-123456789abc.mewndo-tmp"));
+        assert!(!is_own_temp(
+            "a.12345678x1234-1234-1234-123456789abc.mewndo-tmp"
+        ));
     }
 
     #[test]

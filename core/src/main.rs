@@ -9,6 +9,7 @@
 mod feed;
 mod log;
 mod paths;
+mod process;
 mod protocol;
 mod restore;
 mod scanner;

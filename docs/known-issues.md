@@ -32,5 +32,9 @@ Found 5 Oct 2026. `mewndo-savepoint: asks Mewndo for a save point, prints nothin
 later. It failed once on Windows, in the first full test run after a new `mewndo-core.exe` was built (Windows
 Defender scans a new program on its first runs, and the test files run in parallel), then passed in five runs.
 
+The same happened once to its neighbour `mewndo-savepoint: still exits 0 within a second when Mewndo isn't set up,
+isn't running, or hangs` (5 Oct 2026, full Windows run after the process control tests were added, which start
+`cmd` and `ping`); it passed in the next four runs, alone and in the full suite.
+
 If it fails again, keep the budget: it's the promise that a hook never slows the agent. Measure where the time
 goes (Node start, the HTTP call, the save point) instead.

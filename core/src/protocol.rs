@@ -10,12 +10,15 @@
 //   core -> app   {"v":1,"id":null,"type":"event","root":"C:\\Projects\\app","kind":"restore_progress","restore":"<id>",…}
 //   core -> app   {"v":1,"id":10,"type":"restored","result":{"verified":true,…}}
 // Events (id null) come on the connection that asked for the watch or restore, until it unwatches or disconnects.
+//   app  -> core  {"v":1,"id":11,"type":"process_freeze","pid":4242}   (also process_resume, process_end)
+//   core -> app   {"v":1,"id":11,"type":"processes","pids":[4242,4250],"skipped":[]}
 // A restore runs on its own thread, so other requests are answered meanwhile: its reply can come after theirs.
 // Every message carries the protocol version `v`; a request with another version gets an `unsupported_version`
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
 use crate::feed::{self, FeedEvent, WatchOptions};
-use crate::restore;
 use crate::paths::{display, real};
+use crate::process::{self, Action};
+use crate::restore;
 use crate::scanner::{self, Manifest, ScanOptions};
 use crate::store::{self, Store, StoreError};
 use serde::{Deserialize, Serialize};
@@ -41,7 +44,10 @@ pub enum Request {
         within: Option<PathBuf>,
     },
     /// Replies `has`.
-    StoreHas { store: PathBuf, hash: String },
+    StoreHas {
+        store: PathBuf,
+        hash: String,
+    },
     /// Write stored content to `dest`, which must not exist yet, verifying it. Replies `ok`.
     StoreCopyOut {
         store: PathBuf,
@@ -67,11 +73,18 @@ pub enum Request {
         options: WatchOptions,
     },
     /// Replies `ok`.
-    Unwatch { root: PathBuf },
+    Unwatch {
+        root: PathBuf,
+    },
     /// Where the change journal is now; note it before a sync. Replies `position` (usn null: no journal).
-    FeedPosition { root: PathBuf },
+    FeedPosition {
+        root: PathBuf,
+    },
     /// Everything before `usn` is safely recorded; the next start catches up from there. Replies `ok`.
-    FeedCheckpoint { root: PathBuf, usn: i64 },
+    FeedCheckpoint {
+        root: PathBuf,
+        usn: i64,
+    },
     /// Run (or with `resuming`, finish) the restore whose log the app wrote (restore.rs). `options`: the folder's
     /// scan settings, for verification. Sends `restore_progress` and `restore_retry` events; replies `restored`
     /// once the folder is verified and the result is in the log.
@@ -85,6 +98,16 @@ pub enum Request {
         retry_delay_ms: Option<u64>,
         /// Tests only.
         crash_after_steps: Option<usize>,
+    },
+    /// Brake (process.rs): freeze, resume or end the process tree of `pid`. Replies `processes`.
+    ProcessFreeze {
+        pid: u32,
+    },
+    ProcessResume {
+        pid: u32,
+    },
+    ProcessEnd {
+        pid: u32,
     },
     /// Any type this version doesn't know. Only for reading requests; never sent.
     #[serde(other)]
@@ -118,6 +141,11 @@ pub enum Response {
     },
     Position {
         usn: Option<i64>,
+    },
+    /// The processes acted on, root first, and the ones left alone (system processes, Mewndo itself).
+    Processes {
+        #[serde(flatten)]
+        report: process::Report,
     },
     /// v0's restore result (see restore::run).
     Restored {
@@ -491,8 +519,27 @@ fn respond_now(line: &str, info: &Info, session: &Session) -> (String, bool) {
             let reply = with_watch(session, &root, |w| w.checkpoint(usn).map(|()| Response::Ok));
             (encode(Some(id), reply), false)
         }
+        Ok((id, Request::ProcessFreeze { pid })) => {
+            (encode(Some(id), control(pid, Action::Freeze)), false)
+        }
+        Ok((id, Request::ProcessResume { pid })) => {
+            (encode(Some(id), control(pid, Action::Resume)), false)
+        }
+        Ok((id, Request::ProcessEnd { pid })) => {
+            (encode(Some(id), control(pid, Action::End)), false)
+        }
         Ok((_, Request::Restore { .. })) => unreachable!("respond runs restores"),
         Ok((_, Request::Unknown)) => unreachable!("decode turns unknown types into errors"),
+    }
+}
+
+fn control(pid: u32, action: Action) -> Response {
+    match process::control(pid, action) {
+        Ok(report) => Response::Processes { report },
+        Err(e) => Response::Error {
+            code: ErrorCode::Failed,
+            message: e.to_string(),
+        },
     }
 }
 
