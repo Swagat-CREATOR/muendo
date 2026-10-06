@@ -16,6 +16,8 @@ async function open() {
   }));
   $('go').disabled = !folders.length;
   if (!folders.length) $('status').textContent = 'No folders are protected yet. Add one in the Mewndo window first.';
+  const said = await api.prefill(); // a task said to the bar's mic: shown for checking, never sent unseen
+  if (said) $('task').value = said;
   $('task').focus(); // ready for typing or dictation
 }
 

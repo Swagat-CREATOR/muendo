@@ -6,5 +6,6 @@ contextBridge.exposeInMainWorld('bar', {
   mouse: (over) => ipcRenderer.send('bar:mouse', over === true),
   drag: (msg) => ipcRenderer.send('bar:drag', msg),
   action: (name, arg) => ipcRenderer.send('bar:action', name, arg),
+  voice: (wav) => ipcRenderer.send('bar:voice', wav),
   onState(fn) { ipcRenderer.on('bar:state', (_e, s) => fn(s)); },
 });

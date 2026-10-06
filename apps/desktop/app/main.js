@@ -12,6 +12,8 @@ const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brie
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
 const { createCore } = require('./core');
 const { createBar } = require('./bar');
+const { createSpeech } = require('./speech');
+const { parseIntent, describe: describeIntent } = require('../engine/voice'); // plain text only, no engine work
 
 // Set up once the app is ready (the data folder depends on the profile). Until then, lines are dropped.
 let log = { info() {}, warn() {}, error() {}, file: null };
@@ -295,6 +297,8 @@ let driftCard = null; // the newest drift card (spec §23.4) until the user answ
 let holds = []; // local holds waiting for the user (engine 'holds-changed')
 let cardSeq = 0;
 let panelOpen = false;
+let speech = null; // speech to text for the bar's mic (speech.js)
+let ask = null; // a voice command waiting for the user: { id, heard, text, choices: [{ label, run }] }
 let hookStatus = { at: 0, guarded: {} }; // which agents have Mewndo's Guard hooks, re-read every 30 s
 
 // The up-arrow panel (spec §23.8), from local data only: agents and protected folders, and how sure Mewndo is.
@@ -360,13 +364,108 @@ function startBar() {
     onAction(name, arg) {
       barAction(name, arg).catch((e) => notify('Mewndo', e.message));
     },
+    onVoice(wav) {
+      voiceCommand(wav).catch((e) => showAsk('', `Voice command failed: ${e.message}`, [{ label: 'OK' }]));
+    },
     async fullScreen() {
       return process.platform === 'win32' && core?.status().state === 'running' && (await core.request('screen_state')).full_screen === true;
     },
     log,
   });
   bar.setEnabled(settings.barOff !== true);
+  speech = createSpeech({ log });
+  if (settings.barOff !== true) speech.warm();
   refreshBar();
+}
+
+// --- Voice commands (spec §23.3) ----------------------------------------------------------------------------------
+// Hold the mic, speak, let go: the words become one intent. Stop, resume, brief and "what changed" act at once (a
+// brief still waits for Ctrl+Enter); undo and freeze always show what they'll do and wait for Confirm; anything
+// unclear asks "did you mean". What it can't do: undo can't separate one agent's changes from yours made in the
+// same minutes, so it puts the whole folder back to the save point before then, and says so.
+let askSeq = 0;
+function showAsk(heard, text, choices) {
+  ask = { id: `ask-${++askSeq}`, heard, text, choices };
+  lastAlertAt = Date.now();
+  refreshBar();
+}
+
+async function voiceCommand(wav) {
+  const heard = await speech.transcribe(wav);
+  const agents = [...new Set(['Claude Code', 'Codex', 'Cursor', ...((await call('agents').catch(() => [])).map((a) => a.name))])];
+  const intent = parseIntent(heard, { agents });
+  if (intent.intent === 'unclear') {
+    const choices = intent.suggestions.map((sug) => ({ label: describeIntent(sug), run: () => runIntent({ ...sug, heard }, true) }));
+    return showAsk(heard, heard ? 'Did you mean:' : "Mewndo didn't catch that. Hold the mic and try again.", [...choices, { label: 'Cancel' }]);
+  }
+  return runIntent(intent, false);
+}
+
+// confirmed: the user already picked it from "did you mean" (undo and freeze still show their plan first).
+async function runIntent(i, confirmed) {
+  const heard = i.heard ?? '';
+  switch (i.intent) {
+    case 'stop':
+      await call('brake', i.agent, { reason: 'you said stop' });
+      return showAsk(heard, `Stopped ${i.agent}. Resume it from the bar when you're ready.`, [{ label: 'OK' }]);
+    case 'resume': {
+      const braked = (await call('braked')).map((b) => b.agent);
+      const agent = i.agent ?? (braked.length === 1 ? braked[0] : null);
+      if (!agent) return showAsk(heard, braked.length ? 'Resume which agent?' : 'No agent is braked.', [...braked.map((a) => ({ label: `Resume ${a}`, run: () => call('resumeAgent', a) })), { label: 'Cancel' }]);
+      await call('resumeAgent', agent);
+      ask = null;
+      return refreshBar();
+    }
+    case 'brief':
+      ask = null;
+      refreshBar();
+      return openBrief(i.task);
+    case 'freeze': {
+      const running = (await call('agents')).map((a) => a.name);
+      if (!running.length) return showAsk(heard, 'No agents are running.', [{ label: 'OK' }]);
+      return showAsk(heard, `Freeze ${running.join(', ')}? Their processes pause until you resume them.`, [
+        { label: 'Freeze', run: async () => { for (const a of running) await call('brake', a, { reason: 'you froze everything', freeze: true }); } },
+        { label: 'Cancel' },
+      ]);
+    }
+    case 'undo': return planVoiceUndo(i, heard);
+    case 'changes': {
+      const lines = [];
+      const today = new Date().setHours(0, 0, 0, 0);
+      for (const f of await call('folders')) {
+        const first = (await call('journal.listSavePoints', f.root)).find((sp) => Date.parse(sp.createdAt) >= today);
+        if (!first) continue;
+        const d = await call('journal.diffSince', f.root, first.id);
+        if (!nothingChanged(d)) lines.push(`${folderName(f.root)}: −${d.deleted.length} ~${d.edited.length + d.moved.length} +${d.created.length}`);
+      }
+      return showAsk(heard, lines.length ? `Today: ${lines.join(' · ')}` : 'Nothing changed in your protected folders today.', [
+        ...(lines.length ? [{ label: 'Show', run: () => showWindow() }] : []), { label: 'OK' },
+      ]);
+    }
+    default: return undefined;
+  }
+}
+
+async function planVoiceUndo(i, heard) {
+  const since = Date.now() - i.minutes * 60_000;
+  const activity = await call('activity').catch(() => ({ folders: [] }));
+  const touched = activity.folders.filter((f) => f.agent && (!i.agent || f.agent === i.agent)).map((f) => f.root);
+  const folders = touched.length ? touched : (await call('folders')).filter((f) => f.lastChangeAt && f.lastChangeAt >= since).map((f) => f.root);
+  const plans = [];
+  for (const root of folders) {
+    const sp = (await call('journal.listSavePoints', root)).filter((x) => Date.parse(x.createdAt) <= since).at(-1);
+    if (!sp) continue;
+    const plan = await call('journal.planRestore', root, sp.id, {});
+    if (plan.write.length + plan.links.length + plan.trash.length) plans.push({ root, sp, plan });
+  }
+  if (!plans.length) return showAsk(heard, `Nothing to undo from the last ${i.minutes} minutes.`, [{ label: 'OK' }]);
+  const text = plans.map(({ root, sp, plan }) => `${folderName(root)} goes back to ${new Date(sp.createdAt).toLocaleTimeString()}: ${confirmText(plan).split('\n')[0]}`
+    + (plan.trash.length ? ` ${plan.trash.length} newer file${plan.trash.length === 1 ? '' : 's'} go to Mewndo's trash.` : '')).join(' ');
+  const caveat = i.agent ? ` This undoes every change there since then, not only ${i.agent}'s.` : '';
+  return showAsk(heard, `${text}${caveat}`, [
+    { label: 'Undo', run: async () => { for (const { root, sp } of plans) await reportRestore(root, await call('journal.restore', root, sp.id)); } },
+    { label: 'Cancel' },
+  ]);
 }
 
 function refreshBar() {
@@ -391,7 +490,8 @@ function refreshBar() {
       agents: names.map((name) => ({ name, braked: brakedNames.has(name), drift: drifted.has(name) })),
       ticker: t ? { ...t, name: folderName(t.root) } : null,
       shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
-      card: driftCard, holds, panel: panelOpen ? await panelData(folders ?? [], brakedNames) : null,
+      card: driftCard, holds, ask: ask && { id: ask.id, heard: ask.heard, text: ask.text, choices: ask.choices.map((c) => c.label) },
+      voice: speech?.available === true, panel: panelOpen ? await panelData(folders ?? [], brakedNames) : null,
     });
   }, 30);
 }
@@ -428,6 +528,15 @@ async function barAction(name, arg) {
         if (card.folder) await barAction('diff', card.folder);
       } else if (name !== 'card-dismiss' && card.braked) await call('resumeAgent', card.agent); // writes the corrected brief
       else if (name === 'card-resume') openBrief();
+      break;
+    }
+    case 'ask-choose': { // arg: "<ask id>:<choice index>"; a stale click on an older question does nothing
+      const [id, n] = String(arg).split(':');
+      const current = ask;
+      if (!current || current.id !== id) break;
+      ask = null;
+      refreshBar();
+      await current.choices[Number(n)]?.run?.();
       break;
     }
     case 'hold-approve': await call('approveHold', arg); break;
@@ -580,7 +689,9 @@ function createBriefWindow() {
   briefWin.on('close', (e) => { if (!quitting) { e.preventDefault(); briefWin.hide(); } });
 }
 
-function openBrief() {
+let briefPrefill = null; // a task said to the bar's mic, put in the brief window for the user to check
+function openBrief(task) {
+  briefPrefill = typeof task === 'string' ? task : null;
   if (!briefWin || briefWin.isDestroyed()) createBriefWindow();
   else briefWin.webContents.send('brief:open');
   briefWin.center();
@@ -608,6 +719,7 @@ const briefHandlers = {
     return { savePointId: sp.id };
   },
   briefHide() { briefWin?.hide(); },
+  briefPrefill() { const t = briefPrefill; briefPrefill = null; return t; },
 };
 
 // --- Drift (Heal and Brake) --------------------------------------------------------------------------------------

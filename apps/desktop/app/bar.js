@@ -13,8 +13,8 @@ const { BrowserWindow, screen, ipcMain } = require('electron');
 const { placeBar, dropBar } = require('./bar-layout');
 
 // positions: { [display id]: saved spot } · savePositions(positions) · onAction(name, arg?) for the bar's buttons ·
-// fullScreen() -> Promise<boolean> · log.
-function createBar({ positions = {}, savePositions, onAction, fullScreen, log }) {
+// onVoice(wav Buffer) for the mic · fullScreen() -> Promise<boolean> · log.
+function createBar({ positions = {}, savePositions, onAction, onVoice, fullScreen, log }) {
   const windows = new Map(); // display id -> window
   let state = {};
   let enabled = false;
@@ -83,6 +83,9 @@ function createBar({ positions = {}, savePositions, onAction, fullScreen, log })
     // The open panel may take focus, but only once the user clicks inside it (spec §23.8): focusable, never focused.
     if (name === 'panel-open' || name === 'panel-close') w.setFocusable(name === 'panel-open');
     onAction(name, typeof arg === 'string' ? arg : undefined);
+  });
+  ipcMain.on('bar:voice', (e, wav) => {
+    if (fromSender(e.sender) && wav instanceof Uint8Array && wav.length < 20 * 1024 * 1024) onVoice(Buffer.from(wav));
   });
   ipcMain.on('bar:drag', (e, msg) => {
     const w = fromSender(e.sender);

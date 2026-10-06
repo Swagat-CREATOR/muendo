@@ -7,5 +7,6 @@ contextBridge.exposeInMainWorld('brief', {
   folders: call('briefFolders'),
   create: call('briefCreate'),
   hide: call('briefHide'),
+  prefill: call('briefPrefill'),
   onOpen(fn) { ipcRenderer.on('brief:open', () => fn()); },
 });

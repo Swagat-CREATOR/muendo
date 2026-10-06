@@ -51,6 +51,16 @@ button:focus-visible { outline: 2px solid #8cf; outline-offset: 2px; }
 .chip .time { font-variant-numeric: tabular-nums; color: #f2c76d; }
 .chip button { width: 22px; height: 22px; border-radius: 50%; background: rgba(255, 255, 255, .1); }
 .chip .ok:hover { background: #2a8a4a; } .chip .no:hover { background: #a33; }
+/* Listening: a waveform replaces the dots while the mic is held. */
+.wave { display: none; gap: 2px; align-items: center; height: 16px; }
+.wave i { width: 3px; height: 6px; border-radius: 2px; background: #8ab4ff; animation: wave .6s infinite ease-in-out alternate; }
+.wave i:nth-child(2) { animation-delay: .15s; } .wave i:nth-child(3) { animation-delay: .3s; } .wave i:nth-child(4) { animation-delay: .45s; }
+@keyframes wave { to { height: 16px; } }
+.pill.listening .wave { display: flex; }
+.pill.listening .agents, .pill.listening .more { display: none; }
+.pill.listening #mic { background: #c33; }
+.card.ask { border-left-color: #8ab4ff; }
+.card .heard { color: #999; font-style: italic; }
 /* The up-arrow panel (spec §23.8): about 360 x 420, slides up in 150 ms. */
 .box { width: 360px; height: 400px; box-sizing: border-box; display: flex; flex-direction: column; padding: 8px; border-radius: 12px;
   background: rgba(24, 24, 28, .97); box-shadow: 0 2px 14px rgba(0, 0, 0, .45); animation: up .15s ease-out; }

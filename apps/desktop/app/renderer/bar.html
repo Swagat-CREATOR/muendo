@@ -25,6 +25,11 @@
       <button class="text" data-action="card-stop">Stop and review</button>
     </div>
   </section>
+  <section id="ask" class="card ask hit" role="alertdialog" aria-labelledby="ask-text" hidden>
+    <p id="ask-heard" class="heard"></p>
+    <p id="ask-text" class="tried"></p>
+    <div id="ask-choices" class="row"></div>
+  </section>
   <div id="chips" class="chips"></div>
   <div id="hint" class="hint hit" hidden></div>
   <div id="pill" class="pill hit" role="toolbar" aria-label="Mewndo">
@@ -34,7 +39,8 @@
     <button class="text more" data-action="undo">Undo last</button>
     <button class="text more" data-action="brake" id="brake">Brake</button>
     <button class="text more" data-action="savepoint">Save point</button>
-    <button id="mic" class="round" aria-label="Voice commands (not available yet)" disabled>
+    <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    <button id="mic" class="round" aria-label="Hold to talk" disabled>
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg>
     </button>
     <button id="panel" class="round" aria-label="Agents and connections" aria-expanded="false">

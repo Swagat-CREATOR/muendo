@@ -16,7 +16,7 @@ let overPill = false;
 function wake() {
   pill.classList.remove('dot');
   clearTimeout(idle);
-  idle = setTimeout(() => { if (!overHit && !state.alert && !state.card && !state.holds?.length && !press) pill.classList.add('dot'); }, IDLE_MS);
+  idle = setTimeout(() => { if (!overHit && !state.alert && !state.card && !state.ask && !state.holds?.length && !press && !talking) pill.classList.add('dot'); }, IDLE_MS);
 }
 
 function setOpen(open) {
@@ -56,8 +56,11 @@ function render() {
   }
   $('brake').hidden = !(state.agents ?? []).some((a) => !a.braked);
   renderCard();
+  renderAsk();
   renderChips();
   renderPanel();
+  $('mic').disabled = !state.voice;
+  $('mic').setAttribute('aria-label', state.voice ? 'Hold to talk' : 'Voice commands need Windows');
   if (state.shortcuts) {
     $('hint').replaceChildren('Undo ', el('kbd', {}, state.shortcuts.undo), '  ·  Brief ', el('kbd', {}, state.shortcuts.brief));
   }
@@ -114,6 +117,68 @@ const LOCAL = {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setPanel(false); });
 window.addEventListener('blur', () => setPanel(false));
 
+// Voice: hold the mic to talk. Records 16 kHz mono and hands a WAV to the main process (speech.js) on release.
+const MAX_TALK_MS = 30_000;
+let rec = null; // { stream, ctx, chunks } while recording
+let talking = false;
+async function startTalking() {
+  talking = true;
+  pill.classList.add('listening');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    const ctx = new AudioContext({ sampleRate: 16000 });
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    const chunks = [];
+    node.onaudioprocess = (e) => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    ctx.createMediaStreamSource(stream).connect(node);
+    node.connect(ctx.destination);
+    rec = { stream, ctx, chunks, timer: setTimeout(stopTalking, MAX_TALK_MS) };
+    if (!talking) stopTalking(); // let go before the mic was ready
+  } catch {
+    talking = false;
+    pill.classList.remove('listening');
+    $('mic').title = 'No microphone: check Windows Settings, Privacy, Microphone.';
+  }
+}
+function wavOf(chunks, rate) {
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) for (const x of c) { v.setInt16(o, Math.max(-1, Math.min(1, x)) * 0x7fff, true); o += 2; }
+  return new Uint8Array(buf);
+}
+function stopTalking() {
+  talking = false;
+  pill.classList.remove('listening');
+  if (!rec) return;
+  const { stream, ctx, chunks, timer } = rec;
+  rec = null;
+  clearTimeout(timer);
+  for (const t of stream.getTracks()) t.stop();
+  const rate = ctx.sampleRate;
+  ctx.close();
+  const samples = chunks.reduce((a, c) => a + c.length, 0);
+  if (samples > rate * 0.3) window.bar.voice(wavOf(chunks, rate)); // shorter than 0.3 s: a tap, not speech
+}
+
+function renderAsk() {
+  const a = state.ask;
+  $('ask').hidden = !a;
+  if (!a) return;
+  $('ask-heard').textContent = a.heard ? `“${a.heard}”` : '';
+  $('ask-text').textContent = a.text;
+  $('ask-choices').replaceChildren(...a.choices.map((label, i) => {
+    const b = el('button', { className: `text ${i === 0 && a.choices.length > 1 ? 'primary' : ''}` }, label);
+    Object.assign(b.dataset, { action: 'ask-choose', arg: `${a.id}:${i}` });
+    return b;
+  }));
+}
+
 function renderCard() {
   const c = state.card;
   $('card').hidden = !c;
@@ -160,7 +225,9 @@ let press = null;
 document.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !e.target.closest('.hit')) return;
   const target = e.target.closest('button');
-  press = { x: e.screenX, y: e.screenY, dragging: false, long: false, target, onPill: !!e.target.closest('.pill') };
+  const mic = target?.id === 'mic' && !target.disabled;
+  press = { x: e.screenX, y: e.screenY, dragging: false, long: false, target, onPill: !mic && !!e.target.closest('.pill'), mic };
+  if (mic) startTalking();
   if (target?.dataset.long) {
     press.timer = setTimeout(() => {
       if (!press || press.dragging) return;
@@ -184,12 +251,13 @@ document.addEventListener('pointermove', (e) => {
 });
 document.addEventListener('pointerup', (e) => {
   if (!press) return;
-  const { dragging, long, target, timer } = press;
+  const { dragging, long, target, timer, mic } = press;
   clearTimeout(timer);
   press = null;
   if (document.body.hasPointerCapture(e.pointerId)) document.body.releasePointerCapture(e.pointerId);
   pill.classList.remove('dragging');
-  if (dragging) window.bar.drag({ phase: 'end' });
+  if (mic) stopTalking();
+  else if (dragging) window.bar.drag({ phase: 'end' });
   else if (!long && target && !target.disabled && LOCAL[target.id]) LOCAL[target.id]();
   else if (!long && target && !target.disabled && target.dataset.action) window.bar.action(target.dataset.action, target.dataset.arg);
   const hit = !!document.elementFromPoint(e.clientX, e.clientY)?.closest('.hit');
