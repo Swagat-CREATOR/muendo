@@ -10,6 +10,8 @@
     "reliability": "npm run reliability -w apps/desktop",
     "responsiveness": "npm run responsiveness -w apps/desktop",
     "dist": "cargo build --release --manifest-path core/Cargo.toml && npm run dist -w apps/desktop",
-    "test:windows": "scripts/windows.sh cargo test --manifest-path core/Cargo.toml && scripts/windows.sh node --test \"apps/desktop/test/**/*.test.js\""
+    "test:windows": "scripts/windows.sh cargo test --manifest-path core/Cargo.toml && scripts/windows.sh node --test \"apps/desktop/test/**/*.test.js\"",
+    "bench": "cargo build --release --manifest-path core/Cargo.toml && npm run bench -w apps/desktop",
+    "bench:windows": "scripts/windows.sh cargo build --release --manifest-path core/Cargo.toml && scripts/windows.sh node apps/desktop/scripts/bench.js"
   }
 }

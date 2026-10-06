@@ -12,6 +12,7 @@
     "test": "node --test \"test/**/*.test.js\"",
     "reliability": "node scripts/reliability.js",
     "responsiveness": "node scripts/responsiveness.js",
+    "bench": "node scripts/bench.js",
     "dist": "electron-builder --win --x64"
   },
   "engines": {

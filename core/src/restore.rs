@@ -10,8 +10,12 @@
 // The restore ladder, fastest first, for each file:
 //   1. Rename it back out of Mewndo's trash: a file this restore just moved aside, or (undoing a restore) one the
 //      restore being undone moved aside. Only when its size and modified time say it's the version wanted.
-//   2. and 4. Copy it from the store with the OS (store::copy_new: CopyFile2 on Windows, which block clones on
-//      ReFS and Dev Drive) when the store keeps it as is; unpack it when the store keeps it gzipped.
+//   2. and 4. From the store's hot cache (content stored in the last 24 hours, uncompressed); else copy it from the
+//      store with the OS (store::copy_new: CopyFile2 on Windows, which block clones on ReFS and Dev Drive) when
+//      the store keeps it as is; else unpack it.
+// Measured on Windows with Defender on (docs/benchmarks.md): every file opened or created costs an antivirus scan,
+// and unpacking a gzipped object costs the most, which is why the hot cache exists and why each staged file is
+// written, timed and closed through one handle.
 // ponytail: rung 3 of the spec (hard link from the store, broken on first write) needs copy-on-first-write
 // watching; add it with the hot cache if copies turn out too slow (P1.6 benchmarks).
 //
@@ -21,10 +25,10 @@
 // scan with full rehash) runs and its result is written to the restore log.
 use crate::paths::{display, exact};
 use crate::scanner::{self, Kind, Manifest, ScanOptions, mtime_ms, node_code};
-use crate::store::{self, Store, StoreError, TEMP_SUFFIX, parallel_map, write_file_atomic};
+use crate::store::{self, Source, Store, StoreError, TEMP_SUFFIX, parallel_map, write_file_atomic};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File, Metadata};
 use std::io;
@@ -112,6 +116,7 @@ struct Counts {
 #[serde(rename_all = "camelCase")]
 struct Ladder {
     from_trash: usize,
+    hot: usize,
     copied: usize,
     unpacked: usize,
 }
@@ -130,8 +135,8 @@ struct Outcome {
 enum Staged {
     /// Already right (a resumed restore got this far before).
     Done,
-    /// A temp file next to its place, from the store; true if it was unpacked.
-    Temp(PathBuf, bool),
+    /// A temp file next to its place, from the store.
+    Temp(PathBuf, Source),
     /// A file in Mewndo's trash.
     Trash(PathBuf),
 }
@@ -246,13 +251,20 @@ fn is_own_temp(name: &str) -> bool {
     })
 }
 
-fn set_mtime(p: &Path, ms: f64) -> io::Result<()> {
-    let at = if ms >= 0.0 {
+/// A time in Node's milliseconds since 1970.
+fn time_of(ms: f64) -> SystemTime {
+    if ms >= 0.0 {
         UNIX_EPOCH + Duration::from_secs_f64(ms / 1000.0)
     } else {
         UNIX_EPOCH - Duration::from_secs_f64(-ms / 1000.0)
-    };
-    File::options().write(true).open(p)?.set_modified(at)
+    }
+}
+
+fn set_mtime(p: &Path, ms: f64) -> io::Result<()> {
+    File::options()
+        .write(true)
+        .open(p)?
+        .set_modified(time_of(ms))
 }
 
 /// Remove a link: a file symlink, or a junction or folder symlink (a folder to Windows).
@@ -547,6 +559,8 @@ struct Run<'a> {
     outcome: Mutex<Outcome>,
     /// Files this restore moved aside, by hash, whose size and time matched the index: rung 1.
     trashed: Mutex<HashMap<String, Vec<PathBuf>>>,
+    /// Folders already checked for links in the way while staging (see stage).
+    checked: Mutex<HashSet<PathBuf>>,
     done: AtomicUsize,
     last_progress: Mutex<Instant>,
     crashed: AtomicBool,
@@ -712,17 +726,30 @@ impl Run<'_> {
         if st.as_ref().is_some_and(Metadata::is_dir) {
             return Err(other("a folder is in the way"));
         }
-        check_parent(&abs)?;
+        // Once per folder while staging: thousands of files in a folder needn't each ask whether it's a link.
+        // ponytail: a link swapped in after the check can't be fully blocked anyway (see check_parent).
+        let parent = abs.parent().map(Path::to_path_buf).unwrap_or_default();
+        if !self
+            .checked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&parent)
+        {
+            check_parent(&abs)?;
+            self.checked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(parent);
+        }
         if let Some(p) = self.in_trash(step, hash, mtime) {
             return Ok(Staged::Trash(p));
         }
         let tmp = temp_name(&abs);
-        let unpacked = self.store.restore_to(hash, &tmp).map_err(from_store)?;
-        if let Err(e) = set_mtime(&tmp, mtime) {
-            let _ = fs::remove_file(&tmp);
-            return Err(e);
-        }
-        Ok(Staged::Temp(tmp, unpacked))
+        let source = self
+            .store
+            .restore_to(hash, &tmp, time_of(mtime))
+            .map_err(from_store)?;
+        Ok(Staged::Temp(tmp, source))
     }
 
     /// Rename a staged file into place, moving what's there now into the trash first.
@@ -803,16 +830,16 @@ impl Run<'_> {
             let result = match staged {
                 Err(e) => Err(clone_err(e)),
                 Ok(Staged::Done) => Ok(false),
-                Ok(Staged::Temp(tmp, unpacked)) => {
+                Ok(Staged::Temp(tmp, source)) => {
                     let r = self.retry(step, &mut attempts, || self.place(step, tmp));
                     if r.is_err() {
                         let _ = fs::remove_file(tmp);
                     } else {
                         let mut o = self.outcome.lock().unwrap_or_else(|e| e.into_inner());
-                        *if *unpacked {
-                            &mut o.ladder.unpacked
-                        } else {
-                            &mut o.ladder.copied
+                        *match source {
+                            Source::Hot => &mut o.ladder.hot,
+                            Source::Copied => &mut o.ladder.copied,
+                            Source::Unpacked => &mut o.ladder.unpacked,
                         } += 1;
                     }
                     r.map(|()| true)
@@ -878,6 +905,7 @@ pub fn run(log_file: &Path, store: &Store, opts: &Options, emit: Emit) -> io::Re
         emit,
         outcome: Mutex::new(Outcome::default()),
         trashed: Mutex::new(HashMap::new()),
+        checked: Mutex::new(HashSet::new()),
         done: AtomicUsize::new(0),
         last_progress: Mutex::new(Instant::now()),
         crashed: AtomicBool::new(false),
@@ -1073,7 +1101,7 @@ mod tests {
         );
         assert_eq!(
             r["ladder"],
-            json!({ "fromTrash": 0, "copied": 1, "unpacked": 2 })
+            json!({ "fromTrash": 0, "hot": 2, "copied": 1, "unpacked": 0 })
         ); // .png is stored as is
         assert_eq!(fs::read(s.root.join("docs/b.md")).unwrap(), b"B");
         assert!(!s.root.join("new").exists());
@@ -1142,6 +1170,7 @@ mod tests {
         let earlier = s.data.join("earlier-trash");
         write(&earlier, "c.txt", b"other bytes"); // size and time differ
         fs::remove_file(s.root.join("c.txt")).unwrap();
+        s.store.clean_hot(Duration::ZERO).unwrap(); // a day later: unpacked from the store
         let log = s.log(
             "sp",
             json!([write_step(&want, "c.txt")]),
@@ -1151,7 +1180,7 @@ mod tests {
         assert_eq!(r["verified"], true, "{r}");
         assert_eq!(
             r["ladder"],
-            json!({ "fromTrash": 0, "copied": 0, "unpacked": 1 })
+            json!({ "fromTrash": 0, "hot": 0, "copied": 0, "unpacked": 1 })
         );
         assert_eq!(fs::read(earlier.join("c.txt")).unwrap(), b"other bytes");
     }

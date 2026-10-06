@@ -482,6 +482,7 @@ function createMewndo({
       release();
     }
 
+    await store.cleanHot(); // older than a day: restores unpack from the store instead
     reportCache = null;
     const result = {
       pruned: pruned.map(({ f, sp }) => ({ folder: f.root, id: sp.id, createdAt: sp.createdAt, trigger: sp.trigger, label: sp.label })),
@@ -665,6 +666,7 @@ function createMewndo({
   mewndo.start = async () => {
     await fsp.mkdir(dataDir, { recursive: true });
     await store.cleanTemp();
+    await store.cleanHot();
     await recoverIfUnclean();
     await writeMarker(now());
     checkpointTimer = setInterval(() => writeMarker(now() - 5 * 60 * 1000).catch(() => {}), 10 * 60 * 1000);

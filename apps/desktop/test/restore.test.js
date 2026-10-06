@@ -77,7 +77,7 @@ for (const engine of ['v0', 'rust']) {
       assert.strictEqual(result.verified, true, JSON.stringify(result));
       assert.deepStrictEqual(result.failures, []);
       assert.deepStrictEqual(result.counts, { written: 4, linked: 0, trashed: 1, foldersCreated: 1, foldersRemoved: 2 });
-      if (rust) assert.strictEqual(result.ladder.copied + result.ladder.unpacked + result.ladder.fromTrash, 4, 'the core wrote them');
+      if (rust) assert.strictEqual(result.ladder.hot + result.ladder.copied + result.ladder.unpacked + result.ladder.fromTrash, 4, 'the core wrote them');
       for (const [rel, content] of Object.entries(FILES)) assert.strictEqual(read(root, rel), content, rel);
       assert.ok(!exists(path.join(root, 'lib')));
       for (const rel of Object.keys(FILES)) {

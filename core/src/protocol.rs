@@ -12,7 +12,7 @@
 // Events (id null) come on the connection that asked for the watch or restore, until it unwatches or disconnects.
 //   app  -> core  {"v":1,"id":11,"type":"process_freeze","pid":4242}   (also process_resume, process_end)
 //   core -> app   {"v":1,"id":11,"type":"processes","pids":[4242,4250],"skipped":[]}
-// A restore runs on its own thread, so other requests are answered meanwhile: its reply can come after theirs.
+// Restores and other slow requests (is_slow) run alongside the rest, so their replies can come after later ones'.
 // Every message carries the protocol version `v`; a request with another version gets an `unsupported_version`
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
 use crate::feed::{self, FeedEvent, WatchOptions};
@@ -325,6 +325,22 @@ fn failed(e: StoreError) -> Response {
         code: ErrorCode::Failed,
         message: format!("{} ({})", e, e.code()),
     }
+}
+
+/// Requests that can take long: the connection runs them alongside others instead of in order.
+pub fn is_slow(line: &str) -> bool {
+    matches!(
+        decode(line),
+        Ok((
+            _,
+            Request::StorePut { .. }
+                | Request::StoreCopyOut { .. }
+                | Request::Scan { .. }
+                | Request::ProcessFreeze { .. }
+                | Request::ProcessResume { .. }
+                | Request::ProcessEnd { .. }
+        ))
+    )
 }
 
 /// Answer one request line. Returns the reply line (None: it comes later, on the session) and whether the core

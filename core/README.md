@@ -29,6 +29,14 @@ and writes the result to the restore log. Kept from v0: the before-undo save poi
 retries for locked files, crash recovery from the log. `apps/desktop/test/restore.test.js` runs every v0 restore
 test on both engines.
 
+Hot cache (`src/store.rs`, spec §25.2): new content up to 1 MB that the store gzips is also kept uncompressed in
+`<store>/hot/` for 24 hours (both engines write it; the app's daily cleanup removes older copies). Restores copy
+from it first and check the copy's hash. It's only a copy and isn't counted in the storage budget. Why: see
+`docs/benchmarks.md` (Defender unpacks gzip files to scan them).
+
+Slow requests (storing, scanning, process control, restores) run alongside the rest on a connection, so the app's
+health check is never stuck behind a long scan; their replies can come after later requests' replies.
+
 Process control (`src/process.rs`, Windows, for Brake in spec §24.3): `process_freeze`, `process_resume` and
 `process_end` act on a process and all its descendants. Freeze uses `NtSuspendProcess` and re-reads the tree
 until no new child turns up; resume thaws every thread fully, so a tree frozen twice comes back with one resume;
@@ -54,8 +62,8 @@ What it can't do yet:
 - Process control: a write already in progress finishes before a freeze takes hold. A process that's elevated
   or another user's can't be frozen by a core that isn't; it's listed as skipped. A frozen process stays frozen
   if Mewndo closes; resuming it later still works, from any run of the core.
-- Nothing has been measured against v0's speed yet (P1.6 benchmarks); restore results carry `ladder` and
-  `timings` for that.
+- Speed on Windows with Defender on is bound by Defender's scanning: 5,000 small files restore in about 16 s
+  (v0: about 55 s), not the 5 s target. See `docs/benchmarks.md` for the measurements and what would close the gap.
 
 On Windows every file path goes through `src/paths.rs` (the `\\?\` form, as Node uses), so names Windows
 would otherwise change, such as `notes.` or `draft ` (trailing dot or space), and paths over 260 characters are

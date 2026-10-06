@@ -80,9 +80,16 @@ async function hashFile(file, within) {
   return hash.digest('hex');
 }
 
+const HOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+// The hot cache (spec §25.2): content up to 1 MB stored in the last 24 hours also kept uncompressed in
+// <store>/hot/<first 2 hex>/<sha256>, so the most likely restores skip unpacking. Only a copy: mewndo-core checks
+// it before use, and removing it loses nothing. Not counted in the storage budget.
 function createStore(dir) {
   const objectsDir = path.join(dir, 'objects');
   const tmpDir = path.join(dir, 'tmp');
+  const hotDir = path.join(dir, 'hot');
+  const hotPath = (hash) => path.join(hotDir, hash.slice(0, 2), hash);
 
   function objectPath(hash, gzipped) {
     if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`invalid hash: ${hash}`);
@@ -149,6 +156,31 @@ function createStore(dir) {
     try { await fsp.rename(tmp, dest); } catch (e) { if (!(await has(digest))) throw e; }
   }
 
+  // Best effort: it's only a copy.
+  async function keepHot(hash, data) {
+    const tmp = path.join(tmpDir, crypto.randomUUID() + TEMP_SUFFIX);
+    try {
+      await mkdirOnce(path.dirname(hotPath(hash)));
+      await fsp.writeFile(tmp, data, { flag: 'wx' });
+      await fsp.rename(tmp, hotPath(hash));
+    } catch {
+      await fsp.rm(tmp, { force: true });
+    }
+  }
+
+  // Remove hot copies older than maxAgeMs. Returns how many.
+  async function cleanHot(maxAgeMs = HOT_MAX_AGE_MS) {
+    let removed = 0;
+    for (const sub of await fsp.readdir(hotDir).catch(() => [])) {
+      for (const name of await fsp.readdir(path.join(hotDir, sub)).catch(() => [])) {
+        const p = path.join(hotDir, sub, name);
+        const st = await fsp.lstat(p).catch(() => null);
+        if (st?.isFile() && Date.now() - st.mtimeMs > maxAgeMs) { await fsp.rm(p, { force: true }); removed++; }
+      }
+    }
+    return removed;
+  }
+
   async function storeFile(file, within) {
     // One read: hash, and keep small files in memory, so new small content needs no second read.
     const SMALL = 1024 * 1024;
@@ -176,6 +208,7 @@ function createStore(dir) {
         await fsp.writeFile(tmp, gzipped ? await gzip(data) : data, { flag: 'wx' });
         await commit(tmp, first, gzipped);
         committed = true;
+        if (gzipped) await keepHot(first, data);
         return first;
       } finally {
         if (!committed) await fsp.rm(tmp, { force: true }); // after a rename there's nothing left to remove
@@ -260,6 +293,7 @@ function createStore(dir) {
   // Delete stored content. Only for content no save point or index refers to (see pruning).
   async function remove(hash) {
     for (const gzipped of [false, true]) await fsp.rm(objectPath(hash, gzipped), { force: true });
+    await fsp.rm(hotPath(hash), { force: true });
   }
 
   // Run at startup. Never touches objects.
@@ -300,7 +334,7 @@ function createStore(dir) {
     return bad;
   }
 
-  return { dir, put, holdPuts, has, extract, copyOut, usage, objects, remove, cleanTemp, hashes, verifySince };
+  return { dir, put, holdPuts, has, extract, copyOut, usage, objects, remove, cleanTemp, cleanHot, hashes, verifySince };
 }
 
 // Delete *.mewndo-tmp files older than maxAgeMs directly inside dir (Mewndo's own folders only).

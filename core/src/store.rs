@@ -3,6 +3,9 @@
 //   <store>/objects/<first 2 hex>/<sha256>       stored as is (already-compressed formats)
 //   <store>/objects/<first 2 hex>/<sha256>.gz    gzipped (everything else)
 //   <store>/tmp/<unique>.mewndo-tmp              being written; stale ones are removed at startup
+//   <store>/hot/<first 2 hex>/<sha256>           the hot cache: content up to 1 MB stored in the last 24 hours,
+//                                                uncompressed (spec §25.2), so the most likely restores skip
+//                                                unpacking. Only a copy: removing it loses nothing.
 // A file's name is the SHA-256 of its uncompressed content. Many files are hashed and compressed at once by a pool
 // of 8 to 32 threads (put_batch). Objects are not flushed one by one, as in v0: after an unclean shutdown the
 // newest are re-checked with verify_since.
@@ -305,11 +308,20 @@ pub fn hash_file(file: &Path, within: Option<&Path>) -> Result<String> {
 pub struct Store {
     objects_dir: PathBuf,
     tmp_dir: PathBuf,
+    hot_dir: PathBuf,
     /// Puts hold it for reading; pruning holds it for writing, so nothing new can come to refer to stored content
     /// while pruning decides what to delete (v0's holdPuts).
     gate: RwLock<()>,
     /// Folders already created, so storing a file doesn't ask for them again.
     made: Mutex<HashSet<PathBuf>>,
+}
+
+/// Where restore_to got the content.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Source {
+    Hot,
+    Copied,
+    Unpacked,
 }
 
 pub struct Found {
@@ -323,6 +335,7 @@ impl Store {
         Store {
             objects_dir: dir.join("objects"),
             tmp_dir: dir.join("tmp"),
+            hot_dir: dir.join("hot"),
             gate: RwLock::new(()),
             made: Mutex::new(HashSet::new()),
         }
@@ -348,6 +361,11 @@ impl Store {
             }
         }
         Ok(None)
+    }
+
+    /// Where the hot cache keeps an uncompressed copy (valid hashes only).
+    fn hot_path(&self, hash: &str) -> PathBuf {
+        self.hot_dir.join(&hash[..2]).join(hash)
     }
 
     pub fn has(&self, hash: &str) -> Result<bool> {
@@ -420,6 +438,9 @@ impl Store {
             let out = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             if let Some(data) = small {
                 write_object(out, gzipped, |w| w.write_all(&data))?;
+                if gzipped {
+                    self.keep_hot(&first, &data);
+                }
             } else {
                 let mut hash = Sha256::new();
                 read_stable(file, within, |f| {
@@ -440,6 +461,41 @@ impl Store {
             let _ = fs::remove_file(&tmp); // after a rename there's nothing left to remove
         }
         stored.map(|()| first)
+    }
+
+    /// Keep an uncompressed copy in the hot cache. Best effort: it's only a copy, checked when used.
+    fn keep_hot(&self, hash: &str, data: &[u8]) {
+        let dest = self.hot_path(hash);
+        let tmp = self.tmp_dir.join(format!("{}{TEMP_SUFFIX}", unique()));
+        let kept = self
+            .mkdir_once(dest.parent().expect("hot copies have a folder"))
+            .and_then(|()| fs::write(&tmp, data))
+            .and_then(|()| fs::rename(&tmp, &dest));
+        if kept.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+    }
+
+    /// Remove hot copies older than `max_age` (spec: 24 hours). Returns how many.
+    pub fn clean_hot(&self, max_age: Duration) -> Result<usize> {
+        let mut removed = 0;
+        let Ok(subs) = fs::read_dir(&self.hot_dir) else {
+            return Ok(0);
+        };
+        for sub in subs.flatten() {
+            for entry in fs::read_dir(sub.path()).into_iter().flatten().flatten() {
+                let old = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > max_age);
+                if old && fs::remove_file(entry.path()).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// Write stored content to a verified temp file next to `dest` and return its path; the caller renames it into
@@ -506,19 +562,45 @@ impl Store {
         done
     }
 
-    /// Write stored content to `tmp`, which must not exist, for a restore (restore.rs). Not flushed: the restore
-    /// flushes once at the end. An object stored as is gets copied by the OS (CopyFile2 on Windows, which block
-    /// clones on ReFS and Dev Drive; copy_file_range on Linux, which clones on btrfs and XFS) and isn't re-hashed:
-    /// the restore verifies afterwards. A gzipped one is checked as it's unpacked, which costs nothing extra.
-    /// Returns whether it was unpacked.
-    pub fn restore_to(&self, hash: &str, tmp: &Path) -> Result<bool> {
+    /// Write stored content to `tmp`, which must not exist, for a restore (restore.rs), with modified time `mtime`.
+    /// Not flushed: the restore flushes once at the end. From the hot cache when it has the content (checked: a
+    /// copy that doesn't match is ignored). Else an object stored as is gets copied by the OS (CopyFile2 on Windows,
+    /// which block clones on ReFS and Dev Drive; copy_file_range on Linux, which clones on btrfs and XFS) and isn't
+    /// re-hashed: the restore verifies afterwards. A gzipped one is checked as it's unpacked.
+    pub fn restore_to(&self, hash: &str, tmp: &Path, mtime: SystemTime) -> Result<Source> {
         let tmp = &exact(tmp);
+        // Write and set the time on one handle: each extra open of a new file costs an antivirus scan on Windows.
+        let create = || -> Result<File> {
+            let out = OpenOptions::new().write(true).create_new(true).open(tmp)?;
+            Ok(out)
+        };
+        if !valid_hash(hash) {
+            return Err(StoreError::InvalidHash(hash.to_string()));
+        }
+        // An OS copy, then checked: a copy that doesn't match (cut short by a power loss) is ignored.
+        let hot = self.hot_path(hash);
+        if exists(&hot).unwrap_or(false) && copy_new(&hot, tmp).is_ok() {
+            let checked = (|| -> io::Result<bool> {
+                let mut f = File::options().read(true).write(true).open(tmp)?;
+                let mut check = Sha256::new();
+                pump(&mut f, |b| {
+                    check.update(b);
+                    Ok(())
+                })?;
+                f.set_modified(mtime)?;
+                Ok(hex(check.finalize()) == hash)
+            })();
+            if let Ok(true) = checked {
+                return Ok(Source::Hot);
+            }
+            let _ = fs::remove_file(tmp);
+        }
         let src = self
             .find(hash)?
             .ok_or_else(|| StoreError::NotStored(hash.to_string()))?;
         let written = if src.gzipped {
             (|| -> Result<()> {
-                let mut out = OpenOptions::new().write(true).create_new(true).open(tmp)?;
+                let mut out = create()?;
                 let mut check = Sha256::new();
                 pump(&mut GzDecoder::new(File::open(&src.path)?), |b| {
                     check.update(b);
@@ -533,15 +615,24 @@ impl Store {
                 if hex(check.finalize()) != hash {
                     return Err(StoreError::Corrupt(hash.to_string()));
                 }
+                out.set_modified(mtime)?;
                 Ok(())
             })()
         } else {
-            copy_new(&src.path, tmp).map_err(Into::into)
+            copy_new(&src.path, tmp)
+                .and_then(|()| File::options().write(true).open(tmp)?.set_modified(mtime))
+                .map_err(Into::into)
         };
         if written.is_err() {
             let _ = fs::remove_file(tmp);
         }
-        written.map(|()| src.gzipped)
+        written.map(|()| {
+            if src.gzipped {
+                Source::Unpacked
+            } else {
+                Source::Copied
+            }
+        })
     }
 
     /// Every stored object file: (hash, path, bytes on disk). Only names that look like objects.
@@ -600,6 +691,7 @@ impl Store {
                 _ => {}
             }
         }
+        let _ = fs::remove_file(self.hot_path(hash)); // only a copy
         Ok(())
     }
 
@@ -1205,6 +1297,53 @@ mod tests {
     }
 
     #[test]
+    fn the_hot_cache_keeps_small_gzipped_content_uncompressed_and_restore_to_uses_it_only_if_it_matches()
+     {
+        let d = temp_dir();
+        let store = Store::new(&d.0.join("store"));
+        let text = d.0.join("notes.txt");
+        fs::write(&text, b"hot content").unwrap();
+        let photo = d.0.join("photo.png");
+        fs::write(&photo, b"png bytes").unwrap();
+        let (hash, png) = (
+            store.put(&text, None).unwrap(),
+            store.put(&photo, None).unwrap(),
+        );
+        assert_eq!(fs::read(store.hot_path(&hash)).unwrap(), b"hot content");
+        assert!(
+            !store.hot_path(&png).exists(),
+            "already stored as is: no copy needed"
+        );
+
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let out = d.0.join("out.txt");
+        assert_eq!(store.restore_to(&hash, &out, at).unwrap(), Source::Hot);
+        assert_eq!(fs::read(&out).unwrap(), b"hot content");
+        assert_eq!(fs::metadata(&out).unwrap().modified().unwrap(), at);
+
+        fs::write(store.hot_path(&hash), b"damaged").unwrap(); // a copy that doesn't match is ignored
+        let out2 = d.0.join("out2.txt");
+        assert_eq!(
+            store.restore_to(&hash, &out2, at).unwrap(),
+            Source::Unpacked
+        );
+        assert_eq!(fs::read(&out2).unwrap(), b"hot content");
+        assert_eq!(
+            store.restore_to(&png, &d.0.join("out.png"), at).unwrap(),
+            Source::Copied
+        );
+
+        assert_eq!(
+            store.clean_hot(Duration::from_secs(60)).unwrap(),
+            0,
+            "kept for a day"
+        );
+        assert_eq!(store.clean_hot(Duration::ZERO).unwrap(), 1);
+        assert!(!store.hot_path(&hash).exists());
+        assert!(store.has(&hash).unwrap(), "the object itself stays");
+    }
+
+    #[test]
     fn remove_deletes_either_form() {
         let d = temp_dir();
         let store = Store::new(&d.0.join("data"));
@@ -1212,6 +1351,7 @@ mod tests {
         let h = store.put(&d.0.join("a.txt"), None).unwrap();
         store.remove(&h).unwrap();
         assert!(!store.has(&h).unwrap());
+        assert!(!store.hot_path(&h).exists(), "and its hot copy");
         store.remove(&h).unwrap(); // already gone: fine
     }
 

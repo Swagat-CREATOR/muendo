@@ -232,3 +232,25 @@ test('writeFileAtomic waits for a file another program briefly holds open (Windo
   await new Promise((resolve) => (ps.exitCode !== null ? resolve() : ps.once('exit', resolve)));
   assert.deepStrictEqual(fs.readdirSync(dir), ['index.json'], 'no temp file left behind');
 });
+
+test('the hot cache keeps small gzipped content uncompressed for a day; remove takes its copy too', async () => {
+  const base = tempDir();
+  const store = createStore(path.join(base, 'data'));
+  fs.writeFileSync(path.join(base, 'notes.txt'), 'hot content');
+  fs.writeFileSync(path.join(base, 'photo.png'), 'png bytes');
+  const text = await store.put(path.join(base, 'notes.txt'));
+  const png = await store.put(path.join(base, 'photo.png'));
+  const hot = (h) => path.join(base, 'data', 'hot', h.slice(0, 2), h);
+  assert.strictEqual(fs.readFileSync(hot(text), 'utf8'), 'hot content');
+  assert.ok(!fs.existsSync(hot(png)), 'already stored as is: no copy needed');
+  assert.deepStrictEqual([...(await store.hashes())].sort(), [text, png].sort(), 'not an object of its own');
+  assert.strictEqual(await store.cleanHot(), 0, 'kept for a day');
+  assert.strictEqual(await store.cleanHot(-1), 1);
+  assert.ok(!fs.existsSync(hot(text)));
+  assert.ok(await store.has(text), 'the object itself stays');
+
+  fs.writeFileSync(path.join(base, 'other.txt'), 'more');
+  const other = await store.put(path.join(base, 'other.txt'));
+  await store.remove(other);
+  assert.ok(!fs.existsSync(hot(other)));
+});

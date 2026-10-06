@@ -190,6 +190,26 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(
     let mut shutdown = false;
     while let Ok(Some(line)) = lines.next_line().await {
         let (info, session) = (info.clone(), session.clone());
+        // Slow work (storing, scanning, process control) runs alongside, so a 50,000-file scan never holds up the
+        // app's "are you alive" check or a quick request: their replies can come first. Quick ones run in order.
+        if protocol::is_slow(&line) {
+            let (out, log) = (out.clone(), log.clone());
+            tokio::spawn(async move {
+                match tokio::task::spawn_blocking(move || protocol::respond(&line, &info, &session))
+                    .await
+                {
+                    Ok((Some(reply), _)) => {
+                        if reply.contains(r#""type":"error""#) {
+                            log.warn(&format!("refused a request: {reply}"));
+                        }
+                        let _ = out.send(reply);
+                    }
+                    Ok((None, _)) => {}
+                    Err(_) => log.error("a request handler crashed"),
+                }
+            });
+            continue;
+        }
         let Ok((reply, stop_now)) =
             tokio::task::spawn_blocking(move || protocol::respond(&line, &info, &session)).await
         else {
