@@ -12,7 +12,7 @@ let dataDir = null;
 const MEWNDO = new Set([
   'unprotect', 'folders', 'pausedUntil', 'pauseProtection', 'resumeProtection', 'storageReport', 'prune', 'agents', 'hookServerProblem',
   'configure', 'config', 'folderSettings', 'setFolderSettings', 'agentList', 'setAgentList', 'saveBrief',
-  'brake', 'resumeAgent', 'endAgent', 'braked', 'ticker', 'letIt', 'holds', 'approveHold', 'cancelHold',
+  'brake', 'resumeAgent', 'endAgent', 'braked', 'ticker', 'letIt', 'holds', 'approveHold', 'cancelHold', 'activity',
 ]);
 const JOURNAL = new Set(['listSavePoints', 'createSavePoint', 'diffSince', 'planRestore', 'restore', 'listRestores']);
 

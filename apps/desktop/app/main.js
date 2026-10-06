@@ -294,6 +294,39 @@ let barAgents = []; // names of the agents the bar shows, for its Brake button
 let driftCard = null; // the newest drift card (spec §23.4) until the user answers or dismisses it
 let holds = []; // local holds waiting for the user (engine 'holds-changed')
 let cardSeq = 0;
+let panelOpen = false;
+let hookStatus = { at: 0, guarded: {} }; // which agents have Mewndo's Guard hooks, re-read every 30 s
+
+// The up-arrow panel (spec §23.8), from local data only: agents and protected folders, and how sure Mewndo is.
+async function panelData(folders, brakedNames) {
+  if (Date.now() - hookStatus.at > 30_000) {
+    const [claude, codex, cursor] = await Promise.all([call('claudeHooksPlan'), call('agentHooksPlan', 'codex'), call('agentHooksPlan', 'cursor')]
+      .map((p) => p.then((x) => x.installed === true, () => false)));
+    hookStatus = { at: Date.now(), guarded: { 'Claude Code': claude, Codex: codex, Cursor: cursor } };
+  }
+  const activity = await call('activity').catch(() => ({ agents: [], folders: [], activeMs: 0 }));
+  const names = [...new Set(['Claude Code', 'Codex', 'Cursor', ...activity.agents.map((a) => a.name), ...brakedNames])];
+  const agents = names.map((name) => {
+    const a = activity.agents.find((x) => x.name === name) ?? {};
+    const guarded = hookStatus.guarded[name] === true;
+    const working = !!a.last || (guarded && Date.now() - (a.hookedAt ?? 0) < activity.activeMs);
+    return {
+      name,
+      connection: guarded ? 'Hooks' : a.running ? 'Detected' : 'Not connected',
+      status: brakedNames.has(name) ? 'Braked' : working ? 'Working' : guarded || a.running ? 'Idle' : 'Not connected',
+      monitoring: guarded ? 'Guarded' : a.running ? 'Data only' : null,
+      now: a.last ? `${a.last.text}${a.last.folder ? ` in ${folderName(a.last.folder)}` : ''}` : '',
+    };
+  });
+  const connections = folders.map((f) => {
+    const act = activity.folders.find((x) => x.root === f.root);
+    return {
+      name: folderName(f.root), root: f.root, protection: f.status === 'paused' ? 'Paused' : 'Protected',
+      bubbles: act?.confidence ? [{ agent: act.agent, confidence: act.confidence, ago: Math.round((Date.now() - act.at) / 60_000) }] : [],
+    };
+  });
+  return { agents, connections };
+}
 
 // What the drift card says: what the agent tried and what Mewndo did, from a Guard refusal or a Heal.
 function cardFor(event, a) {
@@ -358,16 +391,19 @@ function refreshBar() {
       agents: names.map((name) => ({ name, braked: brakedNames.has(name), drift: drifted.has(name) })),
       ticker: t ? { ...t, name: folderName(t.root) } : null,
       shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
-      card: driftCard, holds,
+      card: driftCard, holds, panel: panelOpen ? await panelData(folders ?? [], brakedNames) : null,
     });
   }, 30);
 }
 setInterval(refreshBar, 30_000).unref(); // drift and alert colours fade with time
+setInterval(() => panelOpen && refreshBar(), 5000).unref(); // the open panel's live activity
 
 // The bar's buttons (spec §23.2, §23.7). They all work with the main window closed.
 async function barAction(name, arg) {
   switch (name) {
-    case 'protection': case 'lane': case 'panel': showWindow(); break; // ponytail: lanes and the panel come in P3.4
+    case 'protection': case 'lane': case 'connection': showWindow(); break; // ponytail: the main window stands in for an agent's lane
+    case 'panel-open': panelOpen = true; hookStatus.at = 0; refreshBar(); break;
+    case 'panel-close': panelOpen = false; refreshBar(); break;
     case 'undo': openUndo(); break;
     case 'undo-burst': openUndo(arg); break; // undo always shows what it will do first (spec §23.3)
     case 'diff': {

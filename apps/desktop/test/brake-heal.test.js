@@ -257,3 +257,15 @@ test('holds: approve runs the action once, cancel and the countdown drop it with
   assert.deepStrictEqual([ran, mewndo.holds().length], [1, 0]);
   assert.deepStrictEqual(lists, [1, 2, 3, 2, 1, 0]);
 });
+
+test('activity: a hooked agent acting in a folder is exact, with its newest action (the panel)', { skip }, async () => {
+  const { root, mewndo, hookCall } = await setup('activity');
+  try {
+    await hookCall('claude', { tool_name: 'Bash', tool_input: { command: 'npm test' } });
+    const a = mewndo.activity();
+    assert.deepStrictEqual(a.folders.map((f) => [f.root, f.agent, f.confidence]), [[root, 'Claude Code', 'exact']]);
+    const claude = a.agents.find((x) => x.name === 'Claude Code');
+    assert.strictEqual(claude.last.text, 'Running npm test');
+    assert.ok(claude.hookedAt > 0);
+  } finally { await mewndo.stop(); }
+});

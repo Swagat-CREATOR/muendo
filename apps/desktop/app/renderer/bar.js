@@ -57,12 +57,62 @@ function render() {
   $('brake').hidden = !(state.agents ?? []).some((a) => !a.braked);
   renderCard();
   renderChips();
+  renderPanel();
   if (state.shortcuts) {
     $('hint').replaceChildren('Undo ', el('kbd', {}, state.shortcuts.undo), '  ·  Brief ', el('kbd', {}, state.shortcuts.brief));
   }
   wake();
 }
 window.bar.onState((s) => { state = s; render(); });
+
+// The up-arrow panel. Open: the window may take focus once clicked (bar.js), so Escape and clicking elsewhere close
+// it. What it can't do: a click outside before you've clicked inside it can't be seen; press the up-arrow again.
+let panelOpen = false;
+let tab = 'agents';
+const initial = (name) => (name ?? '?').trim()[0]?.toUpperCase() ?? '?';
+function setPanel(open) {
+  if (open === panelOpen) return;
+  panelOpen = open;
+  $('panel').setAttribute('aria-expanded', String(open));
+  $('box').hidden = !open;
+  window.bar.action(open ? 'panel-open' : 'panel-close');
+  if (open) renderPanel();
+}
+function renderPanel() {
+  if (!panelOpen) return;
+  $('tab-agents').setAttribute('aria-selected', String(tab === 'agents'));
+  $('tab-connections').setAttribute('aria-selected', String(tab === 'connections'));
+  const p = state.panel;
+  if (!p) { $('list').replaceChildren(el('p', { className: 'empty' }, 'Loading…')); return; }
+  const rows = tab === 'agents' ? p.agents.map((a) => {
+    const row = el('button', { className: 'row-item', title: `${a.name} · ${a.connection}${a.monitoring ? ` · ${a.monitoring}` : ''}` },
+      el('span', { className: 'badge' }, initial(a.name)), el('span', {}, a.name), el('span', { className: `state ${a.status}` }, a.status),
+      el('span', { className: 'sub' }, [a.connection, a.monitoring, a.now].filter(Boolean).join(' · ')));
+    Object.assign(row.dataset, { action: 'lane', arg: a.name });
+    return row;
+  }) : p.connections.map((c) => {
+    const bubbles = el('span', { className: 'bubbles' }, ...c.bubbles.map((b) => {
+      const sure = b.confidence === 'exact' ? '' : b.confidence === 'likely' ? ' (likely)' : '';
+      const span = el('span', { className: `bubble ${b.confidence} ${b.ago < 1 ? 'active' : ''}`,
+        title: b.confidence === 'unknown' ? `Changed ${b.ago} min ago by an unknown app` : `${b.agent}${sure} · ${b.ago} min ago` },
+      b.confidence === 'unknown' ? '?' : initial(b.agent));
+      return span;
+    }));
+    const row = el('button', { className: 'row-item', title: c.root }, el('span', { className: 'badge' }, '📁'), el('span', {}, c.name), bubbles,
+      el('span', { className: 'sub' }, `${c.protection} · local folder`));
+    Object.assign(row.dataset, { action: 'connection', arg: c.root });
+    return row;
+  });
+  $('list').replaceChildren(...(rows.length ? rows : [el('p', { className: 'empty' }, tab === 'agents' ? 'No agents yet.' : 'No folders protected yet.')]));
+}
+// Buttons handled here, not by the main process (the pointer handlers below call them).
+const LOCAL = {
+  panel: () => setPanel(!panelOpen),
+  'tab-agents': () => { tab = 'agents'; renderPanel(); },
+  'tab-connections': () => { tab = 'connections'; renderPanel(); },
+};
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setPanel(false); });
+window.addEventListener('blur', () => setPanel(false));
 
 function renderCard() {
   const c = state.card;
@@ -140,6 +190,7 @@ document.addEventListener('pointerup', (e) => {
   if (document.body.hasPointerCapture(e.pointerId)) document.body.releasePointerCapture(e.pointerId);
   pill.classList.remove('dragging');
   if (dragging) window.bar.drag({ phase: 'end' });
+  else if (!long && target && !target.disabled && LOCAL[target.id]) LOCAL[target.id]();
   else if (!long && target && !target.disabled && target.dataset.action) window.bar.action(target.dataset.action, target.dataset.arg);
   const hit = !!document.elementFromPoint(e.clientX, e.clientY)?.closest('.hit');
   if (hit !== overHit) { overHit = hit; window.bar.mouse(hit); }
@@ -148,9 +199,10 @@ document.addEventListener('pointerup', (e) => {
 // Keyboard and screen readers (the window never takes focus from a click, but assistive tech can reach buttons).
 document.addEventListener('keydown', (e) => {
   const b = e.target.closest?.('button');
-  if (b && !b.disabled && b.dataset.action && (e.key === 'Enter' || e.key === ' ')) {
+  if (b && !b.disabled && (LOCAL[b.id] || b.dataset.action) && (e.key === 'Enter' || e.key === ' ')) {
     e.preventDefault();
-    window.bar.action(b.dataset.action, b.dataset.arg);
+    if (LOCAL[b.id]) LOCAL[b.id]();
+    else window.bar.action(b.dataset.action, b.dataset.arg);
   }
 });
 wake();

@@ -78,7 +78,11 @@ function createBar({ positions = {}, savePositions, onAction, fullScreen, log })
   const fromSender = (sender) => [...windows.values()].find((w) => !w.isDestroyed() && w.webContents === sender);
   ipcMain.on('bar:mouse', (e, over) => fromSender(e.sender)?.setIgnoreMouseEvents(over !== true, { forward: true }));
   ipcMain.on('bar:action', (e, name, arg) => {
-    if (fromSender(e.sender) && typeof name === 'string') onAction(name, typeof arg === 'string' ? arg : undefined);
+    const w = fromSender(e.sender);
+    if (!w || typeof name !== 'string') return;
+    // The open panel may take focus, but only once the user clicks inside it (spec §23.8): focusable, never focused.
+    if (name === 'panel-open' || name === 'panel-close') w.setFocusable(name === 'panel-open');
+    onAction(name, typeof arg === 'string' ? arg : undefined);
   });
   ipcMain.on('bar:drag', (e, msg) => {
     const w = fromSender(e.sender);

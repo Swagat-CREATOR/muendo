@@ -715,7 +715,32 @@ function createMewndo({
         .catch((e) => warn('guard', `No save point before a delete: ${e.message}`, { folder: root }));
     }
     mewndo.emit('guard', { folder: root, agent: name, actions, verdict });
+    const a = actions[0];
+    lastActions.set(name, { at: now(), folder: root, text: a.kind === 'shell' ? `Running ${a.command.replace(/\s+/g, ' ').trim().slice(0, 60)}` : `${a.kind[0].toUpperCase()}${a.kind.slice(1)} ${path.basename(a.path)}` });
     return outputFor(agent, verdict);
+  };
+  const lastActions = new Map(); // agent -> { at, folder, text }: its newest hooked action, for the panel
+
+  // Who is acting where, and how sure Mewndo is (spec §23.8), for the bar's panel:
+  // agents: [{ name, hookedAt, running, last }] · folders: [{ root, agent, confidence: exact | likely | unknown, at }].
+  // Exact: a hooked agent acted there in the last 5 minutes. Likely: the folder changed while a detected (not
+  // hooked) agent was running. Unknown: it changed and no agent was seen.
+  mewndo.activity = () => {
+    const t = now();
+    const names = new Set([...hookedAgents.keys(), ...runningAgents.keys()]);
+    const agents = [...names].map((name) => ({
+      name, hookedAt: hookedAgents.get(name) ?? null, running: runningAgents.has(name),
+      last: t - (lastActions.get(name)?.at ?? -Infinity) < ACTIVE_MS ? lastActions.get(name) : null,
+    }));
+    const folders = [...journals].map(([root, j]) => {
+      const hooked = hookedActivity.get(root);
+      if (hooked && t - hooked.at < ACTIVE_MS) return { root, agent: hooked.agent, confidence: 'exact', at: hooked.at };
+      const changed = j.lastChangeAt();
+      if (changed == null || t - changed > ACTIVE_MS) return { root, agent: null, confidence: null, at: changed };
+      const likely = likelyAgent();
+      return { root, agent: likely, confidence: likely ? 'likely' : 'unknown', at: changed };
+    });
+    return { agents, folders, activeMs: ACTIVE_MS };
   };
 
   // "Let it" on a drift card (spec §23.4): the same action by the same agent is allowed from now on, by Guard and

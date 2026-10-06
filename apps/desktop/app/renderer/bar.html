@@ -7,6 +7,14 @@
   <link rel="stylesheet" href="bar.css">
 </head>
 <body>
+  <section id="box" class="box hit" aria-label="Agents and connections" hidden>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-agents" aria-selected="true">Agents</button>
+      <button role="tab" id="tab-connections" aria-selected="false">Connections</button>
+    </div>
+    <div id="list" class="list" role="tabpanel"></div>
+    <p class="foot">Only what Mewndo can see on this PC. Solid: exact · outlined: likely · ?: unknown.</p>
+  </section>
   <section id="card" class="card hit" role="alertdialog" aria-labelledby="card-tried" hidden>
     <button class="close" data-action="card-dismiss" aria-label="Dismiss">×</button>
     <p id="card-tried" class="tried"></p>
@@ -29,7 +37,7 @@
     <button id="mic" class="round" aria-label="Voice commands (not available yet)" disabled>
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg>
     </button>
-    <button id="panel" class="round" data-action="panel" aria-label="Agents and connections">
+    <button id="panel" class="round" aria-label="Agents and connections" aria-expanded="false">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>
     </button>
   </div>
