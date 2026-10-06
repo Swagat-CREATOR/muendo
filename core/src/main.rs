@@ -7,6 +7,7 @@
 // It prints "ready" once it is listening, and stops when asked to, or when its stdin closes (the app is gone),
 // so it never outlives the app.
 mod log;
+mod paths;
 mod protocol;
 mod store;
 

@@ -13,6 +13,7 @@
 // verify_since and write_file_atomic get callers when the journal moves here (cutover, P1.7).
 #![allow(dead_code)]
 
+use crate::paths::exact;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -245,6 +246,8 @@ pub fn read_stable<T>(
     within: Option<&Path>,
     consume: impl FnOnce(&mut File) -> io::Result<T>,
 ) -> Result<T> {
+    let file = &exact(file);
+    let within = within.map(exact);
     let before = identity::of_path(file)?.ok_or_else(|| changed("not a regular file"))?;
     let mut f = identity::open(file).map_err(|e| {
         if identity::is_link_refusal(&e) {
@@ -256,7 +259,7 @@ pub fn read_stable<T>(
     if identity::of_file(&f)? != Some(before) {
         return Err(changed("replaced before open"));
     }
-    if let Some(within) = within
+    if let Some(within) = &within
         && !is_inside(&fs::canonicalize(file)?, &fs::canonicalize(within)?)
     {
         return Err(changed("outside protected folder"));
@@ -316,6 +319,7 @@ pub struct Found {
 
 impl Store {
     pub fn new(dir: &Path) -> Store {
+        let dir = exact(dir);
         Store {
             objects_dir: dir.join("objects"),
             tmp_dir: dir.join("tmp"),
@@ -459,6 +463,7 @@ impl Store {
     /// Write stored content to a verified temp file next to `dest` and return its path; the caller renames it into
     /// place. Next to dest, not in the store's tmp folder, because a rename can't cross drives.
     pub fn extract(&self, hash: &str, dest: &Path) -> Result<PathBuf> {
+        let dest = &exact(dest);
         let src = self
             .find(hash)?
             .ok_or_else(|| StoreError::NotStored(hash.to_string()))?;
@@ -504,6 +509,7 @@ impl Store {
     /// Copy stored content to `dest` through a temp file and a rename, verifying the hash. Never overwrites an
     /// existing dest: the caller moves the old file to Mewndo's trash first.
     pub fn copy_out(&self, hash: &str, dest: &Path) -> Result<()> {
+        let dest = &exact(dest);
         if exists(dest)? {
             return Err(StoreError::DestinationExists(dest.to_path_buf()));
         }
@@ -656,6 +662,7 @@ pub fn pool_size() -> usize {
 /// Delete *.mewndo-tmp files older than `max_age` directly inside `dir` (Mewndo's own folders only).
 /// Returns how many were removed.
 pub fn remove_stale_temp(dir: &Path, max_age: Duration) -> io::Result<usize> {
+    let dir = &exact(dir);
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -685,6 +692,7 @@ pub fn remove_stale_temp(dir: &Path, max_age: Duration) -> io::Result<usize> {
 /// Write a file through a temp file and a rename, so a crash leaves the old or the new version, never half of one.
 /// Flushed before the rename. This is how a whole batch's metadata (an index or a manifest) is written at once.
 pub fn write_file_atomic(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    let file = &exact(file);
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -796,11 +804,11 @@ mod tests {
         let p = store.put(&d.0.join("photo.PNG"), None).unwrap();
         assert_eq!(
             store.find(&t).unwrap().unwrap().path,
-            d.0.join(format!("data/objects/{}/{t}.gz", &t[..2]))
+            exact(&d.0.join(format!("data/objects/{}/{t}.gz", &t[..2])))
         );
         assert_eq!(
             store.find(&p).unwrap().unwrap().path,
-            d.0.join(format!("data/objects/{}/{p}", &p[..2]))
+            exact(&d.0.join(format!("data/objects/{}/{p}", &p[..2])))
         );
         assert!(store.usage().unwrap() < text.len() as u64);
         store.copy_out(&t, &d.0.join("notes.out")).unwrap();
@@ -870,6 +878,79 @@ mod tests {
         let e = store.put(&d.0.join("link"), None).unwrap_err();
         assert!(e.to_string().contains("not a regular file"), "{e}");
         assert_eq!(store.usage().unwrap(), 0);
+    }
+
+    /// Names that plain Windows paths change ("notes." opens "notes") and paths over 260 characters: stored and
+    /// put back exactly, as v0 does. Node creates such names; so do WSL, git and agents.
+    #[cfg(windows)]
+    #[test]
+    fn names_with_trailing_dots_or_spaces_and_long_paths_are_kept_exactly() {
+        let d = temp_dir();
+        let store = Store::new(&d.0.join("data"));
+        let deep = exact(
+            &d.0.join("a".repeat(100))
+                .join("b".repeat(100))
+                .join("c".repeat(100)),
+        );
+        fs::create_dir_all(&deep).unwrap();
+        for (i, name) in ["notes.", "draft ", "plain.txt"].into_iter().enumerate() {
+            for dir in [exact(&d.0), deep.clone()] {
+                let file = dir.join(name);
+                fs::write(&file, format!("{i} {name}")).unwrap(); // exact path: the name as given
+                let hash = store.put(&file, None).unwrap();
+                let out = dir.join(format!("out-{name}"));
+                store.copy_out(&hash, &out).unwrap();
+                assert_eq!(fs::read_to_string(&out).unwrap(), format!("{i} {name}"));
+                assert!(
+                    names(&dir).contains(&format!("out-{name}")),
+                    "{name:?} kept its exact name"
+                );
+            }
+        }
+    }
+
+    /// A junction to a folder outside the protected one: what's behind it is never read. No admin needed.
+    #[cfg(windows)]
+    #[test]
+    fn refuses_files_behind_a_junction_out_of_the_protected_folder() {
+        let d = temp_dir();
+        let (root, outside) = (d.0.join("root"), d.0.join("outside"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(root.join("sneaky"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(
+            made.status.success(),
+            "{}",
+            String::from_utf8_lossy(&made.stdout)
+        );
+        let e = hash_file(&root.join("sneaky").join("secret.txt"), Some(&root)).unwrap_err();
+        assert!(e.to_string().contains("outside protected folder"), "{e}");
+        let e = hash_file(&root.join("sneaky"), Some(&root)).unwrap_err();
+        assert!(e.to_string().contains("not a regular file"), "{e}");
+    }
+
+    /// File symlinks need Developer Mode or admin on Windows; tested when this PC allows making one.
+    #[cfg(windows)]
+    #[test]
+    fn refuses_to_store_a_file_symlink() {
+        let d = temp_dir();
+        fs::write(d.0.join("real.txt"), "x").unwrap();
+        if let Err(e) =
+            std::os::windows::fs::symlink_file(d.0.join("real.txt"), d.0.join("link.txt"))
+        {
+            eprintln!("skipped: can't make a symlink here ({e})");
+            return;
+        }
+        let e = Store::new(&d.0.join("data"))
+            .put(&d.0.join("link.txt"), None)
+            .unwrap_err();
+        assert!(e.to_string().contains("not a regular file"), "{e}");
     }
 
     #[test]

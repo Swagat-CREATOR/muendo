@@ -7,9 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createCore } = require('../app/core');
 const { createStore } = require('../engine');
-const { tempDir } = require('./helpers');
+const { tempDir, CORE_BINARY: BINARY } = require('./helpers');
 
-const BINARY = path.join(__dirname, '..', '..', '..', 'core', 'target', 'debug', process.platform === 'win32' ? 'mewndo-core.exe' : 'mewndo-core');
 const skip = fs.existsSync(BINARY) ? false : 'mewndo-core is not built: run `npm test` from the repository root';
 
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');

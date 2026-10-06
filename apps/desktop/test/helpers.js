@@ -15,4 +15,9 @@ function linkDir(target, at) {
   fs.symlinkSync(path.resolve(target), at, 'junction');
 }
 
-module.exports = { tempDir, linkDir };
+// The mewndo-core binary cargo built (`npm test` at the repository root builds it first). MEWNDO_CORE_BIN points
+// elsewhere, e.g. at a Windows build on C: (scripts/windows.sh sets it).
+const CORE_BINARY = process.env.MEWNDO_CORE_BIN
+  || path.join(__dirname, '..', '..', '..', 'core', 'target', 'debug', process.platform === 'win32' ? 'mewndo-core.exe' : 'mewndo-core');
+
+module.exports = { tempDir, linkDir, CORE_BINARY };

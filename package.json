@@ -9,6 +9,7 @@
     "test": "cargo test --manifest-path core/Cargo.toml && npm test -w apps/desktop",
     "reliability": "npm run reliability -w apps/desktop",
     "responsiveness": "npm run responsiveness -w apps/desktop",
-    "dist": "cargo build --release --manifest-path core/Cargo.toml && npm run dist -w apps/desktop"
+    "dist": "cargo build --release --manifest-path core/Cargo.toml && npm run dist -w apps/desktop",
+    "test:windows": "scripts/windows.sh cargo test --manifest-path core/Cargo.toml && scripts/windows.sh node --test \"apps/desktop/test/**/*.test.js\""
   }
 }

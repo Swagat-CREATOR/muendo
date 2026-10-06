@@ -15,4 +15,4 @@ flate2 = "1" # pure Rust (miniz_oxide); writes standard gzip, as Node's zlib doe
 libc = "0.2" # O_NOFOLLOW, ELOOP
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
