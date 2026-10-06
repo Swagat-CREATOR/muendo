@@ -86,6 +86,9 @@ function onEngineMessage(msg) {
   const [a, b] = msg.args;
   if (msg.event === 'drift' || msg.event === 'braked') lastAlertAt = Date.now();
   if (msg.event === 'drift') { lastDriftAt = Date.now(); recentDrifters.add(a.agent); }
+  if (msg.event === 'drift' || msg.event === 'guard') driftCard = cardFor(msg.event, a);
+  if (msg.event === 'guard') lastAlertAt = Date.now();
+  if (msg.event === 'holds-changed') { holds = a ?? []; if (holds.length) lastAlertAt = Date.now(); }
   if (BAR_EVENTS.has(msg.event)) refreshBar();
   if (msg.event === 'change') setTimeout(refreshBar, 1100); // the engine sends one change a second: catch the last
   switch (msg.event) {
@@ -280,7 +283,7 @@ function stateChanged() {
 // --- The Mewndo bar ---------------------------------------------------------------------------------------------
 // It renders from the engine's events: protection (green protected, amber drift in the last 5 minutes, red braked,
 // grey paused or nothing protected), one dot per running agent, and an alert for a minute after a drift or brake.
-const BAR_EVENTS = new Set(['agents-changed', 'braked', 'resumed', 'drift', 'guard', 'folders-changed', 'restored', 'change', 'savepoint']);
+const BAR_EVENTS = new Set(['agents-changed', 'braked', 'resumed', 'drift', 'guard', 'holds-changed', 'folders-changed', 'restored', 'change', 'savepoint']);
 const ALERT_MS = 60_000;
 const DRIFT_MS = 5 * 60_000;
 let lastAlertAt = 0;
@@ -288,6 +291,31 @@ let lastDriftAt = 0;
 const recentDrifters = new Set(); // agents that drifted (amber dot while the drift is recent)
 let barRefresh = null;
 let barAgents = []; // names of the agents the bar shows, for its Brake button
+let driftCard = null; // the newest drift card (spec §23.4) until the user answers or dismisses it
+let holds = []; // local holds waiting for the user (engine 'holds-changed')
+let cardSeq = 0;
+
+// What the drift card says: what the agent tried and what Mewndo did, from a Guard refusal or a Heal.
+function cardFor(event, a) {
+  const id = `card-${++cardSeq}`;
+  if (event === 'guard') {
+    const act = a.actions?.[0] ?? {};
+    const tried = act.kind === 'shell' ? `run ${act.command.replace(/\s+/g, ' ').trim().slice(0, 120)}` : `${act.kind} ${path.basename(act.path ?? '')}`;
+    return {
+      id, agent: a.agent, folder: a.folder, actions: a.actions ?? [], braked: a.verdict.rule === 'burst',
+      tried: `${a.agent} tried to ${tried}`,
+      did: a.verdict.decision === 'deny' ? `Mewndo blocked it: ${a.verdict.reason}` : `Mewndo asked it to check with you first: ${a.verdict.reason}`,
+    };
+  }
+  const files = a.paths?.length === 1 ? a.paths[0] : `${a.paths?.length ?? 0} files`;
+  return {
+    id, agent: a.agent, folder: a.folder, braked: a.action === 'braked',
+    actions: (a.paths ?? []).map((p) => ({ kind: 'delete', path: path.join(a.folder, p) })),
+    tried: `${a.agent} deleted ${files} outside its brief`,
+    did: a.action === 'healed' ? `Mewndo put back ${a.healed.join(', ')}.` : a.action === 'braked' ? `Mewndo braked ${a.agent}: ${a.reason}.`
+      : "Mewndo couldn't put it back: no save point had it.",
+  };
+}
 
 function startBar() {
   bar = createBar({
@@ -326,10 +354,11 @@ function refreshBar() {
     const drifted = new Set(now - lastDriftAt < DRIFT_MS ? recentDrifters : []);
     const t = tickers?.[0];
     bar.update({
-      status, label, alert: now - lastAlertAt < ALERT_MS,
+      status, label, alert: now - lastAlertAt < ALERT_MS || !!driftCard || holds.length > 0,
       agents: names.map((name) => ({ name, braked: brakedNames.has(name), drift: drifted.has(name) })),
       ticker: t ? { ...t, name: folderName(t.root) } : null,
       shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
+      card: driftCard, holds,
     });
   }, 30);
 }
@@ -351,6 +380,23 @@ async function barAction(name, arg) {
     case 'savepoint': await createSavePointEverywhere(); break;
     case 'brake': for (const agent of barAgents) await call('brake', agent, { reason: 'you braked it from the Mewndo bar' }); break;
     case 'brake-agent': if (arg) await call('brake', arg, { reason: 'you braked it from the Mewndo bar' }); break;
+    // The drift card's buttons (spec §23.4). arg: the card's id, so a stale click on an older card does nothing.
+    case 'card-resume': case 'card-letit': case 'card-stop': case 'card-dismiss': {
+      const card = driftCard;
+      if (!card || card.id !== arg) break;
+      driftCard = null;
+      refreshBar();
+      if (name === 'card-letit') await call('letIt', card.agent, card.actions);
+      if (name === 'card-stop') {
+        if (!card.braked) await call('brake', card.agent, { reason: 'you stopped it to review', folder: card.folder });
+        if (card.folder) await barAction('diff', card.folder);
+      } else if (name !== 'card-dismiss' && card.braked) await call('resumeAgent', card.agent); // writes the corrected brief
+      else if (name === 'card-resume') openBrief();
+      break;
+    }
+    case 'hold-approve': await call('approveHold', arg); break;
+    case 'hold-cancel': await call('cancelHold', arg); break;
+    case 'hold-cancel-all': for (const h of holds) await call('cancelHold', h.id); break;
     default: break;
   }
 }

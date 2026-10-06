@@ -16,7 +16,7 @@ let overPill = false;
 function wake() {
   pill.classList.remove('dot');
   clearTimeout(idle);
-  idle = setTimeout(() => { if (!overHit && !state.alert && !press) pill.classList.add('dot'); }, IDLE_MS);
+  idle = setTimeout(() => { if (!overHit && !state.alert && !state.card && !state.holds?.length && !press) pill.classList.add('dot'); }, IDLE_MS);
 }
 
 function setOpen(open) {
@@ -55,12 +55,40 @@ function render() {
     $('ticker').setAttribute('aria-label', `Since the last save point in ${t.name}: ${t.deleted} deleted, ${t.edited} edited, ${t.created} created`);
   }
   $('brake').hidden = !(state.agents ?? []).some((a) => !a.braked);
+  renderCard();
+  renderChips();
   if (state.shortcuts) {
     $('hint').replaceChildren('Undo ', el('kbd', {}, state.shortcuts.undo), '  ·  Brief ', el('kbd', {}, state.shortcuts.brief));
   }
   wake();
 }
 window.bar.onState((s) => { state = s; render(); });
+
+function renderCard() {
+  const c = state.card;
+  $('card').hidden = !c;
+  if (!c) return;
+  $('card-tried').textContent = c.tried;
+  $('card-did').textContent = c.did;
+  for (const b of $('card').querySelectorAll('button')) b.dataset.arg = c.id;
+}
+
+// Hold chips: "Delete 3 files · Codex · 0:42", approve or cancel; hold one to cancel them all.
+const clock = (ms) => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+function renderChips() {
+  $('chips').replaceChildren(...(state.holds ?? []).map((h) => {
+    const chip = el('div', { className: 'chip hit' }, el('span', {}, `${h.what} · ${h.agent}`), ' ', el('span', { className: 'time' }, clock(h.expiresAt - Date.now())));
+    const ok = el('button', { className: 'ok', title: 'Approve' }, '✓');
+    const no = el('button', { className: 'no', title: 'Cancel · Hold: cancel all' }, '✕');
+    ok.setAttribute('aria-label', `Approve: ${h.what}`);
+    no.setAttribute('aria-label', `Cancel: ${h.what}`);
+    Object.assign(ok.dataset, { action: 'hold-approve', arg: h.id });
+    Object.assign(no.dataset, { action: 'hold-cancel', long: 'hold-cancel-all', arg: h.id });
+    chip.append(ok, no);
+    return chip;
+  }));
+}
+setInterval(() => { if (state.holds?.length) renderChips(); }, 1000);
 
 // Take the mouse only over .hit elements (the window gets mouse moves even while it lets clicks through).
 document.addEventListener('mousemove', (e) => {

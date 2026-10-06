@@ -37,4 +37,18 @@ button:focus-visible { outline: 2px solid #8cf; outline-offset: 2px; }
 .pill.dot > :not(.protection) { display: none; }
 .hint { padding: 4px 10px; border-radius: 10px; background: rgba(24, 24, 28, .92); color: #ccc; }
 .hint kbd { font: inherit; color: #fff; }
+/* Drift card (spec §23.4) and hold chips. */
+.card { position: relative; width: 340px; box-sizing: border-box; padding: 10px 12px; border-radius: 12px; background: rgba(24, 24, 28, .96);
+  border-left: 3px solid #f2b33d; box-shadow: 0 2px 10px rgba(0, 0, 0, .4); }
+.card p { margin: 0 18px 6px 0; line-height: 1.35; }
+.card .tried { font-weight: 600; }
+.card .did { color: #ccc; }
+.card .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.card .close { position: absolute; top: 6px; right: 8px; width: 18px; height: 18px; color: #aaa; }
+.text.primary { background: #2f6fde; } .text.primary:hover { background: #3b7cf0; }
+.chips { display: flex; flex-direction: column; gap: 4px; align-items: inherit; }
+.chip { display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 14px; background: rgba(24, 24, 28, .94); }
+.chip .time { font-variant-numeric: tabular-nums; color: #f2c76d; }
+.chip button { width: 22px; height: 22px; border-radius: 50%; background: rgba(255, 255, 255, .1); }
+.chip .ok:hover { background: #2a8a4a; } .chip .no:hover { background: #a33; }
 @media (prefers-reduced-motion: reduce) { .pill { transition: none; } }

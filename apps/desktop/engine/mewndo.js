@@ -697,7 +697,10 @@ function createMewndo({
     hookedAgents.set(name, now());
     lastSeen.set(name, { folder: root ?? lastSeen.get(name)?.folder, session: input.session_id ?? input.conversation_id, kind: agent });
     const verdicts = [];
-    for (const action of actions) verdicts.push(await judge(core, { session, brief, action }, { failOpen: guardFailOpen }));
+    for (const action of actions) {
+      verdicts.push(exceptions.has(exceptionKey(name, action)) ? { decision: 'allow', rule: 'exception', reason: 'The user let this through.' }
+        : await judge(core, { session, brief, action }, { failOpen: guardFailOpen }));
+    }
     const verdict = strictest(verdicts);
     if (verdict.rule === 'burst') { // spec §24.1: a burst brakes the agent (and the 'braked' event alerts the user)
       const reason = 'it tried too many changes at once';
@@ -714,6 +717,45 @@ function createMewndo({
     mewndo.emit('guard', { folder: root, agent: name, actions, verdict });
     return outputFor(agent, verdict);
   };
+
+  // "Let it" on a drift card (spec §23.4): the same action by the same agent is allowed from now on, by Guard and
+  // by Heal. actions: Guard's [{ kind, path | command }]. ponytail: in memory, so exceptions end when Mewndo quits.
+  const exceptions = new Set();
+  const exceptionKey = (agent, a) => `${agent}|${a.kind}|${a.command ?? a.path}`;
+  mewndo.letIt = (agent, actions) => {
+    for (const a of actions ?? []) if (a && (typeof a.path === 'string' || typeof a.command === 'string')) exceptions.add(exceptionKey(agent, a));
+  };
+
+  // --- Holds (spec §23.2, §28.4) ------------------------------------------------------------------------------------
+  // An action waiting for the user: approve runs it, cancel drops it, and when the countdown ends it is cancelled,
+  // never run without a verdict. Local for now; cloud holds come later. 'holds-changed' with the list.
+  const holds = new Map(); // id -> { id, agent, what, folder, createdAt, expiresAt, run, timer }
+  let holdSeq = 0;
+  const holdList = () => [...holds.values()].map(({ run, timer, ...h }) => h);
+  const dropHold = (id) => {
+    const h = holds.get(id);
+    if (!h) return null;
+    clearTimeout(h.timer);
+    holds.delete(id);
+    mewndo.emit('holds-changed', holdList());
+    return h;
+  };
+  mewndo.hold = ({ agent, what, folder = null, ms = 60_000, run }) => {
+    const id = `hold-${++holdSeq}`;
+    const at = now();
+    const timer = setTimeout(() => dropHold(id), ms);
+    timer.unref?.();
+    holds.set(id, { id, agent, what, folder, createdAt: at, expiresAt: at + ms, run, timer });
+    mewndo.emit('holds-changed', holdList());
+    return id;
+  };
+  mewndo.holds = holdList;
+  mewndo.approveHold = async (id) => {
+    const h = dropHold(id);
+    if (!h) throw new Error('That hold has already ended.');
+    return (await h.run?.()) ?? null;
+  };
+  mewndo.cancelHold = (id) => !!dropHold(id);
 
   // --- Brake and Heal (spec §24.3, §24.4) ----------------------------------------------------------------------
   // Brake: hooked agents get stopped at their next hook (Claude Code: continue false; Codex and Cursor: every action
@@ -850,7 +892,7 @@ function createMewndo({
     const drifted = [];
     for (const rel of paths) {
       const v = await judge(core, { session: `heal:${agent}:${root}`, brief, action: { kind: 'delete', path: path.join(root, rel) } }, { failOpen: true });
-      if (['unnamed_delete', 'outside_scope'].includes(v.rule)) drifted.push(rel);
+      if (['unnamed_delete', 'outside_scope'].includes(v.rule) && !exceptions.has(exceptionKey(agent, { kind: 'delete', path: path.join(root, rel) }))) drifted.push(rel);
     }
     if (!drifted.length) return;
     const again = drifted.filter((p) => healedPaths.has(`${agent}|${root}|${p}`));

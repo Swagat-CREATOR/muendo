@@ -7,6 +7,17 @@
   <link rel="stylesheet" href="bar.css">
 </head>
 <body>
+  <section id="card" class="card hit" role="alertdialog" aria-labelledby="card-tried" hidden>
+    <button class="close" data-action="card-dismiss" aria-label="Dismiss">×</button>
+    <p id="card-tried" class="tried"></p>
+    <p id="card-did" class="did"></p>
+    <div class="row">
+      <button class="text primary" data-action="card-resume">Resume with corrected brief</button>
+      <button class="text" data-action="card-letit">Let it</button>
+      <button class="text" data-action="card-stop">Stop and review</button>
+    </div>
+  </section>
+  <div id="chips" class="chips"></div>
   <div id="hint" class="hint hit" hidden></div>
   <div id="pill" class="pill hit" role="toolbar" aria-label="Mewndo">
     <button id="protection" class="protection" data-action="protection" aria-label="Mewndo"></button>

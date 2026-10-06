@@ -225,3 +225,35 @@ test('Resume: Codex gets a block in AGENTS.md, Cursor a rules file and the clipb
     assert.match(other.card, /Agent says: finished the parser/);
   } finally { await mewndo.stop(); }
 });
+
+test('Let it: a refused action is allowed from then on for that agent only (drift card)', { skip }, async () => {
+  const { root, mewndo, hookCall } = await setup('letit');
+  try {
+    const del = { tool_name: 'Bash', tool_input: { command: 'rm keep2.txt' } };
+    const first = await hookCall('claude', del);
+    assert.notStrictEqual(first.hookSpecificOutput.permissionDecision, 'allow', 'the brief does not name keep2.txt');
+    mewndo.letIt('Claude Code', [{ kind: 'shell', command: 'rm keep2.txt', cwd: root }]);
+    assert.strictEqual((await hookCall('claude', del)).hookSpecificOutput.permissionDecision, 'allow');
+    assert.notStrictEqual((await hookCall('codex', del)).hookSpecificOutput.permissionDecision, 'allow', 'only for that agent');
+  } finally { await mewndo.stop(); }
+});
+
+test('holds: approve runs the action once, cancel and the countdown drop it without running', async () => {
+  const { createMewndo: create } = require('../engine');
+  const { tempDir: temp } = require('./helpers');
+  const mewndo = create({ dataDir: temp() });
+  const lists = [];
+  mewndo.on('holds-changed', (l) => lists.push(l.length));
+  let ran = 0;
+  const a = mewndo.hold({ agent: 'Codex', what: 'Delete 3 files', run: () => { ran++; return 'done'; } });
+  const b = mewndo.hold({ agent: 'Codex', what: 'Delete 9 files', run: () => { ran++; } });
+  mewndo.hold({ agent: 'Codex', what: 'Expires', ms: 50, run: () => { ran++; } });
+  assert.deepStrictEqual(mewndo.holds().map((h) => h.what), ['Delete 3 files', 'Delete 9 files', 'Expires']);
+  assert.ok(mewndo.holds().every((h) => h.expiresAt > h.createdAt && !('run' in h)));
+  assert.strictEqual(await mewndo.approveHold(a), 'done');
+  await assert.rejects(mewndo.approveHold(a), /already ended/);
+  assert.strictEqual(mewndo.cancelHold(b), true);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.deepStrictEqual([ran, mewndo.holds().length], [1, 0]);
+  assert.deepStrictEqual(lists, [1, 2, 3, 2, 1, 0]);
+});
