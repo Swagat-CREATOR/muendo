@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <title>Mewndo bar</title>
+  <link rel="stylesheet" href="bar.css">
+</head>
+<body>
+  <div id="pill" class="pill" role="toolbar" aria-label="Mewndo">
+    <button id="protection" class="protection" aria-label="Mewndo"></button>
+    <span id="agents" class="agents" aria-live="polite"></span>
+    <button id="mic" class="round" aria-label="Voice commands (not available yet)" disabled>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg>
+    </button>
+    <button id="panel" class="round" aria-label="Agents and connections">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>
+    </button>
+  </div>
+  <script src="bar.js"></script>
+</body>
+</html>

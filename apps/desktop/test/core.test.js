@@ -122,3 +122,13 @@ test('requests carry the protocol version, and errors come back as errors', { sk
   assert.strictEqual((await core.request('status')).v, 1);
   await core.stop();
 });
+
+test('screen_state says whether a full-screen app is in front (the bar hides then)', { skip }, async () => {
+  const { core } = make();
+  core.start();
+  await reach(core, 'running');
+  const reply = await core.request('screen_state');
+  assert.strictEqual(reply.type, 'screen_state');
+  assert.strictEqual(typeof reply.full_screen, 'boolean');
+  await core.stop();
+});

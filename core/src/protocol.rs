@@ -12,6 +12,7 @@
 // Events (id null) come on the connection that asked for the watch or restore, until it unwatches or disconnects.
 //   app  -> core  {"v":1,"id":11,"type":"process_freeze","pid":4242}   (also process_resume, process_end)
 //   core -> app   {"v":1,"id":11,"type":"processes","pids":[4242,4250],"skipped":[]}
+//   app  -> core  {"v":1,"id":12,"type":"screen_state"}  ->  {"v":1,"id":12,"type":"screen_state","full_screen":false}
 // Restores and other slow requests (is_slow) run alongside the rest, so their replies can come after later ones'.
 // Every message carries the protocol version `v`; a request with another version gets an `unsupported_version`
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
@@ -21,6 +22,7 @@ use crate::policy;
 use crate::process::{self, Action};
 use crate::restore;
 use crate::scanner::{self, Manifest, ScanOptions};
+use crate::screen;
 use crate::store::{self, Store, StoreError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -117,6 +119,8 @@ pub enum Request {
     ProcessEnd {
         pid: u32,
     },
+    /// Is a full-screen app in front (screen.rs)? Replies `screen_state`.
+    ScreenState,
     /// Any type this version doesn't know. Only for reading requests; never sent.
     #[serde(other)]
     Unknown,
@@ -158,6 +162,9 @@ pub enum Response {
     Processes {
         #[serde(flatten)]
         report: process::Report,
+    },
+    ScreenState {
+        full_screen: bool,
     },
     /// v0's restore result (see restore::run).
     Restored {
@@ -570,6 +577,15 @@ fn respond_now(line: &str, info: &Info, session: &Session) -> (String, bool) {
         Ok((id, Request::ProcessEnd { pid })) => {
             (encode(Some(id), control(pid, Action::End)), false)
         }
+        Ok((id, Request::ScreenState)) => (
+            encode(
+                Some(id),
+                Response::ScreenState {
+                    full_screen: screen::full_screen(),
+                },
+            ),
+            false,
+        ),
         Ok((_, Request::Restore { .. })) => unreachable!("respond runs restores"),
         Ok((_, Request::Unknown)) => unreachable!("decode turns unknown types into errors"),
     }

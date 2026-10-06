@@ -1,0 +1,27 @@
+/* The Mewndo bar: a small dark pill, sitting at the bottom of its transparent window on the docked side. */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+body { display: flex; align-items: flex-end; justify-content: flex-end; padding: 6px; box-sizing: border-box; font: 12px system-ui, sans-serif; }
+body.left { justify-content: flex-start; }
+.pill {
+  display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 6px 0 10px; border-radius: 18px;
+  background: rgba(24, 24, 28, .92); box-shadow: 0 1px 6px rgba(0, 0, 0, .35); color: #eee; cursor: grab;
+  transition: padding .2s, gap .2s;
+}
+.pill.dragging { cursor: grabbing; }
+button { all: unset; cursor: pointer; display: grid; place-items: center; }
+button:focus-visible { outline: 2px solid #8cf; outline-offset: 2px; }
+.protection { width: 12px; height: 12px; border-radius: 50%; background: #7a7a80; }
+.protected .protection { background: #3ccf6e; }
+.drift .protection { background: #f2b33d; }
+.braked .protection { background: #ef4b4b; }
+.agents { display: flex; gap: 4px; }
+.agents i { width: 6px; height: 6px; border-radius: 50%; background: #8ab4ff; }
+.agents i.braked { background: #ef4b4b; }
+.round { width: 26px; height: 26px; border-radius: 50%; background: rgba(255, 255, 255, .08); }
+.round:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
+.round:disabled { opacity: .4; cursor: default; }
+.round svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+/* Idle: only the protection dot is left. */
+.pill.dot { padding: 0 9px; gap: 0; height: 30px; }
+.pill.dot > :not(.protection) { display: none; }
+@media (prefers-reduced-motion: reduce) { .pill { transition: none; } }

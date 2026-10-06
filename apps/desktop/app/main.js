@@ -11,6 +11,7 @@ const {
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
 const { createCore } = require('./core');
+const { createBar } = require('./bar');
 
 // Set up once the app is ready (the data folder depends on the profile). Until then, lines are dropped.
 let log = { info() {}, warn() {}, error() {}, file: null };
@@ -33,6 +34,7 @@ app.setPath('userData', process.env.MEWNDO_USER_DATA ? path.resolve(process.env.
 
 let win = null;
 let tray = null;
+let bar = null; // the Mewndo bar (bar.js)
 let quitting = false;
 let stopped = false;
 let settings = { setupDone: false, openAtLogin: true };
@@ -82,6 +84,9 @@ function onEngineMessage(msg) {
     return;
   }
   const [a, b] = msg.args;
+  if (msg.event === 'drift' || msg.event === 'braked') lastAlertAt = Date.now();
+  if (msg.event === 'drift') lastDriftAt = Date.now();
+  if (BAR_EVENTS.has(msg.event)) refreshBar();
   switch (msg.event) {
     case 'progress': progress.set(a, b); send('progress', { root: a, ...b }); break;
     case 'savepoint': storage.at = 0; send('savepoints-changed', a); break;
@@ -267,7 +272,64 @@ async function state() {
 
 function stateChanged() {
   updateTray();
+  refreshBar();
   send('state-changed');
+}
+
+// --- The Mewndo bar ---------------------------------------------------------------------------------------------
+// It renders from the engine's events: protection (green protected, amber drift in the last 5 minutes, red braked,
+// grey paused or nothing protected), one dot per running agent, and an alert for a minute after a drift or brake.
+const BAR_EVENTS = new Set(['agents-changed', 'braked', 'resumed', 'drift', 'folders-changed', 'restored']);
+const ALERT_MS = 60_000;
+const DRIFT_MS = 5 * 60_000;
+let lastAlertAt = 0;
+let lastDriftAt = 0;
+let barRefresh = null;
+
+function startBar() {
+  bar = createBar({
+    positions: settings.barPositions ?? {},
+    savePositions(positions) {
+      settings.barPositions = positions;
+      saveSettings().catch((e) => log.warn(`Couldn't save the bar's position: ${e.message}`));
+    },
+    onAction(name) {
+      // ponytail: the up-arrow opens the main window until its panel lands (P3.4); the mic waits for voice (P3.5).
+      if (name === 'protection' || name === 'panel') showWindow();
+    },
+    async fullScreen() {
+      return process.platform === 'win32' && core?.status().state === 'running' && (await core.request('screen_state')).full_screen === true;
+    },
+    log,
+  });
+  bar.setEnabled(settings.barOff !== true);
+  refreshBar();
+}
+
+function refreshBar() {
+  if (!bar || barRefresh) return;
+  barRefresh = setTimeout(async () => { // events come in bunches: one update for each bunch
+    barRefresh = null;
+    const [folders, agents, braked, until] = await Promise.all(['folders', 'agents', 'braked', 'pausedUntil'].map((m) => call(m).catch(() => null)));
+    const brakedNames = new Set((braked ?? []).map((x) => x.agent));
+    const now = Date.now();
+    const status = brakedNames.size ? 'braked' : now - lastDriftAt < DRIFT_MS ? 'drift' : until ? 'paused' : folders?.length ? 'protected' : 'off';
+    const label = {
+      braked: `Mewndo braked ${[...brakedNames].join(', ')}`, drift: 'Mewndo: an agent went outside its brief',
+      paused: 'Mewndo: protection paused', protected: `Mewndo: protecting ${folders?.length} folder${folders?.length === 1 ? '' : 's'}`,
+      off: 'Mewndo: no folders protected',
+    }[status];
+    const names = [...new Set([...(agents ?? []).map((x) => x.name), ...brakedNames])];
+    bar.update({ status, label, agents: names.map((name) => ({ name, braked: brakedNames.has(name) })), alert: now - lastAlertAt < ALERT_MS });
+  }, 50);
+}
+setInterval(refreshBar, 30_000).unref(); // drift and alert colours fade with time
+
+function toggleBar() {
+  settings.barOff = settings.barOff !== true;
+  bar?.setEnabled(!settings.barOff);
+  updateTray();
+  return saveSettings();
 }
 
 // --- Actions shared by the window and the tray -------------------------------------------------------------
@@ -586,6 +648,7 @@ async function updateTray() {
     { label: "What Mewndo can and can't undo", click: () => openLimits() },
     { label: 'Undo Last', click: () => openUndo() },
     { label: until ? 'Resume Protection' : 'Pause Protection for 1 Hour', click: run(togglePause) },
+    { label: 'Show Mewndo Bar', type: 'checkbox', checked: settings.barOff !== true, click: run(toggleBar) },
     { type: 'separator' },
     { label: 'Quit', click: () => quit() },
   ]));
@@ -956,6 +1019,7 @@ if (process.argv.includes('--remove-claude-hooks')) {
     tray = new Tray(icon().resize({ width: 16, height: 16 }));
     tray.on('click', showWindow);
     updateTray();
+    startBar();
 
     createWindow(!(process.argv.includes('--hidden') && settings.setupDone));
   }).catch((e) => {

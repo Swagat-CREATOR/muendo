@@ -14,6 +14,7 @@ mod process;
 mod protocol;
 mod restore;
 mod scanner;
+mod screen;
 mod store;
 
 use log::Log;
