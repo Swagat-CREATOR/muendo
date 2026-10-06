@@ -13,6 +13,12 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 45
+    # The runner's own temp folder is an 8.3 short alias (C:\Users\RUNNER~1\...), which users' folders aren't: v0
+    # stores a folder by its long real path, so tests that expect the alias back fail there. Known v0 gap, recorded
+    # in docs/known-issues.md; the Rust core resolves every root to its long path instead.
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -39,7 +45,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          lines=$(grep -E -A25 '^✖|FAILED|panicked|^error|^  FAIL|^FAIL' ci.log | head -150)
+          # node's own summary of failures (with each error), then cargo's and the reliability script's.
+          lines=$( (sed -n '/failing tests:/,$p' ci.log; grep -E -A25 'panicked|^error|^ *FAIL' ci.log) | head -300)
           lines=${lines//'%'/%25}
           lines=${lines//$'\r'/}
           echo "::error title=What failed::${lines//$'\n'/%0A}"
