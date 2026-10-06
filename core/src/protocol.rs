@@ -17,6 +17,7 @@
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
 use crate::feed::{self, FeedEvent, WatchOptions};
 use crate::paths::{display, real};
+use crate::policy;
 use crate::process::{self, Action};
 use crate::restore;
 use crate::scanner::{self, Manifest, ScanOptions};
@@ -99,6 +100,13 @@ pub enum Request {
         /// Tests only.
         crash_after_steps: Option<usize>,
     },
+    /// Guard (policy.rs): judge an agent's planned action against its session's brief. `brief` starts or replaces
+    /// the session's policy. Replies `verdict`.
+    PolicyCheck {
+        session: String,
+        brief: Option<policy::Brief>,
+        action: policy::Action,
+    },
     /// Brake (process.rs): freeze, resume or end the process tree of `pid`. Replies `processes`.
     ProcessFreeze {
         pid: u32,
@@ -141,6 +149,10 @@ pub enum Response {
     },
     Position {
         usn: Option<i64>,
+    },
+    Verdict {
+        #[serde(flatten)]
+        verdict: policy::Verdict,
     },
     /// The processes acted on, root first, and the ones left alone (system processes, Mewndo itself).
     Processes {
@@ -255,6 +267,8 @@ pub fn encode(id: Option<u64>, body: Response) -> String {
 
 pub struct Info {
     pub started: Instant,
+    /// Guard sessions: each agent session's brief and recent activity.
+    policies: policy::Sessions,
     /// Content stores opened so far. Each is cleaned of stale temp files the first time it's used.
     stores: Mutex<HashMap<PathBuf, Arc<Store>>>,
 }
@@ -263,6 +277,7 @@ impl Info {
     pub fn new() -> Info {
         Info {
             started: Instant::now(),
+            policies: policy::Sessions::default(),
             stores: Mutex::new(HashMap::new()),
         }
     }
@@ -534,6 +549,17 @@ fn respond_now(line: &str, info: &Info, session: &Session) -> (String, bool) {
         Ok((id, Request::FeedCheckpoint { root, usn })) => {
             let reply = with_watch(session, &root, |w| w.checkpoint(usn).map(|()| Response::Ok));
             (encode(Some(id), reply), false)
+        }
+        Ok((
+            id,
+            Request::PolicyCheck {
+                session,
+                brief,
+                action,
+            },
+        )) => {
+            let verdict = info.policies.check(&session, brief, &action);
+            (encode(Some(id), Response::Verdict { verdict }), false)
         }
         Ok((id, Request::ProcessFreeze { pid })) => {
             (encode(Some(id), control(pid, Action::Freeze)), false)
