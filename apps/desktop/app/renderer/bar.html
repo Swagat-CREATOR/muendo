@@ -16,9 +16,12 @@
     <p class="foot">Only what Mewndo can see on this PC. Solid: exact · outlined: likely · ?: unknown.</p>
   </section>
   <section id="card" class="card hit" role="alertdialog" aria-labelledby="card-tried" hidden>
-    <button class="close" data-action="card-dismiss" aria-label="Dismiss">×</button>
-    <p id="card-tried" class="tried"></p>
-    <p id="card-did" class="did"></p>
+    <div class="head">
+      <svg class="icon warn" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 18.5 17h-17z"/><path d="M10 8v4M10 14.5v.5"/></svg>
+      <p id="card-tried" class="title"></p>
+      <button class="close" data-action="card-dismiss" aria-label="Dismiss"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+    </div>
+    <p id="card-did" class="body"></p>
     <div class="row">
       <button class="text primary" data-action="card-resume">Resume with corrected brief</button>
       <button class="text" data-action="card-letit">Let it</button>
@@ -26,19 +29,26 @@
     </div>
   </section>
   <section id="ask" class="card ask hit" role="alertdialog" aria-labelledby="ask-text" hidden>
-    <p id="ask-heard" class="heard"></p>
-    <p id="ask-text" class="tried"></p>
+    <div class="head">
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg>
+      <p id="ask-text" class="title"></p>
+    </div>
+    <p id="ask-heard" class="body heard"></p>
     <div id="ask-choices" class="row"></div>
   </section>
   <div id="chips" class="chips"></div>
-  <div id="hint" class="hint hit" hidden></div>
+  <div id="hint" class="hint hit" hidden>
+    <div id="keys" class="keys"></div>
+    <div class="actions">
+      <button id="ticker" class="ticker" data-action="diff" data-long="undo-burst" title="Tap: what changed · Hold: undo it"></button>
+      <button class="text" data-action="undo">Undo last</button>
+      <button class="text" data-action="brake" id="brake">Brake</button>
+      <button class="text" data-action="savepoint">Save point</button>
+    </div>
+  </div>
   <div id="pill" class="pill hit" role="toolbar" aria-label="Mewndo">
     <button id="protection" class="protection" data-action="protection" aria-label="Mewndo"></button>
     <span id="agents" class="agents"></span>
-    <button id="ticker" class="ticker more" data-action="diff" data-long="undo-burst" title="Tap: what changed · Hold: undo it"></button>
-    <button class="text more" data-action="undo">Undo last</button>
-    <button class="text more" data-action="brake" id="brake">Brake</button>
-    <button class="text more" data-action="savepoint">Save point</button>
     <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
     <button id="mic" class="round" aria-label="Hold to talk" disabled>
       <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg>

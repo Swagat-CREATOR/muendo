@@ -12,6 +12,7 @@ let state = {};
 let idle = null;
 let overHit = false;
 let overPill = false;
+let closeTimer = null;
 
 function wake() {
   pill.classList.remove('dot');
@@ -62,7 +63,8 @@ function render() {
   $('mic').disabled = !state.voice;
   $('mic').setAttribute('aria-label', state.voice ? 'Hold to talk' : 'Voice commands need Windows');
   if (state.shortcuts) {
-    $('hint').replaceChildren('Undo ', el('kbd', {}, state.shortcuts.undo), '  ·  Brief ', el('kbd', {}, state.shortcuts.brief));
+    const keys = (k) => el('b', {}, k.replace(/\+/g, ' + '));
+    $('keys').replaceChildren('Undo ', keys(state.shortcuts.undo), ' →', el('span', { className: 'sep' }, '·'), 'Brief ', keys(state.shortcuts.brief), ' →');
   }
   wake();
 }
@@ -170,7 +172,7 @@ function renderAsk() {
   const a = state.ask;
   $('ask').hidden = !a;
   if (!a) return;
-  $('ask-heard').textContent = a.heard ? `“${a.heard}”` : '';
+  $('ask-heard').textContent = a.heard ? `You said “${a.heard}”` : '';
   $('ask-text').textContent = a.text;
   $('ask-choices').replaceChildren(...a.choices.map((label, i) => {
     const b = el('button', { className: `text ${i === 0 && a.choices.length > 1 ? 'primary' : ''}` }, label);
@@ -210,7 +212,10 @@ document.addEventListener('mousemove', (e) => {
   const hit = !!e.target.closest?.('.hit');
   const onPill = !!e.target.closest?.('.pill, .hint');
   if (hit !== overHit && !press) { overHit = hit; window.bar.mouse(hit); }
-  if (onPill !== overPill) { overPill = onPill; setOpen(onPill); wake(); }
+  // Closing waits a moment, so the pointer can cross the gap between the pill and its hint.
+  clearTimeout(closeTimer);
+  if (onPill && !overPill) { overPill = true; setOpen(true); wake(); }
+  else if (!onPill && overPill) closeTimer = setTimeout(() => { overPill = false; setOpen(false); wake(); }, 250);
 });
 document.addEventListener('mouseleave', () => {
   if (press) return;
