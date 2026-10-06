@@ -11,6 +11,7 @@ const { createStore, writeFileAtomic, isInside } = require('./store');
 const { createJournal, folderId } = require('./journal');
 const { defaultCore } = require('./core-client');
 const { compareEngines } = require('./shadow');
+const { actionFor, judge, claudeOutput } = require('./guard');
 const { folderSize, DEFAULT_IGNORE } = require('./scanner');
 const { createAgentWatcher, loadAgents, saveAgents, DEFAULT_AGENTS } = require('./agents');
 const { BURST_DEFAULTS } = require('./burst');
@@ -88,6 +89,7 @@ function createMewndo({
   core = defaultCore(), // mewndo-core, if the app handed the engine one (core-client.js)
   engine = 'rust', // with a core: 'rust' restores there; 'shadow' restores in v0 and compares both engines hourly
   shadowEveryMs = 60 * 60 * 1000,
+  guardFailOpen: failOpenAtStart = false, // see configure()
 }) {
   const mewndo = new EventEmitter();
   const store = createStore(path.join(dataDir, 'store'));
@@ -111,6 +113,7 @@ function createMewndo({
   let availabilityTimer = null;
   let diskTimer = null;
   let shadowTimer = null;
+  let guardFailOpen = failOpenAtStart === true; // when the core can't answer in time: false denies destructive actions, true allows all
   let checkingAvailability = false;
   let lowDisk = false;
   // A problem that went away: { code, folder?, message }. The app clears the matching warning.
@@ -310,7 +313,8 @@ function createMewndo({
   }
 
   // Burst thresholds and the storage budget, applied at once (the budget at the next cleanup).
-  mewndo.configure = ({ burst: b, budgetBytes: budget } = {}) => {
+  mewndo.configure = ({ burst: b, budgetBytes: budget, guardFailOpen: open } = {}) => {
+    if (open !== undefined) guardFailOpen = open === true;
     if (b) {
       for (const k of ['maxDeleted', 'maxChanged']) {
         if (b[k] === undefined) continue;
@@ -324,7 +328,7 @@ function createMewndo({
     }
     return mewndo.config();
   };
-  mewndo.config = () => ({ burst: { maxDeleted: burstLimits.maxDeleted, maxChanged: burstLimits.maxChanged }, budgetBytes });
+  mewndo.config = () => ({ burst: { maxDeleted: burstLimits.maxDeleted, maxChanged: burstLimits.maxChanged }, budgetBytes, guardFailOpen });
 
   // Per-folder settings of every protected folder: [{ root, retentionDays, extraIgnore, maxFileSizeMB }].
   mewndo.folderSettings = async () => {
@@ -631,6 +635,37 @@ function createMewndo({
     return { folder: root, savePoint };
   }
 
+  // --- Guard (spec §24.2) -------------------------------------------------------------------------------------------
+  // The brief a folder's agents work under: the newest one the user wrote (Ctrl+Alt+B). Kept in the folder's data.
+  const briefFile = (root) => path.join(journals.get(root).folderDir, 'brief.json');
+  mewndo.saveBrief = async (root, task) => {
+    if (!journals.has(root)) throw new Error('That folder is not protected.');
+    await writeFileAtomic(briefFile(root), JSON.stringify({ task, createdAt: new Date(now()).toISOString() }));
+  };
+  const readBrief = async (root) => (journals.get(root)?.folderDir ? readJson(briefFile(root)).catch(() => null) : null);
+
+  // Answer an agent's PreToolUse hook (Claude Code's input format). In a protected folder the policy is its brief:
+  // the folder, the files the brief names, and its rules; with no brief written yet, deletes are allowed (with a
+  // save point first) but everything else is checked. Outside protected folders only secrets, destructive commands
+  // and bursts are checked. An allowed delete gets a save point before the answer goes back.
+  mewndo.guard = async (input, { agent = 'Claude Code' } = {}) => {
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : '.';
+    const action = actionFor(input.tool_name, input.tool_input ?? {}, cwd);
+    if (!action) return {}; // nothing to judge: an empty answer lets it go ahead
+    const real = await fsp.realpath(cwd).catch(() => path.resolve(cwd));
+    const root = [...journals.keys()].find((r) => samePath(r, real) || isInside(real, r)) ?? null;
+    const saved = root ? await readBrief(root) : null;
+    const brief = root ? { roots: [root], text: saved?.task ?? '', allow_deletes: !saved } : {};
+    const verdict = await judge(core, { session: String(input.session_id || 'unknown'), brief, action }, { failOpen: guardFailOpen });
+    if (verdict.decision === 'allow' && verdict.deletes > 0 && root) {
+      const what = action.kind === 'shell' ? action.command.replace(/\s+/g, ' ').trim().slice(0, 100) : action.path;
+      await journals.get(root)?.createSavePoint({ trigger: 'hook', agent, label: `Before ${agent} deletes: ${what}`, quick: true })
+        .catch((e) => warn('guard', `No save point before a delete: ${e.message}`, { folder: root }));
+    }
+    mewndo.emit('guard', { folder: root, agent, action, verdict });
+    return claudeOutput(verdict);
+  };
+
   // null, or why exact save points for agents aren't available.
   mewndo.hookServerProblem = () => hookServerProblem;
 
@@ -710,7 +745,7 @@ function createMewndo({
     }
     if (hookServer) {
       try {
-        hookServerHandle = await startHookServer({ dataDir, port: hookServer.port, onSavePoint: hookSavePoint });
+        hookServerHandle = await startHookServer({ dataDir, port: hookServer.port, onSavePoint: hookSavePoint, onGuard: mewndo.guard });
         hookServerProblem = null;
       } catch (e) {
         hookServerProblem = e.code === 'EADDRINUSE'

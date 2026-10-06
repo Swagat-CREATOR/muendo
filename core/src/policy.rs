@@ -478,8 +478,11 @@ pub struct Sessions(Mutex<HashMap<String, Session>>);
 impl Sessions {
     pub fn check(&self, id: &str, brief: Option<Brief>, action: &Action) -> Verdict {
         let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(b) = brief {
-            all.insert(id.to_string(), Session::new(b)); // a brief (re)starts the session's policy
+        // A new or changed brief (re)starts the session's policy; the same brief again keeps its burst history.
+        if let Some(b) = brief
+            && all.get(id).is_none_or(|s| s.brief != b)
+        {
+            all.insert(id.to_string(), Session::new(b));
         }
         let session = all
             .entry(id.to_string())
@@ -825,6 +828,24 @@ mod tests {
     fn sessions_keep_their_brief_between_checks() {
         let sessions = Sessions::default();
         let first = sessions.check("s1", Some(brief()), &Action::Delete { path: p("x.js") });
+        let quick = Brief {
+            allow_deletes: true,
+            max_deletes: 1,
+            ..brief()
+        };
+        assert_eq!(
+            sessions
+                .check("s3", Some(quick.clone()), &Action::Delete { path: p("a") })
+                .decision,
+            Decision::Allow
+        );
+        assert_eq!(
+            sessions
+                .check("s3", Some(quick), &Action::Delete { path: p("b") })
+                .rule,
+            "burst",
+            "the same brief keeps the count"
+        );
         assert_eq!(first.rule, "unnamed_delete");
         assert_eq!(
             sessions

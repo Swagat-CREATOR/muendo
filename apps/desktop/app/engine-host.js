@@ -6,11 +6,12 @@ const { createMewndo, HOOK_PORT, planClaudeHooks, installClaudeHooks } = require
 
 const port = process.parentPort;
 let mewndo = null;
+let dataDir = null;
 
 // Engine methods the main process may call. 'journal.X' calls journal X on the folder given as first argument.
 const MEWNDO = new Set([
   'unprotect', 'folders', 'pausedUntil', 'pauseProtection', 'resumeProtection', 'storageReport', 'prune', 'agents', 'hookServerProblem',
-  'configure', 'config', 'folderSettings', 'setFolderSettings', 'agentList', 'setAgentList',
+  'configure', 'config', 'folderSettings', 'setFolderSettings', 'agentList', 'setAgentList', 'saveBrief',
 ]);
 const JOURNAL = new Set(['listSavePoints', 'createSavePoint', 'diffSince', 'planRestore', 'restore', 'listRestores']);
 
@@ -41,6 +42,7 @@ const methods = {
   ping: () => 'pong',
 
   async start(options) {
+    dataDir = options.dataDir;
     // The app turns on agent awareness (checks every 5 s, a save point every 10 min while agents run) and the
     // exact-save-point server for agent hooks.
     mewndo = createMewndo({ ...options, agents: { intervalMs: 5000, saveEveryMs: 10 * 60 * 1000 }, hookServer: { port: HOOK_PORT } });
@@ -54,6 +56,8 @@ const methods = {
     mewndo.on('shadow', (r) => (r.count
       ? log('warn', `Shadow mode: the engines differ on ${r.count} item(s) in ${r.folder}`, r.differences)
       : log('info', `Shadow mode: both engines agree on ${r.folder}`)));
+    mewndo.on('guard', (g) => g.verdict.decision !== 'allow'
+      && log('info', `Guard: ${g.verdict.decision} for ${g.agent} (${g.verdict.rule})`, { folder: g.folder, action: g.action, reason: g.verdict.reason }));
     mewndo.on('recovered', (r) => log('warn', 'Checked recent file versions after an unclean shutdown', r));
     mewndo.on('pruned', (r) => r.pruned?.length && log('info', `Cleanup removed ${r.pruned.length} save points`, { removedObjects: r.removedObjects, usedBytes: r.usedBytes }));
     await mewndo.start();
@@ -63,11 +67,11 @@ const methods = {
 
   // What installing the Claude Code hooks would add (shown to the user first), and installing them.
   async claudeHooksPlan() {
-    const { merged, ...plan } = await planClaudeHooks();
+    const { merged, ...plan } = await planClaudeHooks({ dataDir });
     return plan;
   },
   async claudeHooksInstall() {
-    const { merged, ...result } = await installClaudeHooks();
+    const { merged, ...result } = await installClaudeHooks({ dataDir });
     return result;
   },
 

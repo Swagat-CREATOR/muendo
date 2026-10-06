@@ -151,7 +151,7 @@ function startEngine() {
     notify('Mewndo', 'The Mewndo engine stopped unexpectedly and is restarting.');
     setTimeout(startEngine, 1000);
   });
-  call('start', { dataDir: dataDir(), budgetBytes: settings.budgetGB ? settings.budgetGB * GB : undefined, burst: settings.burst, engine: engineChoice() })
+  call('start', { dataDir: dataDir(), budgetBytes: settings.budgetGB ? settings.budgetGB * GB : undefined, burst: settings.burst, engine: engineChoice(), guardFailOpen: settings.guardFailOpen === true })
     .then(stateChanged, (e) => notify('Mewndo could not start protecting', e.message));
 }
 
@@ -423,6 +423,7 @@ const briefHandlers = {
     if (typeof task !== 'string' || !task.trim() || task.length > 20_000) throw new Error('Type the task first.');
     if (!(await briefFolders()).some((f) => f.root === root)) throw new Error('That folder is not protected.');
     const sp = await call('journal.createSavePoint', root, { trigger: 'brief', label: briefLabel(task), quick: true });
+    await call('saveBrief', root, task); // Guard judges the folder's agents by it
     clipboard.writeText(buildBrief(task, root, safetyRules()));
     briefWin?.hide();
     notify('Mewndo', 'Protected. Brief copied, paste it into your agent.');
@@ -734,6 +735,7 @@ async function allSettings() {
     safetyRules: safetyRules(), safetyRulesDefault: DEFAULT_SAFETY_RULES,
     openAtLogin: settings.openAtLogin, loginSupported: process.platform !== 'linux',
     engine: engineChoice(),
+    guardFailOpen: config.guardFailOpen === true,
     dataDir: dataDir(),
   };
 }
@@ -777,6 +779,13 @@ const settingsHandlers = {
     shortcutTest = null;
     if (!ours) globalShortcut.unregister(accel);
     return { ok: pressed, reason: pressed ? null : 'not-delivered' };
+  },
+
+  async setGuardFailOpen(on) {
+    await call('configure', { guardFailOpen: on === true });
+    settings.guardFailOpen = on === true;
+    await saveSettings();
+    return allSettings();
   },
 
   async setBurst(burst) {

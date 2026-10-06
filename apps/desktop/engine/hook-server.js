@@ -26,8 +26,9 @@ function sameToken(given, token) {
 }
 
 // onSavePoint({ agent, event, cwd, command, sessionId }) -> result, sent back as JSON.
+// onGuard(hookInput) -> the hook's answer (Guard, guard.js): POST /guard with an agent's hook input as the body.
 // port 0 picks a free port (tests); hook.json always records the port actually used.
-async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePoint }) {
+async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePoint, onGuard = null }) {
   const file = path.join(dataDir, 'hook.json');
   const token = await loadToken(file);
   let port = wantedPort;
@@ -39,7 +40,8 @@ async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePo
     // A web page can't read the token, but it could still try requests through a hostname that points at this
     // computer (DNS rebinding); only accept the names a local program uses.
     if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)) return reply(res, 403, { error: 'wrong host' });
-    if (req.method !== 'POST' || req.url !== '/savepoint') return reply(res, 404, { error: 'not found' });
+    const guard = req.url === '/guard' && onGuard;
+    if (req.method !== 'POST' || (req.url !== '/savepoint' && !guard)) return reply(res, 404, { error: 'not found' });
     if (!sameToken(req.headers['x-mewndo-token'], token)) return reply(res, 401, { error: 'wrong token' });
     let body = '';
     let tooBig = false;
@@ -53,6 +55,15 @@ async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePo
       let input;
       try { input = JSON.parse(body || '{}'); } catch { return reply(res, 400, { error: 'not JSON' }); }
       const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+      if (guard) {
+        try {
+          const answer = await onGuard(input && typeof input === 'object' ? input : {});
+          if (!res.destroyed) reply(res, 200, answer);
+        } catch (e) {
+          if (!res.destroyed) reply(res, 500, { error: e.message });
+        }
+        return;
+      }
       try {
         const result = await onSavePoint({
           agent: text(input.agent, 60) || 'AI agent', event: text(input.event, 60), cwd: text(input.cwd, 4096),

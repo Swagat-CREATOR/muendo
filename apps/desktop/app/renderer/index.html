@@ -41,7 +41,7 @@
         <p id="storage-summary" class="muted"></p>
         <p><a href="#" id="open-limits">What Mewndo can and can't undo</a></p>
         <h2>Claude Code</h2>
-        <p class="muted">Exact save points: one when a session starts and one right before every command Claude Code runs.</p>
+        <p class="muted">Exact save points when a session starts, and Guard: Claude Code asks Mewndo before every command, edit or read.</p>
         <button id="claude-hooks">Set up Claude Code save points…</button>
         <p id="claude-hooks-status" class="muted"></p>
         <h2>Briefs</h2>
@@ -118,8 +118,12 @@
   <dialog id="hooks-dialog">
     <form method="dialog">
       <h2>Add Mewndo to Claude Code?</h2>
-      <p>Claude Code will run Mewndo's save point script when a session starts and right before every Bash command.
-        The script finishes in under a second, prints nothing, and never stops Claude Code, even when Mewndo isn't running.</p>
+      <p>Claude Code will run Mewndo's save point script when a session starts, and ask Mewndo before every command,
+        file edit or file read (Guard). Mewndo answers allow, deny or ask, with a reason Claude reads: it refuses secrets
+        (.env files, keys), changes outside the folder, and deletes your brief didn't name, and asks you before recursive
+        deletes, hard resets and force-pushes. Deletes it allows get a save point first.</p>
+      <p class="muted">What it can't do: while Mewndo isn't running, Claude Code isn't checked and goes ahead as usual.
+        The address includes a private token so only Claude Code on this computer can ask.</p>
       <p><strong>File:</strong> <span id="hooks-path" class="mono"></span></p>
       <p id="hooks-note"></p>
       <p><strong>Exactly this will be added:</strong></p>

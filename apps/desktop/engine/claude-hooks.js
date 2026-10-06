@@ -1,15 +1,21 @@
-// Installs Mewndo's hooks into Claude Code's user settings: a save point at the start of every session and right
-// before every Bash command, via bin/mewndo-savepoint.js. Everything else in the settings file stays as it was;
-// a backup of the old file is kept next to it.
+// Installs Mewndo's hooks into Claude Code's user settings: a save point at the start of every session (via
+// bin/mewndo-savepoint.js), and Guard (spec §24.2): before every shell command, file edit or file read, Claude Code
+// asks Mewndo's local server (an HTTP hook, token-protected) and gets allow, deny or ask with a reason (guard.js).
+// Everything else in the settings file stays as it was; a backup of the old file is kept next to it.
+// What it can't do: if Mewndo isn't running at all, Claude Code gets no answer and goes ahead (an HTTP hook that
+// can't connect doesn't block, per Claude Code's hooks reference); Guard decides only while Mewndo runs.
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { writeFileAtomic } = require('./store');
+const { HOOK_PORT } = require('./hook-server');
 
 // In the installed app, bin/ is unpacked next to app.asar (Node can't run a file inside the archive).
 const SCRIPT = path.join(__dirname, '..', 'bin', 'mewndo-savepoint.js').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-const MARK = 'mewndo-savepoint'; // how Mewndo recognises its own hook entries
+const MARK = 'mewndo-savepoint'; // how Mewndo recognises its own command hooks
+const GUARD_MATCHER = 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read';
+const isMewndos = (h) => String(h?.command ?? '').includes(MARK) || /^http:\/\/127\.0\.0\.1:\d+\/guard$/.test(String(h?.url ?? ''));
 
 // Claude Code reads ~/.claude/settings.json, or CLAUDE_CONFIG_DIR when set.
 const claudeSettingsPath = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json');
@@ -27,18 +33,25 @@ function findNode() {
 // Forward slashes work for Node in every shell Claude Code uses, including Git Bash on Windows.
 const hookCommand = (nodePath, scriptPath = SCRIPT) => `"${nodePath.replace(/\\/g, '/')}" "${scriptPath.replace(/\\/g, '/')}"`;
 
-function hooksFor(command) {
-  const hook = { type: 'command', command, timeout: 5 };
+// The hook server's port and token (<data>/hook.json, written when Mewndo starts). Null if Mewndo hasn't run yet.
+async function hookServerInfo(dataDir) {
+  try { return JSON.parse(await fsp.readFile(path.join(dataDir, 'hook.json'), 'utf8')); } catch { return null; }
+}
+
+function hooksFor(command, { port = HOOK_PORT, token = null } = {}) {
+  const guard = { type: 'http', url: `http://127.0.0.1:${port}/guard`, timeout: 5, ...(token ? { headers: { 'X-Mewndo-Token': token } } : {}) };
   return {
-    SessionStart: [{ hooks: [hook] }],
-    PreToolUse: [{ matcher: 'Bash', hooks: [hook] }],
+    SessionStart: [{ hooks: [{ type: 'command', command, timeout: 5 }] }],
+    PreToolUse: [{ matcher: GUARD_MATCHER, hooks: [guard] }],
   };
 }
 
 // What installing would do, without doing it: { settingsPath, exists, installed, preview, merged }.
 // `preview` is exactly the JSON that will be added.
-async function planClaudeHooks({ settingsPath = claudeSettingsPath(), nodePath } = {}) {
+// dataDir: Mewndo's data folder, for the guard's port and token.
+async function planClaudeHooks({ settingsPath = claudeSettingsPath(), nodePath, dataDir } = {}) {
   const node = nodePath ?? (await findNode());
+  const server = dataDir ? await hookServerInfo(dataDir) : null;
   let current = {};
   let exists = true;
   try {
@@ -50,13 +63,13 @@ async function planClaudeHooks({ settingsPath = claudeSettingsPath(), nodePath }
   if (!current || typeof current !== 'object' || Array.isArray(current)) {
     throw new Error(`Claude Code's settings file doesn't hold a settings object, so nothing was changed: ${settingsPath}`);
   }
-  const add = hooksFor(hookCommand(node));
+  const add = hooksFor(hookCommand(node), server ?? {});
   const merged = structuredClone(current);
   merged.hooks = merged.hooks && typeof merged.hooks === 'object' ? merged.hooks : {};
   for (const [event, groups] of Object.entries(add)) {
     // Older Mewndo entries (e.g. from before Mewndo moved) are replaced; other hooks are kept as they are.
     const kept = (Array.isArray(merged.hooks[event]) ? merged.hooks[event] : []).flatMap((g) => {
-      const hooks = Array.isArray(g?.hooks) ? g.hooks.filter((h) => !String(h?.command ?? '').includes(MARK)) : g?.hooks;
+      const hooks = Array.isArray(g?.hooks) ? g.hooks.filter((h) => !isMewndos(h)) : g?.hooks;
       return Array.isArray(g?.hooks) && g.hooks.length && !hooks.length ? [] : [{ ...g, hooks }];
     });
     merged.hooks[event] = [...kept, ...groups];
@@ -103,7 +116,7 @@ async function removeClaudeHooks({ settingsPath = claudeSettingsPath() } = {}) {
     if (!Array.isArray(groups)) continue;
     const kept = groups.flatMap((g) => {
       if (!Array.isArray(g?.hooks)) return [g];
-      const hooks = g.hooks.filter((h) => !String(h?.command ?? '').includes(MARK));
+      const hooks = g.hooks.filter((h) => !isMewndos(h));
       removed += g.hooks.length - hooks.length;
       return hooks.length ? [{ ...g, hooks }] : [];
     });
@@ -118,4 +131,4 @@ async function removeClaudeHooks({ settingsPath = claudeSettingsPath() } = {}) {
   return { removed, backup };
 }
 
-module.exports = { planClaudeHooks, installClaudeHooks, removeClaudeHooks, claudeSettingsPath, hookCommand, SCRIPT };
+module.exports = { planClaudeHooks, installClaudeHooks, removeClaudeHooks, claudeSettingsPath, hookCommand, SCRIPT, GUARD_MATCHER };

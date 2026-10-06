@@ -6,7 +6,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const {
   matchAgents, loadAgents, createAgentWatcher, DEFAULT_AGENTS, createMewndo, startHookServer,
-  planClaudeHooks, installClaudeHooks,
+  planClaudeHooks, installClaudeHooks, GUARD_MATCHER,
 } = require('../engine');
 const { tempDir } = require('./helpers');
 
@@ -244,7 +244,10 @@ test('Claude Code hooks: previewed exactly, merged without touching other settin
   assert.strictEqual(fresh.exists, false);
   const preview = JSON.parse(fresh.preview);
   assert.deepStrictEqual(Object.keys(preview.hooks), ['SessionStart', 'PreToolUse']);
-  assert.strictEqual(preview.hooks.PreToolUse[0].matcher, 'Bash');
+  // Guard (P2.2): one HTTP hook to Mewndo's local server for shell commands, edits and reads.
+  assert.strictEqual(preview.hooks.PreToolUse[0].matcher, GUARD_MATCHER);
+  assert.ok(GUARD_MATCHER.split('|').includes('Bash'));
+  assert.deepStrictEqual(preview.hooks.PreToolUse[0].hooks[0], { type: 'http', url: 'http://127.0.0.1:47821/guard', timeout: 5 });
   assert.match(preview.hooks.SessionStart[0].hooks[0].command, /^"C:\/Program Files\/nodejs\/node\.exe" ".*\/bin\/mewndo-savepoint\.js"$/);
 
   const existing = {

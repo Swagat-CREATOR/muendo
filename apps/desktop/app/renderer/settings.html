@@ -79,6 +79,8 @@
       </select>
     </label>
     <p class="muted">Changing it restarts protection. Scanning and watching still run in v0 either way.</p>
+    <label><input type="checkbox" id="guard-fail-open"> If Mewndo can't check an agent's action in time, let it go ahead
+      (otherwise deletes and other destructive actions are refused until Mewndo can check them)</label>
     <div class="row">
       <button id="open-data">Open Mewndo's data folder</button>
       <button id="open-log">Open the log</button>
