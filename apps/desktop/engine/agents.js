@@ -165,6 +165,7 @@ function createAgentWatcher({ agentsFile, intervalMs = 5000, listProcesses, onCh
   let agents = DEFAULT_AGENTS;
   let agentsProblem = null;
   let running = new Set();
+  let latest = []; // the last process list
   let timer = null;
   let checking = false;
 
@@ -181,6 +182,7 @@ function createAgentWatcher({ agentsFile, intervalMs = 5000, listProcesses, onCh
       }
       const processes = await source.list();
       if (!processes) return; // the first list isn't ready yet
+      latest = processes;
       const now = matchAgents(processes, agents);
       const started = [...now].filter((n) => !running.has(n));
       const stopped = [...running].filter((n) => !now.has(n));
@@ -200,6 +202,8 @@ function createAgentWatcher({ agentsFile, intervalMs = 5000, listProcesses, onCh
       return check();
     },
     check,
+    // The process ids of a running agent, from the last check (for Brake's freeze).
+    pidsOf: (name) => latest.filter((p) => matchAgents([p], agents).has(name)).map((p) => p.pid),
     stop() { clearInterval(timer); source.stop(); },
   };
 }

@@ -203,6 +203,8 @@ function createMewndo({
       ...folderScanOptions(folder),
     });
     for (const ev of FORWARDED) journal.on(ev, (payload) => mewndo.emit(ev, real, payload));
+    // A restore's own changes (moving new files to the trash) are not an agent's: only deletes seen outside one.
+    journal.on('change', (c) => { if (c.type === 'deleted' && !journal.isRestoring()) noteDelete(real, c.path); });
     journal.on('burst', (payload) => { if (!pausedUntil) mewndo.emit('burst', real, payload); }); // not while paused
     journal.on('warning', (e) => warn('journal', e.message, { folder: real }));
     journal.on('watcher-error', (e) => {
@@ -651,6 +653,8 @@ function createMewndo({
   const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' };
   mewndo.guard = async (input, { agent = 'claude' } = {}) => {
     const name = AGENT_NAMES[agent] ?? agent;
+    const stop = braked.get(name);
+    if (stop) return brakeOutput(agent, stop.reason); // braked: nothing more until the user resumes it
     const actions = actionsFor(agent, input);
     if (!actions.length) return {}; // nothing to judge: an empty answer lets it go ahead
     const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : '.';
@@ -659,6 +663,8 @@ function createMewndo({
     const saved = root ? await readBrief(root) : null;
     const brief = root ? { roots: [root], text: saved?.task ?? '', allow_deletes: !saved } : {};
     const session = `${agent}:${input.session_id ?? input.conversation_id ?? 'unknown'}`;
+    if (root) hookedActivity.set(root, { agent: name, at: now() });
+    hookedAgents.set(name, now());
     const verdicts = [];
     for (const action of actions) verdicts.push(await judge(core, { session, brief, action }, { failOpen: guardFailOpen }));
     const verdict = strictest(verdicts);
@@ -671,6 +677,118 @@ function createMewndo({
     mewndo.emit('guard', { folder: root, agent: name, actions, verdict });
     return outputFor(agent, verdict);
   };
+
+  // --- Brake and Heal (spec §24.3, §24.4) ----------------------------------------------------------------------
+  // Brake: hooked agents get stopped at their next hook (Claude Code: continue false; Codex and Cursor: every action
+  // refused) until the user resumes them. Any other agent's processes are frozen (mewndo-core's process control).
+  // Heal: when an agent session deletes a file its brief doesn't name, Mewndo puts it back once and shows a drift
+  // card ('drift' event). The same file deleted again: brake instead of fighting. Three drifts by one agent in one
+  // task (brief): brake and hand the task to the user. Changes made while no agent session is active are never
+  // healed. What it can't do: Heal only sees deletes (edits inside the folder are inside the brief), and only after
+  // the agent made them; it puts back the newest saved version, which may be older than the deleted one if the file
+  // changed after the last save point.
+  const braked = new Map(); // agent name -> { reason, at, pids (frozen) }
+  const hookedActivity = new Map(); // folder -> { agent, at }: the last hooked agent acting there
+  const hookedAgents = new Map(); // agent name -> last hook call
+  const healedPaths = new Set(); // agent|folder|path: put back once already
+  const driftCounts = new Map(); // agent|folder|brief time -> drifts in that task
+  const ACTIVE_MS = 5 * 60 * 1000;
+
+  function brakeOutput(agent, reason) {
+    const text = `Mewndo stopped this session: ${reason}.`;
+    if (agent === 'claude') return { continue: false, stopReason: text };
+    if (agent === 'cursor') return { permission: 'deny', user_message: text, agent_message: `${text} Stop and wait: the user will resume you.` };
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `${text} Stop and wait: the user will resume you.` } };
+  }
+
+  // Brake an agent by name. Not hooked lately (or asked to): freeze its processes too.
+  mewndo.brake = async (agent, { reason = 'the user braked it', freeze } = {}) => {
+    const hooked = now() - (hookedAgents.get(agent) ?? -Infinity) < ACTIVE_MS;
+    let pids = [];
+    if ((freeze ?? !hooked) && core && agentWatcher) {
+      for (const pid of agentWatcher.pidsOf(agent)) {
+        try { pids.push(...(await core.request('process_freeze', { pid })).pids); } catch (e) { warn('brake', `Couldn't freeze ${agent} (${pid}): ${e.message}`); }
+      }
+    }
+    pids = [...new Set(pids)];
+    braked.set(agent, { reason, at: now(), pids });
+    mewndo.emit('braked', { agent, reason, frozen: pids });
+    return { agent, reason, frozen: pids };
+  };
+  mewndo.resumeAgent = async (agent) => {
+    const b = braked.get(agent);
+    braked.delete(agent);
+    for (const pid of b?.pids ?? []) await core?.request('process_resume', { pid }).catch(() => {});
+    mewndo.emit('resumed', { agent });
+    return { agent, wasBraked: !!b };
+  };
+  mewndo.endAgent = async (agent) => {
+    const pids = agentWatcher?.pidsOf(agent) ?? [];
+    for (const pid of pids) await core?.request('process_end', { pid }).catch((e) => warn('brake', `Couldn't end ${agent}: ${e.message}`));
+    braked.delete(agent);
+    return { agent, ended: pids };
+  };
+  mewndo.braked = () => [...braked].map(([agent, b]) => ({ agent, ...b }));
+
+  // Deletes in a folder, a moment after they happened (batched per folder).
+  const pendingDeletes = new Map(); // folder -> Set of paths
+  function noteDelete(root, rel) {
+    if (!pendingDeletes.has(root)) {
+      pendingDeletes.set(root, new Set());
+      setTimeout(() => {
+        const paths = [...pendingDeletes.get(root)];
+        pendingDeletes.delete(root);
+        heal(root, paths).catch((e) => warn('heal', e.message, { folder: root }));
+      }, 200).unref();
+    }
+    pendingDeletes.get(root).add(rel);
+  }
+
+  async function heal(root, paths) {
+    const j = journals.get(root);
+    if (!j) return;
+    const hooked = hookedActivity.get(root);
+    const agent = hooked && now() - hooked.at < ACTIVE_MS ? hooked.agent : likelyAgent();
+    if (!agent) return; // no agent session active: never auto-heal the user's own changes
+    const saved = await readBrief(root);
+    if (!saved) return; // no brief: nothing is outside it
+    const brief = { roots: [root], text: saved.task, allow_deletes: false, max_deletes: 1_000_000, max_changes: 1_000_000 };
+    const drifted = [];
+    for (const rel of paths) {
+      const v = await judge(core, { session: `heal:${agent}:${root}`, brief, action: { kind: 'delete', path: path.join(root, rel) } }, { failOpen: true });
+      if (['unnamed_delete', 'outside_scope'].includes(v.rule)) drifted.push(rel);
+    }
+    if (!drifted.length) return;
+    const again = drifted.filter((p) => healedPaths.has(`${agent}|${root}|${p}`));
+    const taskKey = `${agent}|${root}|${saved.createdAt}`;
+    const count = (driftCounts.get(taskKey) ?? 0) + 1;
+    driftCounts.set(taskKey, count);
+    if (again.length || count >= 3) {
+      const reason = again.length
+        ? `it deleted ${again[0]} again after Mewndo put it back`
+        : 'it went outside its brief three times in this task; the user takes over';
+      await mewndo.brake(agent, { reason });
+      mewndo.emit('drift', { folder: root, agent, paths: drifted, action: 'braked', reason, handoff: !again.length });
+      return;
+    }
+    // Put them back from the newest save point that has them.
+    const points = (await j.listSavePoints()).reverse();
+    const restorable = [];
+    let from = null;
+    for (const sp of points) {
+      const index = (await j.getSavePoint(sp.id))?.index ?? {};
+      const have = drifted.filter((p) => index[p]?.hash);
+      if (have.length) { from = sp; restorable.push(...have); break; }
+    }
+    if (from) {
+      await j.restore(from.id, { paths: restorable });
+      for (const p of restorable) healedPaths.add(`${agent}|${root}|${p}`);
+    }
+    mewndo.emit('drift', {
+      folder: root, agent, paths: drifted, action: from ? 'healed' : 'unhealed', healed: restorable,
+      reason: `${agent} deleted ${drifted.length === 1 ? drifted[0] : `${drifted.length} files`} the brief doesn't name`,
+    });
+  }
 
   // null, or why exact save points for agents aren't available.
   mewndo.hookServerProblem = () => hookServerProblem;

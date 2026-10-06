@@ -12,6 +12,7 @@ let dataDir = null;
 const MEWNDO = new Set([
   'unprotect', 'folders', 'pausedUntil', 'pauseProtection', 'resumeProtection', 'storageReport', 'prune', 'agents', 'hookServerProblem',
   'configure', 'config', 'folderSettings', 'setFolderSettings', 'agentList', 'setAgentList', 'saveBrief',
+  'brake', 'resumeAgent', 'endAgent', 'braked',
 ]);
 const JOURNAL = new Set(['listSavePoints', 'createSavePoint', 'diffSince', 'planRestore', 'restore', 'listRestores']);
 
@@ -49,6 +50,8 @@ const methods = {
     mewndo.on('progress', (root, p) => throttled('progress', root, p, 150));
     mewndo.on('change', (root, c) => throttled('change', root, c, 1000));
     for (const event of ['savepoint', 'restored', 'retry', 'burst']) mewndo.on(event, (root, payload) => emit(event, root, payload));
+    for (const event of ['drift', 'braked', 'resumed']) mewndo.on(event, (payload) => emit(event, payload));
+    mewndo.on('drift', (d) => log('warn', `Drift: ${d.reason} (${d.action})`, d));
     for (const event of ['warning', 'resolved', 'folders-changed', 'pruned', 'agents-changed']) mewndo.on(event, (payload) => emit(event, payload ?? null));
     mewndo.on('restored', (root, r) => log('info', `Restore ${r.verified ? 'verified' : 'NOT verified'} in ${root}`, { written: r.counts.written, trashed: r.counts.trashed, failures: r.failures.length }));
     mewndo.on('savepoint', (root, sp) => log('info', `Save point (${sp.trigger}) in ${root}: ${sp.label}`, sp.agent ? { agent: sp.agent } : undefined));

@@ -85,6 +85,8 @@ function onEngineMessage(msg) {
   switch (msg.event) {
     case 'progress': progress.set(a, b); send('progress', { root: a, ...b }); break;
     case 'savepoint': storage.at = 0; send('savepoints-changed', a); break;
+    case 'drift': onDrift(a); break;
+    case 'braked': notify('Mewndo braked an agent', `${a.agent}: ${a.reason}. Resume it from Mewndo when you're ready.`); send('state-changed'); break;
     case 'restored': send('restores-changed', a); break;
     case 'retry': send('retry', { root: a, ...b }); break;
     case 'burst': burstAlert(a, b).catch(() => {}); break;
@@ -432,6 +434,15 @@ const briefHandlers = {
   },
   briefHide() { briefWin?.hide(); },
 };
+
+// --- Drift (Heal and Brake) --------------------------------------------------------------------------------------
+// ponytail: a notification for now; the bar's drift card (P3.3) replaces it.
+function onDrift(d) {
+  const what = d.action === 'healed' ? `Put back: ${d.healed.join(', ')}.`
+    : d.action === 'braked' ? `${d.agent} is braked${d.handoff ? '; the task is yours now' : ''}.` : "Mewndo couldn't put it back: no save point had it.";
+  notify(`Mewndo: ${d.agent} went outside its brief`, `${d.reason}. ${what}`);
+  send('state-changed');
+}
 
 // --- Burst alerts -----------------------------------------------------------------------------------------------
 
