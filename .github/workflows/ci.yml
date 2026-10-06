@@ -13,14 +13,14 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 45
-    # The runner's own temp folder is an 8.3 short alias (C:\Users\RUNNER~1\...), which users' folders aren't: v0
-    # stores a folder by its long real path, so tests that expect the alias back fail there. Known v0 gap, recorded
-    # in docs/known-issues.md; the Rust core resolves every root to its long path instead.
-    env:
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v5
+      # The runner's own temp folder is an 8.3 short alias (C:\Users\RUNNER~1\...), which users' folders aren't: v0
+      # stores a folder by its long real path, so tests that expect the alias back fail there. Known v0 gap, recorded
+      # in docs/known-issues.md; the Rust core resolves every root to its long path instead.
+      - name: long temp path
+        shell: bash
+        run: printf 'TEMP=%s\nTMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
           node-version: 24
