@@ -702,7 +702,10 @@ impl Run<'_> {
             .map(|root| to_abs(root, &step.path))
             .find(|p| {
                 lstat(p).ok().flatten().is_some_and(|m| {
-                    m.is_file() && Some(m.len()) == step.size && mtime_ms(&m) == mtime
+                    // Within 1 µs: a time set from milliseconds doesn't always read back as the same f64.
+                    m.is_file()
+                        && Some(m.len()) == step.size
+                        && (mtime_ms(&m) - mtime).abs() < 0.001
                 })
             })
     }
