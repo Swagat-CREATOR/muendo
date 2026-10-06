@@ -12,6 +12,7 @@ const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brie
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
 const { createCore } = require('./core');
 const { createBar } = require('./bar');
+const { DEFAULTS: SHORTCUT_DEFAULTS, pickShortcut } = require('./shortcuts');
 const { createSpeech } = require('./speech');
 const { parseIntent, describe: describeIntent } = require('../engine/voice'); // plain text only, no engine work
 
@@ -562,7 +563,7 @@ async function createSavePointEverywhere() {
   notify('Save point created', `${folders.length} folder${folders.length > 1 ? 's' : ''}: ${folders.map((f) => folderName(f.root)).join(', ')}`);
 }
 
-// --- One-key undo (Ctrl+Alt+Z, and the tray's Undo Last) --------------------------------------------------
+// --- One-key undo (the undo shortcut, and the tray's Undo Last) --------------------------------------------------
 
 let undoWin = null;
 let shortcutProblem = null; // shown in the main window when the shortcut couldn't be registered
@@ -623,15 +624,16 @@ function openUndo(root) {
   undoWin.focus();
 }
 
-// --- Global shortcuts: Ctrl+Alt+Z (undo) and Ctrl+Alt+B (brief) by default, changeable in Settings -----------
+// --- Global shortcuts: Alt+Shift+Z (undo) and Alt+Shift+B (brief) by default, changeable in Settings ----------
+// Not Ctrl+Alt: Wispr Flow dictates while Ctrl + Alt is held (shortcuts.js). A taken default falls back to a free one.
 
 const SHORTCUTS = {
-  undo: { setting: 'undoShortcut', fallback: 'Control+Alt+Z', open: () => openUndo(), what: 'one-key undo', instead: 'Undo Last in the tray menu' },
-  brief: { setting: 'briefShortcut', fallback: 'Control+Alt+B', open: () => openBrief(), what: 'the brief helper', instead: 'Write a Brief in the tray menu' },
+  undo: { setting: 'undoShortcut', defaults: SHORTCUT_DEFAULTS.undo, open: () => openUndo(), what: 'one-key undo', instead: 'Undo Last in the tray menu' },
+  brief: { setting: 'briefShortcut', defaults: SHORTCUT_DEFAULTS.brief, open: () => openBrief(), what: 'the brief helper', instead: 'Write a Brief in the tray menu' },
 };
 const registered = {}; // which -> accelerator Mewndo holds right now
 let shortcutTest = null; // { accel, pressed } while Settings tests a shortcut
-const shortcutFor = (which) => settings[SHORTCUTS[which].setting] ?? SHORTCUTS[which].fallback;
+const shortcutFor = (which) => settings[SHORTCUTS[which].setting] ?? registered[which] ?? SHORTCUTS[which].defaults[0];
 
 function tryRegister(accel, fn) {
   try { return globalShortcut.register(accel, fn); } catch { return false; }
@@ -648,9 +650,12 @@ function registerShortcuts({ quiet = false } = {}) {
   unregisterShortcuts();
   const problems = [];
   for (const [which, def] of Object.entries(SHORTCUTS)) {
-    const accel = shortcutFor(which);
-    if (tryRegister(accel, shortcutHandler(which, accel))) registered[which] = accel;
-    else problems.push(`${prettyShortcut(accel)} is already used by another app, so ${def.what} has no shortcut; use ${def.instead}.`);
+    const chosen = settings[def.setting];
+    // The user's own choice is kept even when taken; a default that's taken gives way to the next free one.
+    const accel = pickShortcut(chosen ? [chosen] : def.defaults, (a) => tryRegister(a, shortcutHandler(which, a)));
+    if (accel) registered[which] = accel;
+    if (!accel) problems.push(`${prettyShortcut(chosen ?? def.defaults[0])} is already used by another app, so ${def.what} has no shortcut; use ${def.instead}.`);
+    else if (!chosen && accel !== def.defaults[0]) problems.push(`${prettyShortcut(def.defaults[0])} is already used by another app, so ${def.what} uses ${prettyShortcut(accel)} instead.`);
   }
   shortcutProblem = problems.length ? `${problems.join(' ')} You can choose different shortcuts in Settings.` : null;
   if (shortcutProblem && !quiet) notify('Mewndo', shortcutProblem);
@@ -665,7 +670,7 @@ function checkAccel(accel) {
   }
 }
 
-// --- The brief helper (Ctrl+Alt+B) ----------------------------------------------------------------------------
+// --- The brief helper (the brief shortcut) -----------------------------------------------------------------------
 
 let briefWin = null;
 
@@ -799,7 +804,7 @@ const undoHandlers = {
   async undoRun(root, savePointId) {
     if (!(await undoFolders()).some((f) => f.root === root)) throw new Error('not a protected folder');
     const target = await undoTarget(root);
-    if (target.savePoint?.id !== savePointId) throw new Error('Something changed meanwhile. Press Ctrl+Alt+Z again to see the latest.');
+    if (target.savePoint?.id !== savePointId) throw new Error('Something changed meanwhile. Press the undo shortcut again to see the latest.');
     const r = await reportRestore(root, await call('journal.restore', root, savePointId));
     return { verified: r.verified, written: r.counts.written, trashed: r.counts.trashed, problems: r.failures.length + r.mismatches.length };
   },
@@ -1039,7 +1044,7 @@ async function allSettings() {
     call('config'), call('folderSettings'), call('agentList'), call('storageReport', { maxAgeMs: REPORT_MAX_AGE }).catch(() => null),
   ]);
   return {
-    shortcuts: Object.fromEntries(Object.keys(SHORTCUTS).map((w) => [w, { accel: shortcutFor(w), fallback: SHORTCUTS[w].fallback, working: registered[w] === shortcutFor(w) }])),
+    shortcuts: Object.fromEntries(Object.keys(SHORTCUTS).map((w) => [w, { accel: shortcutFor(w), fallback: SHORTCUTS[w].defaults[0], working: registered[w] === shortcutFor(w) }])),
     burst: config.burst, burstDefaults: BURST,
     budgetGB: Math.round((config.budgetBytes / GB) * 10) / 10,
     usage: report && { usedBytes: report.usedBytes, trashBytes: report.trashBytes, freeDiskBytes: report.freeDiskBytes },
@@ -1073,7 +1078,7 @@ const settingsHandlers = {
       registerShortcuts({ quiet: true });
       throw new Error(`${prettyShortcut(accel)} is already used by another app. Choose another.`);
     }
-    if (accel === SHORTCUTS[which].fallback) delete settings[SHORTCUTS[which].setting];
+    if (accel === SHORTCUTS[which].defaults[0]) delete settings[SHORTCUTS[which].setting];
     else settings[SHORTCUTS[which].setting] = accel;
     await saveSettings();
     registerShortcuts({ quiet: true });

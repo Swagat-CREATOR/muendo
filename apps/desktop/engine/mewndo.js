@@ -668,7 +668,7 @@ function createMewndo({
   }
 
   // --- Guard (spec §24.2) -------------------------------------------------------------------------------------------
-  // The brief a folder's agents work under: the newest one the user wrote (Ctrl+Alt+B). Kept in the folder's data.
+  // The brief a folder's agents work under: the newest one the user wrote (the brief shortcut). Kept in the folder's data.
   const briefFile = (root) => path.join(journals.get(root).folderDir, 'brief.json');
   mewndo.saveBrief = async (root, task) => {
     if (!journals.has(root)) throw new Error('That folder is not protected.');
