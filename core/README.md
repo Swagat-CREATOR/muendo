@@ -9,9 +9,25 @@ the other wrote (`apps/desktop/test/store-compat.test.js` checks both ways). Fil
 pool of 8 to 32 threads. Like v0, it keeps no metadata of its own: a batch's index or manifest is one JSON file
 written whole (`write_file_atomic`).
 
-What it can't do yet: the app doesn't use it. Protection, scanning and restores still run in the v0 Node engine
-(`apps/desktop/engine`), which stays the reference until this core passes every v0 test. The core's store has
-not been measured against v0's speed yet (P1.6 benchmarks).
+Scanner (`src/scanner.rs`): v0's scanner, giving exactly v0's manifest (checked against v0 in
+`apps/desktop/test/feed.test.js`), so an index either engine wrote works with the other. With a list of folders
+it rescans only those: the reconciliation scan.
+
+Change feed (`src/feed.rs`, Windows): ReadDirectoryChangesW reports changes as they happen; a delete goes out at
+once (measured: well under a millisecond to the feed), new and edited files once they've been quiet for 300 ms.
+The NTFS change journal (USN) catches up on what changed while Mewndo was closed, or in a burst too big for the
+live feed, and the feed says which folders to rescan. Same ignore rules as v0; links and junctions are never
+followed; folders are known by their long real path.
+
+What it can't do yet:
+- The app doesn't use any of it. Protection, scanning and restores still run in the v0 Node engine
+  (`apps/desktop/engine`), which stays the reference until this core passes every v0 test.
+- The change journal is read without admin rights, which gives no file names, only which folders changed; a
+  reconciliation scan of those folders finds the rest. Drives without a journal (FAT, exFAT, network folders), a
+  journal that was reset or has moved past the saved position, and more than 2,000 changed folders all mean
+  rescanning everything.
+- The change feed runs on Windows only (Mewndo v1 is a Windows app).
+- Nothing has been measured against v0's speed yet (P1.6 benchmarks).
 
 On Windows every file path goes through `src/paths.rs` (the `\\?\` form, as Node uses), so names Windows
 would otherwise change, such as `notes.` or `draft ` (trailing dot or space), and paths over 260 characters are

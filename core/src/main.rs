@@ -6,13 +6,15 @@
 //
 // It prints "ready" once it is listening, and stops when asked to, or when its stdin closes (the app is gone),
 // so it never outlives the app.
+mod feed;
 mod log;
 mod paths;
 mod protocol;
+mod scanner;
 mod store;
 
 use log::Log;
-use protocol::Info;
+use protocol::{Info, Session};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -159,19 +161,35 @@ fn ready(log: &Log, address: &str) {
     let _ = writeln!(out, "ready").and_then(|_| out.flush());
 }
 
-// One app connection: a request per line, a reply per line, in order.
-async fn connection<S: AsyncRead + AsyncWrite>(
+// One app connection: a request per line, a reply per line, in order. Change feed events for the folders this
+// connection watches go out on it too, between replies (see protocol.rs).
+async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(
     stream: S,
     log: Arc<Log>,
     info: Arc<Info>,
     stop: watch::Sender<bool>,
 ) {
     let (reader, mut writer) = tokio::io::split(stream);
+    let (out, mut outgoing) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let writing = tokio::spawn(async move {
+        while let Some(line) = outgoing.recv().await {
+            if writer
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = writer.flush().await;
+    });
+    let session = Arc::new(Session::new(out.clone()));
     let mut lines = BufReader::new(reader).lines(); // ponytail: no line length cap; the socket is this user's only
+    let mut shutdown = false;
     while let Ok(Some(line)) = lines.next_line().await {
-        let info = info.clone();
-        let Ok((reply, shutdown)) =
-            tokio::task::spawn_blocking(move || protocol::respond(&line, &info)).await
+        let (info, session) = (info.clone(), session.clone());
+        let Ok((reply, stop_now)) =
+            tokio::task::spawn_blocking(move || protocol::respond(&line, &info, &session)).await
         else {
             log.error("a request handler crashed");
             break;
@@ -179,18 +197,19 @@ async fn connection<S: AsyncRead + AsyncWrite>(
         if reply.contains(r#""type":"error""#) {
             log.warn(&format!("refused a request: {reply}"));
         }
-        if writer
-            .write_all(format!("{reply}\n").as_bytes())
-            .await
-            .is_err()
-        {
+        if out.send(reply).is_err() {
             break;
         }
-        if shutdown {
+        if stop_now {
             log.info("shutdown requested by the app");
-            let _ = writer.flush().await;
-            let _ = stop.send(true);
+            shutdown = true;
             break;
         }
+    }
+    drop(session); // stops this connection's watches
+    drop(out);
+    let _ = writing.await; // every reply, including shutdown's "ok", is written first
+    if shutdown {
+        let _ = stop.send(true);
     }
 }

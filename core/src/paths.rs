@@ -5,6 +5,28 @@
 // Every path the core gets for file work goes through exact(). Elsewhere it changes nothing.
 use std::path::{Path, PathBuf};
 
+/// A path as people and Node show it: exact() undone, so \\?\C:\x is C:\x and \\?\UNC\s\x is \\s\x. Node's
+/// readlink gives link targets this way too, and v0 stores them so.
+pub fn display(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s
+        .strip_prefix(r"\\?\")
+        .filter(|r| r.as_bytes().get(1) == Some(&b':'))
+    {
+        rest.to_string()
+    } else {
+        s.into_owned()
+    }
+}
+
+/// The folder's long real path: links followed, Windows 8.3 short aliases (JOHNSM~1) expanded. Every protected
+/// folder is known by this (see docs/known-issues.md), in exact() form.
+pub fn real(p: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(exact(p))
+}
+
 #[cfg(not(windows))]
 pub fn exact(p: &Path) -> PathBuf {
     p.to_path_buf()
@@ -50,6 +72,27 @@ pub fn exact(p: &Path) -> PathBuf {
         out.push(name);
     }
     PathBuf::from(out)
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::display;
+    use std::path::Path;
+
+    #[test]
+    fn display_undoes_the_exact_prefix_only() {
+        assert_eq!(display(Path::new(r"\\?\C:\Users\me")), r"C:\Users\me");
+        assert_eq!(
+            display(Path::new(r"\\?\UNC\server\share\x")),
+            r"\\server\share\x"
+        );
+        assert_eq!(
+            display(Path::new(r"\\?\Volume{1234}\x")),
+            r"\\?\Volume{1234}\x"
+        );
+        assert_eq!(display(Path::new("relative/x")), "relative/x");
+        assert_eq!(display(Path::new("/home/me")), "/home/me");
+    }
 }
 
 #[cfg(all(test, windows))]

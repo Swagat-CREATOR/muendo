@@ -13,8 +13,9 @@ const PROTOCOL_VERSION = 1;
 // binary: the mewndo-core executable. runDir: where the Unix socket goes (the app's data folder).
 // logDir: the app's log folder; the core writes mewndo-core.log there. log: the app's log.
 // onChange(status): called when the state or message changes (not on every check).
+// onEvent(event): a change feed event for a watched folder ({ root, kind, path?, dirs?, message?, at_ms }).
 function createCore({
-  binary, runDir, logDir, log, onChange = () => {},
+  binary, runDir, logDir, log, onChange = () => {}, onEvent = () => {},
   checkEveryMs = 10_000, answerWithinMs = 2_000, readyWithinMs = 10_000, restartAfterMs = 1_000,
 }) {
   // A new pipe name each run, which the core refuses to share: another program can't pose as the core.
@@ -61,6 +62,7 @@ function createCore({
   function onLine(line) {
     let msg;
     try { msg = JSON.parse(line); } catch { return log.warn('mewndo-core sent a line that is not JSON', line); }
+    if (msg.id === null && msg.type === 'event' && msg.v === PROTOCOL_VERSION) return onEvent(msg);
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);

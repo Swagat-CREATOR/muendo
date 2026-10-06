@@ -3,8 +3,15 @@
 //   core -> app   {"v":1,"id":7,"type":"status","version":"0.1.0","pid":1234,"uptime_ms":5000}
 //   app  -> core  {"v":1,"id":8,"type":"store_put","store":"<data>/store","files":["C:\\a.txt"],"within":"C:\\"}
 //   core -> app   {"v":1,"id":8,"type":"stored","results":[{"hash":"9f86…"}]}  or [{"error":"…","code":"changed"}]
+//   app  -> core  {"v":1,"id":9,"type":"watch","root":"C:\\Projects\\app","options":{"cursor_file":"…"}}
+//   core -> app   {"v":1,"id":9,"type":"watching","root":"C:\\Projects\\app"}
+//   core -> app   {"v":1,"id":null,"type":"event","root":"C:\\Projects\\app","kind":"deleted","path":"src/a.js",…}
+// Events (id null) come on the connection that asked for the watch, until it unwatches or disconnects.
 // Every message carries the protocol version `v`; a request with another version gets an `unsupported_version`
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
+use crate::feed::{self, FeedEvent, WatchOptions};
+use crate::paths::{display, real};
+use crate::scanner::{self, Manifest, ScanOptions};
 use crate::store::{self, Store, StoreError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -36,6 +43,30 @@ pub enum Request {
         hash: String,
         dest: PathBuf,
     },
+    /// Scan a folder (scanner.rs): everything, or with `dirs` only those folders on top of `previous`. With
+    /// `store`, new content is stored as it's hashed. Replies `scanned`.
+    Scan {
+        root: PathBuf,
+        #[serde(default)]
+        previous: Manifest,
+        dirs: Option<Vec<String>>,
+        store: Option<PathBuf>,
+        #[serde(default)]
+        options: ScanOptions,
+    },
+    /// Start the change feed for a folder (feed.rs). Replies `watching`; then `event`s, starting with a
+    /// `rescan` that says what to look at to catch up.
+    Watch {
+        root: PathBuf,
+        #[serde(default)]
+        options: WatchOptions,
+    },
+    /// Replies `ok`.
+    Unwatch { root: PathBuf },
+    /// Where the change journal is now; note it before a sync. Replies `position` (usn null: no journal).
+    FeedPosition { root: PathBuf },
+    /// Everything before `usn` is safely recorded; the next start catches up from there. Replies `ok`.
+    FeedCheckpoint { root: PathBuf, usn: i64 },
     /// Any type this version doesn't know. Only for reading requests; never sent.
     #[serde(other)]
     Unknown,
@@ -55,6 +86,25 @@ pub enum Response {
     },
     Has {
         stored: bool,
+    },
+    /// root: the folder's long real path, as it's known from now on.
+    Scanned {
+        root: String,
+        manifest: Manifest,
+        found: usize,
+        hashed: usize,
+    },
+    Watching {
+        root: String,
+    },
+    Position {
+        usn: Option<i64>,
+    },
+    /// A change feed event, sent unasked (id null).
+    Event {
+        root: String,
+        #[serde(flatten)]
+        event: FeedEvent,
     },
     Error {
         code: ErrorCode,
@@ -179,6 +229,46 @@ impl Info {
     }
 }
 
+/// One connection's state: where its events go, and the folders it watches. Dropping it stops the watches.
+pub struct Session {
+    out: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    watches: Mutex<HashMap<String, feed::Watch>>,
+}
+
+impl Session {
+    pub fn new(out: tokio::sync::mpsc::UnboundedSender<String>) -> Session {
+        Session {
+            out: Some(out),
+            watches: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// A session whose events go nowhere (tests of single requests).
+    #[cfg(test)]
+    pub fn detached() -> Session {
+        Session {
+            out: None,
+            watches: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn watches(&self) -> std::sync::MutexGuard<'_, HashMap<String, feed::Watch>> {
+        self.watches.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The key a folder is known by: its long real path, as shown.
+fn folder_key(root: &Path) -> std::io::Result<String> {
+    real(root).map(|r| display(&r))
+}
+
+fn io_failed(e: &std::io::Error) -> Response {
+    Response::Error {
+        code: ErrorCode::Failed,
+        message: format!("{e} ({})", scanner::node_code(e)),
+    }
+}
+
 fn failed(e: StoreError) -> Response {
     Response::Error {
         code: ErrorCode::Failed,
@@ -188,7 +278,7 @@ fn failed(e: StoreError) -> Response {
 
 /// Answer one request line. Returns the reply line and whether the core should now stop.
 /// May take a while (store work): run it off the async threads.
-pub fn respond(line: &str, info: &Info) -> (String, bool) {
+pub fn respond(line: &str, info: &Info, session: &Session) -> (String, bool) {
     match decode(line) {
         Err(e) => (
             encode(
@@ -250,7 +340,106 @@ pub fn respond(line: &str, info: &Info) -> (String, bool) {
                 .map_or_else(failed, |()| Response::Ok);
             (encode(Some(id), reply), false)
         }
+        Ok((
+            id,
+            Request::Scan {
+                root,
+                previous,
+                dirs,
+                store,
+                options,
+            },
+        )) => {
+            let store = store.map(|dir| info.store(&dir));
+            let reply = match folder_key(&root) {
+                Err(e) => io_failed(&e),
+                Ok(key) => match scanner::scan(
+                    &root,
+                    &previous,
+                    dirs.as_deref(),
+                    &options,
+                    store.as_deref(),
+                ) {
+                    Ok((manifest, stats)) => Response::Scanned {
+                        root: key,
+                        manifest,
+                        found: stats.found,
+                        hashed: stats.hashed,
+                    },
+                    Err(e) => io_failed(&e),
+                },
+            };
+            (encode(Some(id), reply), false)
+        }
+        Ok((id, Request::Watch { root, options })) => {
+            let reply = match folder_key(&root) {
+                Err(e) => io_failed(&e),
+                Ok(key) => {
+                    let out = session.out.clone();
+                    let event_root = key.clone();
+                    let emit: feed::Emit = Arc::new(move |event| {
+                        if let Some(out) = &out {
+                            let _ = out.send(encode(
+                                None,
+                                Response::Event {
+                                    root: event_root.clone(),
+                                    event,
+                                },
+                            ));
+                        }
+                    });
+                    session.watches().remove(&key); // watching again restarts it
+                    match feed::watch(&root, options, emit) {
+                        Ok(w) => {
+                            let root = display(w.real_root()); // as the feed resolved it
+                            session.watches().insert(key, w);
+                            Response::Watching { root }
+                        }
+                        Err(e) => io_failed(&e),
+                    }
+                }
+            };
+            (encode(Some(id), reply), false)
+        }
+        Ok((id, Request::Unwatch { root })) => {
+            let reply = match folder_key(&root) {
+                Ok(key) => {
+                    session.watches().remove(&key);
+                    Response::Ok
+                }
+                Err(e) => io_failed(&e),
+            };
+            (encode(Some(id), reply), false)
+        }
+        Ok((id, Request::FeedPosition { root })) => {
+            let reply = with_watch(session, &root, |w| {
+                w.position().map(|usn| Response::Position { usn })
+            });
+            (encode(Some(id), reply), false)
+        }
+        Ok((id, Request::FeedCheckpoint { root, usn })) => {
+            let reply = with_watch(session, &root, |w| w.checkpoint(usn).map(|()| Response::Ok));
+            (encode(Some(id), reply), false)
+        }
         Ok((_, Request::Unknown)) => unreachable!("decode turns unknown types into errors"),
+    }
+}
+
+fn with_watch(
+    session: &Session,
+    root: &Path,
+    f: impl FnOnce(&feed::Watch) -> std::io::Result<Response>,
+) -> Response {
+    let key = match folder_key(root) {
+        Ok(k) => k,
+        Err(e) => return io_failed(&e),
+    };
+    match session.watches().get(&key) {
+        Some(w) => f(w).unwrap_or_else(|e| io_failed(&e)),
+        None => Response::Error {
+            code: ErrorCode::Failed,
+            message: format!("not watching {key}"),
+        },
     }
 }
 
@@ -259,7 +448,7 @@ mod tests {
     use super::*;
 
     fn reply(line: &str) -> (serde_json::Value, bool) {
-        let (out, stop) = respond(line, &Info::new());
+        let (out, stop) = respond(line, &Info::new(), &Session::detached());
         assert!(!out.contains('\n'), "a reply is exactly one line");
         (serde_json::from_str(&out).unwrap(), stop)
     }

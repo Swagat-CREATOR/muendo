@@ -376,25 +376,7 @@ impl Store {
 
     /// Store many files at once on a pool of 8 to 32 threads. One result per file, in the same order.
     pub fn put_batch(&self, files: &[PathBuf], within: Option<&Path>) -> Vec<Result<String>> {
-        let threads = pool_size().min(files.len()).max(1);
-        let next = AtomicUsize::new(0);
-        let results: Vec<Mutex<Option<Result<String>>>> =
-            files.iter().map(|_| Mutex::new(None)).collect();
-        std::thread::scope(|scope| {
-            for _ in 0..threads {
-                scope.spawn(|| {
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(file) = files.get(i) else { break };
-                        *results[i].lock().unwrap() = Some(self.put(file, within));
-                    }
-                });
-            }
-        });
-        results
-            .into_iter()
-            .map(|r| r.into_inner().unwrap().expect("every file gets a result"))
-            .collect()
+        parallel_map(files, |file| self.put(file, within))
     }
 
     // Rename a finished temp file into place. If another put stored the same content meanwhile, replacing it is
@@ -648,6 +630,31 @@ fn write_object(
         write(&mut out)?;
     }
     Ok(())
+}
+
+/// Run `f` on every item on a pool of pool_size() threads. Results come back in the items' order.
+pub fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let results: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..pool_size().min(items.len()) {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(i) else { break };
+                    *results[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(f(item));
+                }
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|r| {
+            r.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("every item gets a result")
+        })
+        .collect()
 }
 
 /// 8 to 32 threads: twice the CPUs, since most time goes to waiting on the disk (and antivirus).
