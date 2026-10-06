@@ -123,6 +123,7 @@ function render(s) {
   $('rules').value = s.safetyRules;
   $('login-wrap').hidden = !s.loginSupported;
   $('login').checked = s.openAtLogin;
+  $('engine').value = s.engine;
   $('data-dir').textContent = s.dataDir;
 }
 
@@ -175,6 +176,7 @@ $('save-rules').onclick = async () => {
 };
 
 $('login').onchange = async (e) => { render(await api.setOpenAtLogin(e.target.checked)); };
+$('engine').onchange = async (e) => { render(await api.setEngine(e.target.value)); };
 $('open-data').onclick = () => api.openDataFolder().catch(() => {});
 $('open-log').onclick = () => api.openLog().catch(() => {});
 $('open-limits').onclick = () => api.openLimits().catch(() => {});

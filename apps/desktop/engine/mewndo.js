@@ -9,6 +9,8 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createStore, writeFileAtomic, isInside } = require('./store');
 const { createJournal, folderId } = require('./journal');
+const { defaultCore } = require('./core-client');
+const { compareEngines } = require('./shadow');
 const { folderSize, DEFAULT_IGNORE } = require('./scanner');
 const { createAgentWatcher, loadAgents, saveAgents, DEFAULT_AGENTS } = require('./agents');
 const { BURST_DEFAULTS } = require('./burst');
@@ -83,6 +85,9 @@ function createMewndo({
   journalOptions = {}, // passed to every journal (timings in tests)
   agents = null, // { intervalMs, saveEveryMs, listProcesses } turns on AI agent awareness (off in tests by default)
   hookServer = null, // { port } turns on the exact-save-point server for agent hooks (off in tests by default)
+  core = defaultCore(), // mewndo-core, if the app handed the engine one (core-client.js)
+  engine = 'rust', // with a core: 'rust' restores there; 'shadow' restores in v0 and compares both engines hourly
+  shadowEveryMs = 60 * 60 * 1000,
 }) {
   const mewndo = new EventEmitter();
   const store = createStore(path.join(dataDir, 'store'));
@@ -105,6 +110,7 @@ function createMewndo({
   const watcherTrouble = new Set(); // roots whose watcher failed and is restarting
   let availabilityTimer = null;
   let diskTimer = null;
+  let shadowTimer = null;
   let checkingAvailability = false;
   let lowDisk = false;
   // A problem that went away: { code, folder?, message }. The app clears the matching warning.
@@ -189,6 +195,7 @@ function createMewndo({
   // A journal for a protected folder, with its events passed on. Registered, not started.
   function makeJournal(real, folder) {
     const journal = createJournal({
+      core: engine === 'rust' ? core : null,
       ...journalOptions, root: real, dataDir, store, likelyAgent, burst: burstLimits,
       ...folderScanOptions(folder),
     });
@@ -688,6 +695,10 @@ function createMewndo({
     availabilityTimer.unref();
     diskTimer = setInterval(() => checkDisk().catch(() => {}), diskCheckMs);
     diskTimer.unref();
+    if (engine === 'shadow' && core) {
+      shadowTimer = setInterval(() => mewndo.shadowCheck().catch((e) => warn('shadow', e.message)), shadowEveryMs);
+      shadowTimer.unref();
+    }
     if (agents) {
       agentWatcher = createAgentWatcher({
         agentsFile: path.join(dataDir, 'agents.json'), intervalMs: agents.intervalMs, listProcesses: agents.listProcesses,
@@ -710,8 +721,26 @@ function createMewndo({
     }
   };
 
+  // Shadow mode: scan every protected folder with both engines and report what differs ('shadow' event, one per
+  // folder: { folder, count, differences (the first 20) }). Returns those reports.
+  const shadowManifests = new Map(); // root -> the core's manifest from last time
+  mewndo.shadowCheck = async () => {
+    if (!core) throw new Error('shadow mode needs mewndo-core');
+    const reports = [];
+    for (const j of mewndo.journals()) {
+      if (unavailable.has(j.root)) continue;
+      const { manifest, differences } = await compareEngines(j, core, shadowManifests.get(j.root));
+      shadowManifests.set(j.root, manifest);
+      const report = { folder: j.root, count: differences.length, differences: differences.slice(0, 20) };
+      mewndo.emit('shadow', report);
+      reports.push(report);
+    }
+    return reports;
+  };
+
   mewndo.stop = async () => {
     clearInterval(timer);
+    clearInterval(shadowTimer);
     clearTimeout(resumeTimer);
     clearInterval(agentTimer);
     clearInterval(availabilityTimer);

@@ -51,6 +51,9 @@ const methods = {
     mewndo.on('restored', (root, r) => log('info', `Restore ${r.verified ? 'verified' : 'NOT verified'} in ${root}`, { written: r.counts.written, trashed: r.counts.trashed, failures: r.failures.length }));
     mewndo.on('savepoint', (root, sp) => log('info', `Save point (${sp.trigger}) in ${root}: ${sp.label}`, sp.agent ? { agent: sp.agent } : undefined));
     mewndo.on('agents-changed', (list) => log('info', `AI agents running: ${list.map((a) => a.name).join(', ') || 'none'}`));
+    mewndo.on('shadow', (r) => (r.count
+      ? log('warn', `Shadow mode: the engines differ on ${r.count} item(s) in ${r.folder}`, r.differences)
+      : log('info', `Shadow mode: both engines agree on ${r.folder}`)));
     mewndo.on('recovered', (r) => log('warn', 'Checked recent file versions after an unclean shutdown', r));
     mewndo.on('pruned', (r) => r.pruned?.length && log('info', `Cleanup removed ${r.pruned.length} save points`, { removedObjects: r.removedObjects, usedBytes: r.usedBytes }));
     await mewndo.start();

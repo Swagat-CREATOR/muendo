@@ -120,19 +120,28 @@ function onEngineMessage(msg) {
 
 // Start the engine process. If it ever dies, everything it was doing fails cleanly and it is started again
 // (its own startup finishes interrupted restores). Three crashes within a minute: stop and tell the user.
+// Which engine restores: 'rust' (mewndo-core), 'shadow' (v0 restores; both engines' manifests are compared every
+// hour and differences logged) or 'v0'. Rust is the default: it passes every v0 restore test (P1.7).
+const ENGINES = ['rust', 'shadow', 'v0'];
+const engineChoice = () => (ENGINES.includes(settings.engine) ? settings.engine : 'rust');
+let restartingEngine = false;
+
 function startEngine() {
   // All file work in the engine shares one pool of threads (4 by default). A slow scan (antivirus checking every
   // file, OneDrive, network drives) can fill it, making quick work like checking a new folder wait minutes.
   engine = utilityProcess.fork(path.join(__dirname, 'engine-host.js'), [], {
-    serviceName: 'Mewndo engine', stdio: 'inherit', env: { ...process.env, UV_THREADPOOL_SIZE: '16' },
+    serviceName: 'Mewndo engine', stdio: 'inherit',
+    // The engine opens its own connection to the core (engine/core-client.js) unless it's to use v0 only.
+    env: { ...process.env, UV_THREADPOOL_SIZE: '16', ...(engineChoice() !== 'v0' && core ? { MEWNDO_CORE_PIPE: core.address } : {}) },
   });
   engine.on('message', onEngineMessage);
   engine.on('exit', (code) => {
-    if (!quitting) log.error(`The engine process stopped (exit code ${code})`);
+    if (!quitting && !restartingEngine) log.error(`The engine process stopped (exit code ${code})`);
     engine = null;
     for (const { reject } of calls.values()) reject(new Error('The Mewndo engine stopped.'));
     calls.clear();
     if (quitting) return;
+    if (restartingEngine) { restartingEngine = false; startEngine(); return; } // asked for: not a crash
     crashes = [...crashes.filter((t) => Date.now() - t < 60_000), Date.now()];
     if (crashes.length >= 3) {
       dialog.showErrorBox('Mewndo stopped working',
@@ -142,11 +151,11 @@ function startEngine() {
     notify('Mewndo', 'The Mewndo engine stopped unexpectedly and is restarting.');
     setTimeout(startEngine, 1000);
   });
-  call('start', { dataDir: dataDir(), budgetBytes: settings.budgetGB ? settings.budgetGB * GB : undefined, burst: settings.burst })
+  call('start', { dataDir: dataDir(), budgetBytes: settings.budgetGB ? settings.budgetGB * GB : undefined, burst: settings.burst, engine: engineChoice() })
     .then(stateChanged, (e) => notify('Mewndo could not start protecting', e.message));
 }
 
-// --- mewndo-core, the Rust service for version 1 (core/). It does no file work yet. ----------------------------
+// --- mewndo-core, the Rust service for version 1 (core/). Restores run there (see engineChoice). ----------------
 
 let core = null;
 
@@ -724,6 +733,7 @@ async function allSettings() {
     agents,
     safetyRules: safetyRules(), safetyRulesDefault: DEFAULT_SAFETY_RULES,
     openAtLogin: settings.openAtLogin, loginSupported: process.platform !== 'linux',
+    engine: engineChoice(),
     dataDir: dataDir(),
   };
 }
@@ -811,6 +821,18 @@ const settingsHandlers = {
     return allSettings();
   },
 
+  // A new engine choice restarts the engine process, which protects every folder again with it.
+  async setEngine(choice) {
+    if (!ENGINES.includes(choice)) throw new Error('unknown engine');
+    settings.engine = choice;
+    await saveSettings();
+    log.info(`Restore engine set to ${choice}; restarting the engine`);
+    restartingEngine = true;
+    await call('stop').catch(() => {}); // cleanly: a running restore finishes its step and resumes after
+    engine?.kill();
+    return allSettings();
+  },
+
   async openLog() {
     await log.flush();
     const err = await shell.openPath(log.file);
@@ -866,8 +888,8 @@ if (process.argv.includes('--remove-claude-hooks')) {
     app.on('will-quit', () => log.info('Mewndo quitting'));
     await loadSettings();
     if (settings.setupDone) applyOpenAtLogin(); // keeps the sign-in entry pointing at this copy of Mewndo
+    startCore(); // first: the engine connects to it
     startEngine(); // re-protects saved folders and prunes, all inside the engine process
-    startCore();
 
     for (const [name, fn] of Object.entries(handlers)) {
       ipcMain.handle(name, (event, ...args) => {

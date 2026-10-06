@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('settings', {
   setAgents: call('setAgents'),
   setRules: call('setRules'),
   setOpenAtLogin: call('setOpenAtLogin'),
+  setEngine: call('setEngine'),
   openDataFolder: call('openDataFolder'),
   openLog: call('openLog'),
   openLimits: call('openLimits'),

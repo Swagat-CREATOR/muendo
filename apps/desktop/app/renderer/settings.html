@@ -71,6 +71,14 @@
   <section>
     <h2>General</h2>
     <label id="login-wrap"><input type="checkbox" id="login"> Start Mewndo when I sign in</label>
+    <label>Restore engine
+      <select id="engine">
+        <option value="rust">Rust core (fast; passes every v0 test)</option>
+        <option value="shadow">Shadow: v0 restores, both engines compared every hour</option>
+        <option value="v0">v0 (the original engine)</option>
+      </select>
+    </label>
+    <p class="muted">Changing it restarts protection. Scanning and watching still run in v0 either way.</p>
     <div class="row">
       <button id="open-data">Open Mewndo's data folder</button>
       <button id="open-log">Open the log</button>

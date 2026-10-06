@@ -37,6 +37,11 @@ from it first and check the copy's hash. It's only a copy and isn't counted in t
 Slow requests (storing, scanning, process control, restores) run alongside the rest on a connection, so the app's
 health check is never stuck behind a long scan; their replies can come after later requests' replies.
 
+Engine choice (P1.7): the app's Settings have "Restore engine": Rust core (default), Shadow (v0 restores; both
+engines scan every protected folder each hour and differences are logged) or v0. The engine process connects to
+the core itself (`apps/desktop/engine/core-client.js`, address in `MEWNDO_CORE_PIPE`). `npm run test:rust` runs
+every v0 test and the reliability suite with restores going through the core.
+
 Process control (`src/process.rs`, Windows, for Brake in spec §24.3): `process_freeze`, `process_resume` and
 `process_end` act on a process and all its descendants. Freeze uses `NtSuspendProcess` and re-reads the tree
 until no new child turns up; resume thaws every thread fully, so a tree frozen twice comes back with one resume;
@@ -45,8 +50,8 @@ the Windows shell and its helpers) and Mewndo itself (the core, everything it ru
 running the app's program), and says why.
 
 What it can't do yet:
-- The app doesn't use any of it. Protection, scanning and restores still run in the v0 Node engine
-  (`apps/desktop/engine`), which stays the reference until this core passes every v0 test (cutover: P1.7).
+- Restores run in the core by default; scanning, watching and storing still run in the v0 Node engine. The core's
+  scanner and change feed are tested against v0 (and compared hourly in shadow mode) but not used by the app yet.
 - Restore: no hard links from the store (the spec's rung 3; it needs copy-on-first-write watching). A file is
   renamed back out of the trash when its size and modified time match the version wanted, the rule the scanner
   uses everywhere; verification then checks its content. Files are staged next to where they go, not in a

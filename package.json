@@ -12,6 +12,8 @@
     "dist": "cargo build --release --manifest-path core/Cargo.toml && npm run dist -w apps/desktop",
     "test:windows": "scripts/windows.sh cargo test --manifest-path core/Cargo.toml && scripts/windows.sh node --test \"apps/desktop/test/**/*.test.js\"",
     "bench": "cargo build --release --manifest-path core/Cargo.toml && npm run bench -w apps/desktop",
-    "bench:windows": "scripts/windows.sh cargo build --release --manifest-path core/Cargo.toml && scripts/windows.sh node apps/desktop/scripts/bench.js"
+    "bench:windows": "scripts/windows.sh cargo build --release --manifest-path core/Cargo.toml && scripts/windows.sh node apps/desktop/scripts/bench.js",
+    "test:rust": "cargo build --manifest-path core/Cargo.toml && node apps/desktop/scripts/with-core.js node --test \"apps/desktop/test/**/*.test.js\" && node apps/desktop/scripts/with-core.js node apps/desktop/scripts/reliability.js",
+    "test:rust:windows": "scripts/windows.sh cargo build --manifest-path core/Cargo.toml && scripts/windows.sh node apps/desktop/scripts/with-core.js node --test \"apps/desktop/test/**/*.test.js\" && scripts/windows.sh node apps/desktop/scripts/with-core.js node apps/desktop/scripts/reliability.js"
   }
 }

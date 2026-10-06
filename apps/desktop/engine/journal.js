@@ -17,6 +17,7 @@ const { removeStaleTemp, writeFileAtomic, isInside } = require('./store');
 const { changes: diff, compare } = require('./diff');
 const { createBurstDetector } = require('./burst');
 const { planRestore, restore, resumeRestores, isRestoreRunning, listRestores } = require('./restore');
+const { defaultCore } = require('./core-client');
 
 const TRIGGERS = ['manual', 'brief', 'activity', 'agent', 'hook', 'before-undo'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -99,7 +100,9 @@ function createJournal({
   burst: burstOptions, // thresholds for burst alerts (an object read on every check, so settings apply live)
   likelyAgent = () => null, // the AI agent most likely making changes right now, if any (see agents.js)
   maxWaitMs = MAX_WAIT_MS, // under constant change, sync at least this often (shorter in tests)
-  core = null, // a running mewndo-core (app/core.js): restores run there instead of in this engine
+  // A running mewndo-core: restores run there instead of in this engine. By default the one the app handed the
+  // engine (MEWNDO_CORE_PIPE, see core-client.js), if any; null: this engine.
+  core = defaultCore(),
 }) {
   const journal = new EventEmitter();
   let realRoot, indexFile, savePointDir, closeWatcher, timer;
