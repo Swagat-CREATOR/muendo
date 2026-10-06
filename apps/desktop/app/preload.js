@@ -2,7 +2,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const call = (name) => (...args) => ipcRenderer.invoke(name, ...args);
-const EVENTS = new Set(['state-changed', 'progress', 'savepoints-changed', 'restores-changed', 'retry', 'toast']);
+const EVENTS = new Set(['state-changed', 'progress', 'savepoints-changed', 'restores-changed', 'retry', 'toast', 'show-diff']);
 
 contextBridge.exposeInMainWorld('mewndo', {
   state: call('state'),

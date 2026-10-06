@@ -5,6 +5,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('bar', {
   mouse: (over) => ipcRenderer.send('bar:mouse', over === true),
   drag: (msg) => ipcRenderer.send('bar:drag', msg),
-  action: (name) => ipcRenderer.send('bar:action', name),
+  action: (name, arg) => ipcRenderer.send('bar:action', name, arg),
   onState(fn) { ipcRenderer.on('bar:state', (_e, s) => fn(s)); },
 });

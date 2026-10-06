@@ -12,7 +12,7 @@ const path = require('node:path');
 const { BrowserWindow, screen, ipcMain } = require('electron');
 const { placeBar, dropBar } = require('./bar-layout');
 
-// positions: { [display id]: saved spot } · savePositions(positions) · onAction(name) for the pill's buttons ·
+// positions: { [display id]: saved spot } · savePositions(positions) · onAction(name, arg?) for the bar's buttons ·
 // fullScreen() -> Promise<boolean> · log.
 function createBar({ positions = {}, savePositions, onAction, fullScreen, log }) {
   const windows = new Map(); // display id -> window
@@ -77,7 +77,9 @@ function createBar({ positions = {}, savePositions, onAction, fullScreen, log })
 
   const fromSender = (sender) => [...windows.values()].find((w) => !w.isDestroyed() && w.webContents === sender);
   ipcMain.on('bar:mouse', (e, over) => fromSender(e.sender)?.setIgnoreMouseEvents(over !== true, { forward: true }));
-  ipcMain.on('bar:action', (e, name) => { if (fromSender(e.sender) && typeof name === 'string') onAction(name); });
+  ipcMain.on('bar:action', (e, name, arg) => {
+    if (fromSender(e.sender) && typeof name === 'string') onAction(name, typeof arg === 'string' ? arg : undefined);
+  });
   ipcMain.on('bar:drag', (e, msg) => {
     const w = fromSender(e.sender);
     if (!w || !msg || typeof msg !== 'object') return;
@@ -108,7 +110,8 @@ function createBar({ positions = {}, savePositions, onAction, fullScreen, log })
   fullScreenTimer.unref?.();
 
   return {
-    // { status: protected | drift | braked | paused | off, label, agents: [{ name, braked }], alert }
+    // { status: protected | drift | braked | paused | off, label, agents: [{ name, braked, drift }], alert,
+    //   ticker: { root, name, savePoint, deleted, edited, created } | null, shortcuts: { undo, brief } }
     update(next) {
       state = next;
       for (const [id, w] of windows) if (!w.isDestroyed()) w.webContents.send('bar:state', { ...state, side: sideOf(id) });

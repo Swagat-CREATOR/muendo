@@ -12,7 +12,7 @@ let dataDir = null;
 const MEWNDO = new Set([
   'unprotect', 'folders', 'pausedUntil', 'pauseProtection', 'resumeProtection', 'storageReport', 'prune', 'agents', 'hookServerProblem',
   'configure', 'config', 'folderSettings', 'setFolderSettings', 'agentList', 'setAgentList', 'saveBrief',
-  'brake', 'resumeAgent', 'endAgent', 'braked',
+  'brake', 'resumeAgent', 'endAgent', 'braked', 'ticker',
 ]);
 const JOURNAL = new Set(['listSavePoints', 'createSavePoint', 'diffSince', 'planRestore', 'restore', 'listRestores']);
 
@@ -59,6 +59,7 @@ const methods = {
     mewndo.on('shadow', (r) => (r.count
       ? log('warn', `Shadow mode: the engines differ on ${r.count} item(s) in ${r.folder}`, r.differences)
       : log('info', `Shadow mode: both engines agree on ${r.folder}`)));
+    mewndo.on('guard', (g) => g.verdict.decision !== 'allow' && emit('guard', g)); // the bar's drift card
     mewndo.on('guard', (g) => g.verdict.decision !== 'allow'
       && log('info', `Guard: ${g.verdict.decision} for ${g.agent} (${g.verdict.rule})`, { folder: g.folder, action: g.action, reason: g.verdict.reason }));
     mewndo.on('recovered', (r) => log('warn', 'Checked recent file versions after an unclean shutdown', r));

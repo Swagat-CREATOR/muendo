@@ -168,3 +168,25 @@ test('folders report when their files last changed', async () => {
     assert.ok(mewndo.folders()[0].lastChangeAt >= before);
   } finally { await mewndo.stop(); }
 });
+
+test("ticker counts deleted, edited and created since each folder's newest save point (the bar's −12 ~5 +3)", async () => {
+  const base = tempDir();
+  const mewndo = createMewndo({ dataDir: path.join(base, 'data'), journalOptions });
+  try {
+    const root = folder(base, 'project', { 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
+    await mewndo.protect(root);
+    const j = mewndo.journals()[0];
+    await j.createSavePoint({ label: 'start' });
+    fs.rmSync(path.join(root, 'a.txt'));
+    fs.writeFileSync(path.join(root, 'b.txt'), 'changed');
+    fs.writeFileSync(path.join(root, 'new.txt'), 'new');
+    await j.sync();
+    const [t] = await mewndo.ticker();
+    assert.deepStrictEqual([t.deleted, t.edited, t.created], [1, 1, 1]);
+    await j.createSavePoint({ label: 'again' });
+    const [after] = await mewndo.ticker();
+    assert.deepStrictEqual([after.deleted, after.edited, after.created], [0, 0, 0]);
+  } finally {
+    await mewndo.stop();
+  }
+});

@@ -5,7 +5,7 @@
 //   at bottom centre. Dragged near a side edge, it docks to that edge. Remembered per display, relative to its
 //   work area, so a resolution or scale change keeps it in the same place.
 
-const SIZE = { width: 240, height: 56 }; // the window; the pill inside it is smaller and the rest is click-through
+const SIZE = { width: 380, height: 480 }; // the window: room above the pill for its hint, drift card and panel; the rest is click-through
 const MARGIN = 8;
 const DOCK_WITHIN = 32; // dropped this close to a side edge: docks to it
 

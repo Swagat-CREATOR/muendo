@@ -548,6 +548,13 @@ api.on('progress', (p) => {
 api.on('savepoints-changed', (root) => { if (root === selected && !busy) loadSavePoints(); });
 api.on('restores-changed', (root) => { if (root === selected) loadRestores(); });
 api.on('toast', toast);
+// The bar's change ticker: show what changed in that folder since its newest save point.
+api.on('show-diff', guard(async ({ root, savePoint }) => {
+  if (!state?.folders?.some((f) => f.root === root)) return;
+  await selectFolder(root);
+  const sp = (await api.savePoints(root)).find((x) => x.id === savePoint);
+  if (sp) await showDiff(sp);
+}));
 setInterval(() => { if (!document.hidden) guard(refresh)(); }, 3000); // nothing to show while hidden in the tray
 document.addEventListener('visibilitychange', () => { if (!document.hidden) guard(refresh)(); });
 guard(refresh)();

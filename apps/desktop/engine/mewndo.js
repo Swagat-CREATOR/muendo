@@ -17,6 +17,7 @@ const { createAgentWatcher, loadAgents, saveAgents, DEFAULT_AGENTS } = require('
 const { BURST_DEFAULTS } = require('./burst');
 const { startHookServer } = require('./hook-server');
 const { buildCard, rulesFor, writeManagedBlock } = require('./continue-card');
+const { compare } = require('./diff');
 
 const FORWARDED = ['progress', 'savepoint', 'restored', 'retry', 'change'];
 
@@ -376,6 +377,23 @@ function createMewndo({
     files: Object.values(j.getIndex() ?? {}).filter((e) => e.type === 'file').length,
     lastChangeAt: j.lastChangeAt(),
   }));
+
+  // The bar's change ticker (spec §23.2): per folder, what changed since its newest save point, as the journal
+  // already knows it (no scan). [{ root, savePoint, deleted, edited, created }], busiest first.
+  const tickerIndexes = new Map(); // save point id -> its index (save points never change)
+  mewndo.ticker = async () => {
+    const out = [];
+    for (const [root, j] of journals) {
+      if (starting.has(root) || unavailable.has(root)) continue;
+      const sp = (await j.listSavePoints()).at(-1);
+      if (!sp) continue;
+      if (!tickerIndexes.has(sp.id)) tickerIndexes.set(sp.id, (await j.getSavePoint(sp.id)).index);
+      const d = compare(tickerIndexes.get(sp.id), j.getIndex() ?? {});
+      out.push({ root, savePoint: sp.id, deleted: d.deleted.length, edited: d.edited.length + d.moved.length, created: d.created.length });
+    }
+    for (const id of tickerIndexes.keys()) if (!out.some((t) => t.savePoint === id)) tickerIndexes.delete(id);
+    return out.sort((a, b) => (b.deleted + b.edited + b.created) - (a.deleted + a.edited + a.created));
+  };
 
   // Stop watching every folder for ms, then catch up on what changed. Save points and restores still work.
   mewndo.pauseProtection = async (ms) => {

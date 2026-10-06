@@ -85,8 +85,9 @@ function onEngineMessage(msg) {
   }
   const [a, b] = msg.args;
   if (msg.event === 'drift' || msg.event === 'braked') lastAlertAt = Date.now();
-  if (msg.event === 'drift') lastDriftAt = Date.now();
+  if (msg.event === 'drift') { lastDriftAt = Date.now(); recentDrifters.add(a.agent); }
   if (BAR_EVENTS.has(msg.event)) refreshBar();
+  if (msg.event === 'change') setTimeout(refreshBar, 1100); // the engine sends one change a second: catch the last
   switch (msg.event) {
     case 'progress': progress.set(a, b); send('progress', { root: a, ...b }); break;
     case 'savepoint': storage.at = 0; send('savepoints-changed', a); break;
@@ -279,12 +280,14 @@ function stateChanged() {
 // --- The Mewndo bar ---------------------------------------------------------------------------------------------
 // It renders from the engine's events: protection (green protected, amber drift in the last 5 minutes, red braked,
 // grey paused or nothing protected), one dot per running agent, and an alert for a minute after a drift or brake.
-const BAR_EVENTS = new Set(['agents-changed', 'braked', 'resumed', 'drift', 'folders-changed', 'restored']);
+const BAR_EVENTS = new Set(['agents-changed', 'braked', 'resumed', 'drift', 'guard', 'folders-changed', 'restored', 'change', 'savepoint']);
 const ALERT_MS = 60_000;
 const DRIFT_MS = 5 * 60_000;
 let lastAlertAt = 0;
 let lastDriftAt = 0;
+const recentDrifters = new Set(); // agents that drifted (amber dot while the drift is recent)
 let barRefresh = null;
+let barAgents = []; // names of the agents the bar shows, for its Brake button
 
 function startBar() {
   bar = createBar({
@@ -293,9 +296,8 @@ function startBar() {
       settings.barPositions = positions;
       saveSettings().catch((e) => log.warn(`Couldn't save the bar's position: ${e.message}`));
     },
-    onAction(name) {
-      // ponytail: the up-arrow opens the main window until its panel lands (P3.4); the mic waits for voice (P3.5).
-      if (name === 'protection' || name === 'panel') showWindow();
+    onAction(name, arg) {
+      barAction(name, arg).catch((e) => notify('Mewndo', e.message));
     },
     async fullScreen() {
       return process.platform === 'win32' && core?.status().state === 'running' && (await core.request('screen_state')).full_screen === true;
@@ -310,7 +312,7 @@ function refreshBar() {
   if (!bar || barRefresh) return;
   barRefresh = setTimeout(async () => { // events come in bunches: one update for each bunch
     barRefresh = null;
-    const [folders, agents, braked, until] = await Promise.all(['folders', 'agents', 'braked', 'pausedUntil'].map((m) => call(m).catch(() => null)));
+    const [folders, agents, braked, until, tickers] = await Promise.all(['folders', 'agents', 'braked', 'pausedUntil', 'ticker'].map((m) => call(m).catch(() => null)));
     const brakedNames = new Set((braked ?? []).map((x) => x.agent));
     const now = Date.now();
     const status = brakedNames.size ? 'braked' : now - lastDriftAt < DRIFT_MS ? 'drift' : until ? 'paused' : folders?.length ? 'protected' : 'off';
@@ -320,10 +322,38 @@ function refreshBar() {
       off: 'Mewndo: no folders protected',
     }[status];
     const names = [...new Set([...(agents ?? []).map((x) => x.name), ...brakedNames])];
-    bar.update({ status, label, agents: names.map((name) => ({ name, braked: brakedNames.has(name) })), alert: now - lastAlertAt < ALERT_MS });
-  }, 50);
+    barAgents = names.filter((n) => !brakedNames.has(n));
+    const drifted = new Set(now - lastDriftAt < DRIFT_MS ? recentDrifters : []);
+    const t = tickers?.[0];
+    bar.update({
+      status, label, alert: now - lastAlertAt < ALERT_MS,
+      agents: names.map((name) => ({ name, braked: brakedNames.has(name), drift: drifted.has(name) })),
+      ticker: t ? { ...t, name: folderName(t.root) } : null,
+      shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
+    });
+  }, 30);
 }
 setInterval(refreshBar, 30_000).unref(); // drift and alert colours fade with time
+
+// The bar's buttons (spec §23.2, §23.7). They all work with the main window closed.
+async function barAction(name, arg) {
+  switch (name) {
+    case 'protection': case 'lane': case 'panel': showWindow(); break; // ponytail: lanes and the panel come in P3.4
+    case 'undo': openUndo(); break;
+    case 'undo-burst': openUndo(arg); break; // undo always shows what it will do first (spec §23.3)
+    case 'diff': {
+      const savePoint = (await call('ticker')).find((t) => t.root === arg)?.savePoint;
+      showWindow();
+      if (win.webContents.isLoading()) await new Promise((r) => win.webContents.once('did-finish-load', r));
+      if (savePoint) send('show-diff', { root: arg, savePoint });
+      break;
+    }
+    case 'savepoint': await createSavePointEverywhere(); break;
+    case 'brake': for (const agent of barAgents) await call('brake', agent, { reason: 'you braked it from the Mewndo bar' }); break;
+    case 'brake-agent': if (arg) await call('brake', arg, { reason: 'you braked it from the Mewndo bar' }); break;
+    default: break;
+  }
+}
 
 function toggleBar() {
   settings.barOff = settings.barOff !== true;
