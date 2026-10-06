@@ -681,6 +681,12 @@ function createMewndo({
     const verdicts = [];
     for (const action of actions) verdicts.push(await judge(core, { session, brief, action }, { failOpen: guardFailOpen }));
     const verdict = strictest(verdicts);
+    if (verdict.rule === 'burst') { // spec §24.1: a burst brakes the agent (and the 'braked' event alerts the user)
+      const reason = 'it tried too many changes at once';
+      await mewndo.brake(name, { reason, folder: root, freeze: false });
+      mewndo.emit('guard', { folder: root, agent: name, actions, verdict });
+      return { ...outputFor(agent, verdict), ...brakeOutput(agent, reason) }; // Claude Code: deny and stop
+    }
     if (verdict.decision === 'allow' && verdict.deletes > 0 && root) {
       const a = actions[0];
       const what = a.kind === 'shell' ? a.command.replace(/\s+/g, ' ').trim().slice(0, 100) : a.path;
