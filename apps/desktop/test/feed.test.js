@@ -113,7 +113,7 @@ test('changes made while the core was closed are caught up when it starts again'
   await core.request('watch', { root, options: { cursor_file: cursor } });
   assert.strictEqual((await next((e) => e.kind === 'rescan')).dirs, undefined, 'first start: everything');
   const { usn } = await core.request('feed_position', { root });
-  await core.request('feed_checkpoint', { root, usn }); // the index is saved
+  if (usn !== null) await core.request('feed_checkpoint', { root, usn }); // the index is saved
   await core.stop();
 
   write(root, 'new/n.txt', 'n');
@@ -122,7 +122,12 @@ test('changes made while the core was closed are caught up when it starts again'
   ({ core, next } = await startCore(base));
   try {
     await core.request('watch', { root, options: { cursor_file: cursor } });
-    const { dirs } = await next((e) => e.kind === 'rescan');
+    const { dirs, message } = await next((e) => e.kind === 'rescan');
+    if (usn === null) {
+      // A drive without an NTFS change journal (some USB and second disks): everything is rescanned, and it says so.
+      assert.deepStrictEqual([dirs, message], [undefined, 'this drive keeps no change journal']);
+      return;
+    }
     for (const d of ['', 'new', 'old']) assert.ok(dirs.includes(d), `${JSON.stringify(d)} in ${JSON.stringify(dirs)}`);
     assert.ok(!dirs.includes('keep'));
   } finally {

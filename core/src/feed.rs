@@ -1108,6 +1108,13 @@ mod live {
         move |e| e.kind == kind && e.path.as_deref() == Some(path)
     }
 
+    /// Drives without an NTFS change journal exist (USB sticks, some second disks, CI's D:). There the feed must
+    /// fall back to rescanning everything, and say why; with one, it must use it. Tests check whichever applies.
+    const NO_JOURNAL: &str = "this drive keeps no change journal";
+    fn journal_here(w: &Watch) -> bool {
+        w.position().unwrap().is_some()
+    }
+
     fn opts() -> WatchOptions {
         WatchOptions {
             ignore_patterns: vec!["*.log".into()],
@@ -1118,12 +1125,14 @@ mod live {
     #[test]
     fn starts_with_a_rescan_then_reports_creates_edits_renames_and_deletes() {
         let d = temp_dir("basic");
-        let (_w, rx) = start(&d.0, opts());
+        let (w, rx) = start(&d.0, opts());
         let (first, _) = until(&rx, "first rescan", |e| e.kind == "rescan");
-        assert_eq!(
-            (first.dirs, first.message.as_deref()),
-            (None, Some("first start"))
-        );
+        let why = if journal_here(&w) {
+            "first start"
+        } else {
+            NO_JOURNAL
+        };
+        assert_eq!((first.dirs, first.message.as_deref()), (None, Some(why)));
 
         fs::write(d.0.join("a.txt"), "1").unwrap();
         until(&rx, "created a.txt", is("created", "a.txt"));
@@ -1253,14 +1262,23 @@ mod live {
             until(&rx, "first rescan", |e| {
                 e.kind == "rescan" && e.dirs.is_none()
             });
-            let at = w.position().unwrap().expect("NTFS keeps a change journal");
-            w.checkpoint(at).unwrap(); // the index (`before`) is saved
+            if let Some(at) = w.position().unwrap() {
+                w.checkpoint(at).unwrap(); // the index (`before`) is saved
+            }
         } // Mewndo closes
         write(&root, "top.txt", "edited");
         write(&root, "sub2/new.txt", "new");
         fs::remove_file(root.join("old").join("x.txt")).unwrap();
-        let (_w, rx) = start(&root, cursor);
+        let (w, rx) = start(&root, cursor);
         let (e, _) = until(&rx, "catch-up rescan", |e| e.kind == "rescan");
+        if !journal_here(&w) {
+            assert_eq!(
+                (e.dirs, e.message.as_deref()),
+                (None, Some(NO_JOURNAL)),
+                "no journal: rescan everything"
+            );
+            return;
+        }
         let dirs = e.dirs.expect("the journal says which folders");
         for want in ["", "old", "sub2"] {
             assert!(
@@ -1288,7 +1306,7 @@ mod live {
         let d = temp_dir("overflow");
         fs::create_dir_all(d.0.join("burst")).unwrap();
         // A buffer too small for even one report: every batch overflows, as a big burst does.
-        let (_w, rx) = start(
+        let (w, rx) = start(
             &d.0,
             WatchOptions {
                 buffer_bytes: 16,
@@ -1300,6 +1318,15 @@ mod live {
             fs::write(d.0.join("burst").join(format!("{i}.txt")), "x").unwrap();
         }
         let (e, _) = until(&rx, "an overflow rescan", |e| e.kind == "rescan");
+        if !journal_here(&w) {
+            let why = "too many changes at once, and this drive keeps no change journal";
+            assert_eq!(
+                (e.dirs, e.message.as_deref()),
+                (None, Some(why)),
+                "no journal: rescan everything"
+            );
+            return;
+        }
         assert_eq!(
             e.message.as_deref(),
             Some("too many changes at once for the live feed")

@@ -15,12 +15,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
-      # The runner's own temp folder is an 8.3 short alias (C:\Users\RUNNER~1\...), which users' folders aren't: v0
-      # stores a folder by its long real path, so tests that expect the alias back fail there. Known v0 gap, recorded
-      # in docs/known-issues.md; the Rust core resolves every root to its long path instead.
-      - name: long temp path
+      # Tests' temp folders: on C: with a long path, like users' folders. The runner's own temp folder is an 8.3
+      # alias (C:\Users\RUNNER~1\...), which v0 mishandles (docs/known-issues.md), and its D: drive keeps no NTFS
+      # change journal, so the change feed's catch-up wouldn't be tested there.
+      - name: temp folder on drive C
         shell: bash
-        run: printf 'TEMP=%s\nTMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: |
+          mkdir -p /c/mewndo-ci-temp
+          printf 'TEMP=C:\\mewndo-ci-temp\nTMP=C:\\mewndo-ci-temp\n' >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
           node-version: 24
