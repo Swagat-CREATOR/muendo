@@ -1,11 +1,25 @@
-// Brake and Heal (spec §24.3, §24.4), with the real mewndo-core judging.
+// Brake, Heal and Resume (spec §24.3 to §24.5), with the real mewndo-core judging.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createCore } = require('../app/core');
 const { createMewndo, connectCore } = require('../engine');
+const { spawn } = require('node:child_process');
+const { buildCard, rulesFor, writeManagedBlock, MAX_CHARS } = require('../engine/continue-card');
 const { tempDir, CORE_BINARY } = require('./helpers');
+
+const SCRIPT = path.join(__dirname, '..', 'bin', 'mewndo-savepoint.js');
+// Runs the hook script as Claude Code would: hook JSON on stdin. Resolves { code, stdout }.
+function runScript(env, stdin) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [SCRIPT], { env: { ...process.env, ...env } });
+    let stdout = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.on('exit', (code) => resolve({ code, stdout }));
+    child.stdin.end(stdin);
+  });
+}
 
 const skip = fs.existsSync(CORE_BINARY) ? false : 'mewndo-core is not built: run `npm test` from the repository root';
 const base = tempDir();
@@ -26,13 +40,14 @@ before(async () => {
 after(async () => { client?.close(); await core?.stop(); });
 
 // A protected folder with a brief, and Mewndo's events.
-async function setup(name, files = ['src/app.js', 'notes.md', 'keep1.txt', 'keep2.txt', 'keep3.txt']) {
+async function setup(name, files = ['src/app.js', 'notes.md', 'keep1.txt', 'keep2.txt', 'keep3.txt'], options = {}) {
   const root = path.join(base, name);
   for (const f of files) {
     fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true });
     fs.writeFileSync(path.join(root, f), `content of ${f}`);
   }
-  const mewndo = createMewndo({ dataDir: path.join(base, `${name}-data`), core: client, journalOptions: { debounceMs: 50, writeFinishMs: 100 } });
+  const dataDir = path.join(base, `${name}-data`);
+  const mewndo = createMewndo({ dataDir, core: client, journalOptions: { debounceMs: 50, writeFinishMs: 100 }, ...options });
   await mewndo.start();
   await mewndo.protect(root);
   const real = fs.realpathSync(root);
@@ -47,7 +62,7 @@ async function setup(name, files = ['src/app.js', 'notes.md', 'keep1.txt', 'keep
   });
   // A hooked agent session acting in the folder (what makes a session "active").
   const hookCall = (agent, input) => mewndo.guard({ session_id: 's1', conversation_id: 's1', cwd: real, ...input }, { agent });
-  return { root: real, mewndo, events, nextDrift, hookCall };
+  return { root: real, dataDir, mewndo, events, nextDrift, hookCall };
 }
 
 test('Brake: Claude Code gets continue false; Codex and Cursor are refused until resumed', { skip }, async () => {
@@ -123,5 +138,90 @@ test('three drifts in one task: the agent is braked and the task handed to the u
       await new Promise((r) => setTimeout(r, 300)); // the heal's own restore settles
     }
     assert.deepStrictEqual(mewndo.braked().map((x) => x.agent), ['Codex']);
+  } finally { await mewndo.stop(); }
+});
+
+// Resume (spec §24.5).
+test('Continue card: under 600 tokens however much changed, items labelled, rules per folder', () => {
+  const many = Array.from({ length: 500 }, (_, i) => `src/module-${i}/a-rather-long-file-name-${i}.js`);
+  const card = buildCard({
+    folder: 'C:\\work', task: 'x'.repeat(2000), diff: { edited: many, created: many, moved: [], deleted: [] },
+    agentSays: ['tests pass'], drifts: [{ reason: 'deleted docs/a.md', paths: ['docs/a.md'], healed: ['docs/a.md'] }],
+    rules: ['Do not delete files in `docs/` unless I name them.'], newRules: ['Do not delete files in `docs/` unless I name them.'],
+    reason: 'it deleted docs/a.md again',
+  });
+  assert.ok(card.length <= MAX_CHARS, `${card.length} characters`);
+  assert.match(card, /Verified \(journal\): edited src\/module-0/);
+  assert.match(card, /and \d+ more/);
+  assert.match(card, /Mewndo put back docs\/a\.md/);
+  assert.match(card, /unless I name them\. \(new\)/);
+  assert.match(buildCard({ folder: 'f', diff: null, agentSays: ['wrote the parser'] }), /Agent says: wrote the parser/);
+  assert.deepStrictEqual(rulesFor([{ paths: ['docs/a.md', 'docs/b.md', 'x.txt'] }]),
+    ['Do not delete files in `docs/` unless I name them.', 'Do not delete `x.txt` unless I name it.']);
+});
+
+test('AGENTS.md: the managed block is added once, replaced on the next resume, and the rest kept', async () => {
+  const file = path.join(base, 'agents-md', 'AGENTS.md');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '# House rules\nUse tabs.');
+  await writeManagedBlock(file, 'card one');
+  await writeManagedBlock(file, 'card two');
+  const text = fs.readFileSync(file, 'utf8');
+  assert.match(text, /^# House rules\nUse tabs\.\n\n<!-- mewndo:continue -->\ncard two\n<!-- \/mewndo:continue -->\n$/);
+});
+
+test('Resume: Claude Code gets a verified Continue card through its SessionStart hook, once', { skip }, async () => {
+  const { root, dataDir, mewndo, nextDrift, hookCall } = await setup('resume-claude', undefined, { hookServer: { port: 0 } });
+  try {
+    await hookCall('claude', { tool_name: 'Bash', tool_input: { command: 'npm test' } });
+    fs.writeFileSync(path.join(root, 'src/app.js'), 'refactored');
+    const drift = nextDrift();
+    fs.rmSync(path.join(root, 'keep1.txt'));
+    assert.strictEqual((await drift).action, 'healed');
+    await mewndo.brake('Claude Code', { reason: 'the user pressed Brake' });
+    await new Promise((r) => setTimeout(r, 300)); // the edit reaches the journal
+
+    const r = await mewndo.resumeAgent('Claude Code');
+    assert.strictEqual(r.command, 'claude --resume s1');
+    assert.match(r.card, /Refactor src\/app\.js/);
+    assert.match(r.card, /Verified \(journal\): edited src\/app\.js/);
+    assert.match(r.card, /Mewndo braked you: the user pressed Brake/);
+    assert.match(r.card, /Mewndo put back keep1\.txt/);
+    assert.deepStrictEqual(r.newRules, ['Do not delete `keep1.txt` unless I name it.']);
+    assert.match(r.card, /Do not delete `keep1\.txt` unless I name it\. \(new\)/);
+
+    const hookInput = JSON.stringify({ session_id: 's1', cwd: root, hook_event_name: 'SessionStart', source: 'resume' });
+    const first = await runScript({ MEWNDO_DATA_DIR: dataDir }, hookInput);
+    assert.strictEqual(first.code, 0);
+    const out = JSON.parse(first.stdout);
+    assert.deepStrictEqual(out.hookSpecificOutput, { hookEventName: 'SessionStart', additionalContext: r.card });
+    assert.strictEqual((await runScript({ MEWNDO_DATA_DIR: dataDir }, hookInput)).stdout, '', 'only once');
+
+    // The rule stays in the brief: the next card lists it again, no longer new.
+    await mewndo.brake('Claude Code', { reason: 'again' });
+    assert.match((await mewndo.resumeAgent('Claude Code')).card, /Do not delete `keep1\.txt` unless I name it\.\n/);
+  } finally { await mewndo.stop(); }
+});
+
+test('Resume: Codex gets a block in AGENTS.md, Cursor a rules file and the clipboard, others the clipboard', { skip }, async () => {
+  const { root, mewndo, hookCall } = await setup('resume-others');
+  try {
+    await hookCall('codex', { tool_name: 'Bash', tool_input: { command: 'ls' } });
+    await mewndo.brake('Codex', { reason: 'drift', freeze: false });
+    const codex = await mewndo.resumeAgent('Codex');
+    assert.deepStrictEqual([codex.inject, codex.command, codex.copy], ['AGENTS.md', 'codex resume s1', undefined]);
+    assert.ok(fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8').includes(codex.card));
+
+    await hookCall('cursor', { command: 'ls' });
+    await mewndo.brake('Cursor', { reason: 'drift', freeze: false });
+    const cursor = await mewndo.resumeAgent('Cursor');
+    assert.deepStrictEqual([cursor.inject, cursor.copy], ['Cursor rules file', true]);
+    const rules = fs.readFileSync(path.join(root, '.cursor/rules/mewndo-continue.mdc'), 'utf8');
+    assert.match(rules, /^---\ndescription: Mewndo Continue card\nalwaysApply: true\n---\n# Mewndo Continue card/);
+
+    await mewndo.brake('Aider', { reason: 'the user pressed Brake', freeze: false, folder: root });
+    const other = await mewndo.resumeAgent('Aider', { agentSays: ['finished the parser'] });
+    assert.deepStrictEqual([other.inject, other.copy], ['clipboard', true]);
+    assert.match(other.card, /Agent says: finished the parser/);
   } finally { await mewndo.stop(); }
 });

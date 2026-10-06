@@ -86,7 +86,8 @@ function onEngineMessage(msg) {
     case 'progress': progress.set(a, b); send('progress', { root: a, ...b }); break;
     case 'savepoint': storage.at = 0; send('savepoints-changed', a); break;
     case 'drift': onDrift(a); break;
-    case 'braked': notify('Mewndo braked an agent', `${a.agent}: ${a.reason}. Resume it from Mewndo when you're ready.`); send('state-changed'); break;
+    case 'braked': notify('Mewndo braked an agent', `${a.agent}: ${a.reason}. Resume it from the tray menu when you're ready.`); send('state-changed'); updateTray(); break;
+    case 'resumed': onResumed(a); break;
     case 'restored': send('restores-changed', a); break;
     case 'retry': send('retry', { root: a, ...b }); break;
     case 'burst': burstAlert(a, b).catch(() => {}); break;
@@ -444,6 +445,15 @@ function onDrift(d) {
   send('state-changed');
 }
 
+// Resume: the Continue card is waiting in the agent's hook, AGENTS.md or rules file; some agents need it pasted.
+function onResumed(r) {
+  updateTray();
+  if (!r.card) return;
+  if (r.copy) clipboard.writeText(r.card);
+  const how = r.command ? `Run ${r.command} to carry on.` : r.copy ? 'Paste it into the agent\'s chat.' : '';
+  notify(`${r.agent} can carry on`, `Continue card ready (${r.inject}${r.copy ? ', copied' : ''}). ${how}`);
+}
+
 // --- Burst alerts -----------------------------------------------------------------------------------------------
 
 const liveNotifications = new Set(); // Windows drops click handlers of notifications that get garbage-collected
@@ -565,7 +575,10 @@ async function updateTray() {
   const until = await call('pausedUntil').catch(() => null);
   tray.setToolTip(until ? `Mewndo: paused until ${new Date(until).toLocaleTimeString()}` : 'Mewndo: protecting your folders');
   const run = (fn) => () => fn().catch((e) => notify('Mewndo', e.message));
+  const braked = await call('braked').catch(() => []);
   tray.setContextMenu(Menu.buildFromTemplate([
+    ...braked.map((b) => ({ label: `Resume ${b.agent}`, click: run(() => call('resumeAgent', b.agent)) })),
+    ...(braked.length ? [{ type: 'separator' }] : []),
     { label: 'Open Window', click: showWindow },
     { label: 'Create Save Point', click: run(createSavePointEverywhere) },
     { label: 'Write a Brief', click: () => openBrief() },

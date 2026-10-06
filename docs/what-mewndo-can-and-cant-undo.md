@@ -54,3 +54,9 @@ In more detail:
 - **Links swapped in mid-read on Windows:** Windows can't fully block a file being swapped for a link at the
   exact moment Mewndo reads it. Mewndo re-checks the file after opening and reading and skips it if anything
   changed, which catches it in practice. Exploiting the gap needs write access to the protected folder.
+- **Resuming a braked agent** gives it a Continue card: the task, what really changed on disk (marked
+  "Verified"), what went wrong, what was healed, and new rules. Mewndo can't restore the agent's own memory of the
+  session, and it can't check what the agent says it did (marked "Agent says"). Claude Code gets the card when its
+  next session starts in that folder, so Mewndo must still be running then. Codex reads it from a block Mewndo
+  writes into the folder's `AGENTS.md`, Cursor from `.cursor/rules/mewndo-continue.mdc`; both stay until the next
+  resume replaces them, so remove them once the task is done.

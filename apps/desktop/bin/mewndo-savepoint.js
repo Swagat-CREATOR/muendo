@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // mewndo-savepoint: asks a running Mewndo for a save point. AI agent hooks call it (Claude Code: at session start
 // and before every Bash command). It must never get in the agent's way: it always exits successfully within
-// a second, prints nothing to stdout (Claude Code would show it to the model), and does nothing when Mewndo
-// isn't running. --verbose explains what happened on stderr; --agent "Name" for agents other than Claude Code.
+// a second, prints nothing to stdout (Claude Code would show it to the model) except a Continue card Mewndo has
+// waiting for a new session (spec §24.5), and does nothing when Mewndo isn't running. --verbose explains what happened on stderr; --agent "Name" for agents other than Claude Code.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -12,7 +12,9 @@ const http = require('node:http');
 // began running: on Windows, Node alone takes about a quarter of a second to start.
 // 700 leaves room for Windows creating the process under load (measured up to ~180 ms) within the 1 s promise.
 // Mewndo answers in milliseconds: hook save points rely on what its watcher already saw (see quick save points).
-const DEADLINE_MS = 700; // whatever happens, exit by then
+// After a Resume, Mewndo marks that a Continue card is waiting: then up to 4 s (the hook's timeout is 5), since
+// the user just clicked Resume and a card that misses the deadline is lost (spec §24.5 allows 2 to 5 s).
+const DEADLINE_MS = fs.existsSync(path.join(dataDir(), 'continue-pending')) ? 4000 : 700; // whatever happens, exit by then
 const left = () => DEADLINE_MS - performance.now();
 const verbose = process.argv.includes('--verbose');
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
@@ -72,7 +74,14 @@ function readStdin() {
     let text = '';
     res.setEncoding('utf8');
     res.on('data', (d) => { text += d; });
-    res.on('end', () => done(`Mewndo answered ${res.statusCode}: ${text}`));
+    res.on('end', () => {
+      let card;
+      try { card = JSON.parse(text).additionalContext; } catch { card = undefined; }
+      if (typeof card === 'string' && card) { // synchronous: process.exit doesn't wait for a Windows pipe
+        fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: card } }));
+      }
+      done(`Mewndo answered ${res.statusCode}: ${text}`);
+    });
   });
   req.on('timeout', () => { req.destroy(); done('Mewndo is still making the save point; not waiting for it'); });
   req.on('error', (e) => done(`Mewndo is not running or not reachable (${e.code || e.message})`));

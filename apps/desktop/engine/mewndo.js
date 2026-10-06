@@ -16,6 +16,7 @@ const { folderSize, DEFAULT_IGNORE } = require('./scanner');
 const { createAgentWatcher, loadAgents, saveAgents, DEFAULT_AGENTS } = require('./agents');
 const { BURST_DEFAULTS } = require('./burst');
 const { startHookServer } = require('./hook-server');
+const { buildCard, rulesFor, writeManagedBlock } = require('./continue-card');
 
 const FORWARDED = ['progress', 'savepoint', 'restored', 'retry', 'change'];
 
@@ -23,6 +24,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
 const DEFAULT_MAX_FILE_MB = 50;
+const CURSOR_RULES = '.cursor/rules/mewndo-continue.mdc'; // Resume's card for Cursor
 
 const gb = (bytes) => `${(bytes / GB).toFixed(1)} GB`;
 const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
@@ -633,8 +635,18 @@ function createMewndo({
       : oneLine ? `Before ${agent} runs: ${oneLine.length > 100 ? `${oneLine.slice(0, 100)}…` : oneLine}`
         : `${agent}${event ? `: ${event}` : ''}`;
     // Before every command: only when something changed since the newest save point, or they'd pile up.
-    const savePoint = await j.createSavePoint({ trigger: 'hook', agent, label, onlyIfChanged: event !== 'SessionStart', quick: true });
-    return { folder: root, savePoint };
+    const making = j.createSavePoint({ trigger: 'hook', agent, label, onlyIfChanged: event !== 'SessionStart', quick: true });
+    // A Continue card waiting for this folder goes to the next session started there, once, without waiting for
+    // the save point: the hook script gives up after 700 ms and the card would be lost.
+    // ponytail: still lost if the answer misses even the longer deadline; then resume again.
+    const card = event === 'SessionStart' ? pendingCards.get(root) : undefined;
+    if (card) {
+      pendingCards.delete(root);
+      if (!pendingCards.size) await fsp.rm(PENDING_MARK, { force: true }).catch(() => {});
+      making.catch((e) => warn('journal', e.message, { folder: root }));
+      return { folder: root, savePoint: null, additionalContext: card };
+    }
+    return { folder: root, savePoint: await making };
   }
 
   // --- Guard (spec §24.2) -------------------------------------------------------------------------------------------
@@ -665,6 +677,7 @@ function createMewndo({
     const session = `${agent}:${input.session_id ?? input.conversation_id ?? 'unknown'}`;
     if (root) hookedActivity.set(root, { agent: name, at: now() });
     hookedAgents.set(name, now());
+    lastSeen.set(name, { folder: root ?? lastSeen.get(name)?.folder, session: input.session_id ?? input.conversation_id, kind: agent });
     const verdicts = [];
     for (const action of actions) verdicts.push(await judge(core, { session, brief, action }, { failOpen: guardFailOpen }));
     const verdict = strictest(verdicts);
@@ -692,6 +705,8 @@ function createMewndo({
   const hookedAgents = new Map(); // agent name -> last hook call
   const healedPaths = new Set(); // agent|folder|path: put back once already
   const driftCounts = new Map(); // agent|folder|brief time -> drifts in that task
+  const drifts = []; // every drift event, for Continue cards
+  const lastSeen = new Map(); // agent name -> { folder, session, kind }: its last hook call
   const ACTIVE_MS = 5 * 60 * 1000;
 
   function brakeOutput(agent, reason) {
@@ -702,7 +717,7 @@ function createMewndo({
   }
 
   // Brake an agent by name. Not hooked lately (or asked to): freeze its processes too.
-  mewndo.brake = async (agent, { reason = 'the user braked it', freeze } = {}) => {
+  mewndo.brake = async (agent, { reason = 'the user braked it', freeze, folder } = {}) => {
     const hooked = now() - (hookedAgents.get(agent) ?? -Infinity) < ACTIVE_MS;
     let pids = [];
     if ((freeze ?? !hooked) && core && agentWatcher) {
@@ -711,17 +726,67 @@ function createMewndo({
       }
     }
     pids = [...new Set(pids)];
-    braked.set(agent, { reason, at: now(), pids });
+    braked.set(agent, { reason, at: now(), pids, folder: folder ?? lastSeen.get(agent)?.folder ?? null });
     mewndo.emit('braked', { agent, reason, frozen: pids });
     return { agent, reason, frozen: pids };
   };
-  mewndo.resumeAgent = async (agent) => {
+  // Resume (spec §24.5): lift the brake (thaw what was frozen), then write a Continue card and hand it over:
+  // Claude Code gets it from its SessionStart hook (with the command that resumes the old session), Codex from a
+  // Mewndo-managed block in the folder's AGENTS.md, Cursor from a Mewndo-managed rules file and the clipboard, any
+  // other agent from the clipboard ('resumed' event, copy: true; the app copies it). New rules go into the brief;
+  // Guard already refuses deletes a brief doesn't name, which is what they say. agentSays: the agent's own claims.
+  mewndo.resumeAgent = async (agent, { agentSays = [] } = {}) => {
     const b = braked.get(agent);
     braked.delete(agent);
     for (const pid of b?.pids ?? []) await core?.request('process_resume', { pid }).catch(() => {});
-    mewndo.emit('resumed', { agent });
-    return { agent, wasBraked: !!b };
+    const result = { agent, wasBraked: !!b };
+    if (b?.folder && journals.has(b.folder)) {
+      Object.assign(result, await continueCard(agent, b, agentSays).catch((e) => {
+        warn('resume', `No Continue card for ${agent}: ${e.message}`, { folder: b.folder });
+        return {};
+      }));
+    }
+    mewndo.emit('resumed', result);
+    return result;
   };
+  const pendingCards = new Map(); // folder -> card for Claude Code's next SessionStart there (ponytail: in memory)
+  const PENDING_MARK = path.join(dataDir, 'continue-pending');
+
+  async function continueCard(agent, b, agentSays) {
+    const root = b.folder;
+    const j = journals.get(root);
+    const saved = await readBrief(root);
+    const began = saved ? Date.parse(saved.createdAt) : b.at;
+    const mine = drifts.filter((d) => d.agent === agent && d.folder === root && d.at >= began);
+    const newRules = rulesFor(mine).filter((r) => !(saved?.rules ?? []).includes(r));
+    const rules = [...(saved?.rules ?? []), ...newRules];
+    if (saved && newRules.length) await writeFileAtomic(briefFile(root), JSON.stringify({ ...saved, rules }));
+    let diff = null; // no brief: nothing marks when the task began
+    if (saved) {
+      const points = await j.listSavePoints();
+      const start = points.filter((sp) => sp.createdAt <= saved.createdAt).pop() ?? points[0];
+      if (start) diff = await j.diffSince(start.id);
+      if (diff) diff = { ...diff, edited: diff.edited.filter((p) => p !== CURSOR_RULES), created: diff.created.filter((p) => p !== CURSOR_RULES) };
+    }
+    const card = buildCard({ folder: root, task: saved?.task, diff, agentSays, drifts: mine, rules, newRules, reason: b.reason });
+    const seen = lastSeen.get(agent);
+    const kind = seen?.kind ?? Object.keys(AGENT_NAMES).find((k) => AGENT_NAMES[k] === agent);
+    const session = /^[\w-]{1,200}$/.test(seen?.session ?? '') ? seen.session : null; // shown as a command: no odd characters
+    if (kind === 'claude') {
+      pendingCards.set(root, card);
+      await writeFileAtomic(PENDING_MARK, ''); // tells the hook script to wait longer for it
+      return { card, newRules, inject: 'SessionStart hook', command: session ? `claude --resume ${session}` : 'claude --continue' };
+    }
+    if (kind === 'codex') {
+      await writeManagedBlock(path.join(root, 'AGENTS.md'), card);
+      return { card, newRules, inject: 'AGENTS.md', command: session ? `codex resume ${session}` : 'codex resume --last' };
+    }
+    if (kind === 'cursor') {
+      await writeFileAtomic(path.join(root, CURSOR_RULES), `---\ndescription: Mewndo Continue card\nalwaysApply: true\n---\n${card}\n`);
+      return { card, newRules, inject: 'Cursor rules file', copy: true };
+    }
+    return { card, newRules, inject: 'clipboard', copy: true };
+  }
   mewndo.endAgent = async (agent) => {
     const pids = agentWatcher?.pidsOf(agent) ?? [];
     for (const pid of pids) await core?.request('process_end', { pid }).catch((e) => warn('brake', `Couldn't end ${agent}: ${e.message}`));
@@ -742,6 +807,11 @@ function createMewndo({
       }, 200).unref();
     }
     pendingDeletes.get(root).add(rel);
+  }
+
+  function drift(d) {
+    drifts.push({ ...d, at: now() });
+    mewndo.emit('drift', d);
   }
 
   async function heal(root, paths) {
@@ -767,8 +837,8 @@ function createMewndo({
       const reason = again.length
         ? `it deleted ${again[0]} again after Mewndo put it back`
         : 'it went outside its brief three times in this task; the user takes over';
-      await mewndo.brake(agent, { reason });
-      mewndo.emit('drift', { folder: root, agent, paths: drifted, action: 'braked', reason, handoff: !again.length });
+      await mewndo.brake(agent, { reason, folder: root });
+      drift({ folder: root, agent, paths: drifted, action: 'braked', reason, handoff: !again.length });
       return;
     }
     // Put them back from the newest save point that has them.
@@ -784,7 +854,7 @@ function createMewndo({
       await j.restore(from.id, { paths: restorable });
       for (const p of restorable) healedPaths.add(`${agent}|${root}|${p}`);
     }
-    mewndo.emit('drift', {
+    drift({
       folder: root, agent, paths: drifted, action: from ? 'healed' : 'unhealed', healed: restorable,
       reason: `${agent} deleted ${drifted.length === 1 ? drifted[0] : `${drifted.length} files`} the brief doesn't name`,
     });
@@ -833,6 +903,7 @@ function createMewndo({
     await fsp.mkdir(dataDir, { recursive: true });
     await store.cleanTemp();
     await store.cleanHot();
+    await fsp.rm(PENDING_MARK, { force: true }); // cards waiting from before were kept in memory only
     await recoverIfUnclean();
     await writeMarker(now());
     checkpointTimer = setInterval(() => writeMarker(now() - 5 * 60 * 1000).catch(() => {}), 10 * 60 * 1000);
