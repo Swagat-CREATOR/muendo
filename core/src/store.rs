@@ -506,6 +506,44 @@ impl Store {
         done
     }
 
+    /// Write stored content to `tmp`, which must not exist, for a restore (restore.rs). Not flushed: the restore
+    /// flushes once at the end. An object stored as is gets copied by the OS (CopyFile2 on Windows, which block
+    /// clones on ReFS and Dev Drive; copy_file_range on Linux, which clones on btrfs and XFS) and isn't re-hashed:
+    /// the restore verifies afterwards. A gzipped one is checked as it's unpacked, which costs nothing extra.
+    /// Returns whether it was unpacked.
+    pub fn restore_to(&self, hash: &str, tmp: &Path) -> Result<bool> {
+        let tmp = &exact(tmp);
+        let src = self
+            .find(hash)?
+            .ok_or_else(|| StoreError::NotStored(hash.to_string()))?;
+        let written = if src.gzipped {
+            (|| -> Result<()> {
+                let mut out = OpenOptions::new().write(true).create_new(true).open(tmp)?;
+                let mut check = Sha256::new();
+                pump(&mut GzDecoder::new(File::open(&src.path)?), |b| {
+                    check.update(b);
+                    out.write_all(b)
+                })
+                .map_err(|e| match e.kind() {
+                    io::ErrorKind::InvalidInput
+                    | io::ErrorKind::InvalidData
+                    | io::ErrorKind::UnexpectedEof => StoreError::Corrupt(hash.to_string()),
+                    _ => e.into(),
+                })?;
+                if hex(check.finalize()) != hash {
+                    return Err(StoreError::Corrupt(hash.to_string()));
+                }
+                Ok(())
+            })()
+        } else {
+            copy_new(&src.path, tmp).map_err(Into::into)
+        };
+        if written.is_err() {
+            let _ = fs::remove_file(tmp);
+        }
+        written.map(|()| src.gzipped)
+    }
+
     /// Every stored object file: (hash, path, bytes on disk). Only names that look like objects.
     fn object_files(&self) -> io::Result<Vec<(String, PathBuf, u64)>> {
         let mut out = Vec::new();
@@ -630,6 +668,41 @@ fn write_object(
         write(&mut out)?;
     }
     Ok(())
+}
+
+/// Copy a file to `to`, which must not exist yet. Windows: CopyFile2, which uses block cloning where the volume has
+/// it (ReFS, Dev Drive), so a copy there is a metadata operation.
+#[cfg(windows)]
+pub fn copy_new(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        COPY_FILE_FAIL_IF_EXISTS, COPYFILE2_EXTENDED_PARAMETERS, CopyFile2,
+    };
+    let wide = |p: &Path| -> Vec<u16> { exact(p).as_os_str().encode_wide().chain([0]).collect() };
+    let params = COPYFILE2_EXTENDED_PARAMETERS {
+        dwSize: size_of::<COPYFILE2_EXTENDED_PARAMETERS>() as u32,
+        dwCopyFlags: COPY_FILE_FAIL_IF_EXISTS,
+        pfCancel: std::ptr::null_mut(),
+        pProgressRoutine: None,
+        pvCallbackContext: std::ptr::null_mut(),
+    };
+    // SAFETY: both paths are NUL-terminated and outlive the call; params is a valid, fully set struct.
+    let hr = unsafe { CopyFile2(wide(from).as_ptr(), wide(to).as_ptr(), &params) };
+    if hr < 0 {
+        // An HRESULT made from a Win32 error keeps that error in its low 16 bits.
+        return Err(io::Error::from_raw_os_error(hr & 0xFFFF));
+    }
+    Ok(())
+}
+
+/// Copy a file to `to`, which must not exist yet. std::fs::copy clones where the file system can (copy_file_range on
+/// btrfs and XFS, clonefile on APFS).
+#[cfg(not(windows))]
+pub fn copy_new(from: &Path, to: &Path) -> io::Result<()> {
+    if exists(to)? {
+        return Err(io::ErrorKind::AlreadyExists.into());
+    }
+    fs::copy(from, to).map(|_| ())
 }
 
 /// Run `f` on every item on a pool of pool_size() threads. Results come back in the items' order.

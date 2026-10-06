@@ -191,7 +191,7 @@ pub fn node_code(e: &io::Error) -> String {
     name.map(String::from).unwrap_or_else(|| "EIO".into())
 }
 
-fn mtime_ms(m: &Metadata) -> f64 {
+pub fn mtime_ms(m: &Metadata) -> f64 {
     let t = m.modified().unwrap_or(UNIX_EPOCH);
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_secs() as f64 * 1000.0 + f64::from(d.subsec_nanos()) / 1e6,

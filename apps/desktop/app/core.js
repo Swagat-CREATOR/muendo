@@ -1,7 +1,7 @@
 // Starts mewndo-core (the Rust service in core/), checks it is alive and restarts it if it stops, like the engine
 // process in main.js. It talks to the core over a named pipe on Windows and a Unix socket elsewhere, one JSON
 // message per line (see core/src/protocol.rs). No Electron here, so tests can run it with plain Node.
-// The core does no file work yet; protection runs in the engine whatever its state.
+// Protection runs in the engine whatever its state; the engine can hand it restores (engine/restore.js).
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const net = require('node:net');
@@ -13,7 +13,9 @@ const PROTOCOL_VERSION = 1;
 // binary: the mewndo-core executable. runDir: where the Unix socket goes (the app's data folder).
 // logDir: the app's log folder; the core writes mewndo-core.log there. log: the app's log.
 // onChange(status): called when the state or message changes (not on every check).
-// onEvent(event): a change feed event for a watched folder ({ root, kind, path?, dirs?, message?, at_ms }).
+// onEvent(event): an event the core sends unasked: a change feed event for a watched folder ({ root, kind, path?,
+// dirs?, message?, at_ms }) or a restore's progress ({ root, kind: 'restore_progress', restore, ... }).
+// subscribe(fn) adds another listener and returns a function that removes it.
 function createCore({
   binary, runDir, logDir, log, onChange = () => {}, onEvent = () => {},
   checkEveryMs = 10_000, answerWithinMs = 2_000, readyWithinMs = 10_000, restartAfterMs = 1_000,
@@ -34,6 +36,7 @@ function createCore({
   let checkTimer = null;
   let restartTimer = null;
   const pending = new Map(); // id -> { resolve, reject, timer }
+  const listeners = new Set([onEvent]);
   let status = { state: 'starting', message: null, version: null, pid: null, uptimeMs: null };
 
   function set(patch) {
@@ -62,7 +65,10 @@ function createCore({
   function onLine(line) {
     let msg;
     try { msg = JSON.parse(line); } catch { return log.warn('mewndo-core sent a line that is not JSON', line); }
-    if (msg.id === null && msg.type === 'event' && msg.v === PROTOCOL_VERSION) return onEvent(msg);
+    if (msg.id === null && msg.type === 'event' && msg.v === PROTOCOL_VERSION) {
+      for (const fn of listeners) fn(msg);
+      return;
+    }
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
@@ -176,7 +182,8 @@ function createCore({
     clearTimeout(kill);
   }
 
-  return { start, stop, status: () => status, request, address };
+  const subscribe = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  return { start, stop, status: () => status, request, subscribe, address };
 }
 
 module.exports = { createCore, PROTOCOL_VERSION };

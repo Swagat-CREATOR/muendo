@@ -99,6 +99,7 @@ function createJournal({
   burst: burstOptions, // thresholds for burst alerts (an object read on every check, so settings apply live)
   likelyAgent = () => null, // the AI agent most likely making changes right now, if any (see agents.js)
   maxWaitMs = MAX_WAIT_MS, // under constant change, sync at least this often (shorter in tests)
+  core = null, // a running mewndo-core (app/core.js): restores run there instead of in this engine
 }) {
   const journal = new EventEmitter();
   let realRoot, indexFile, savePointDir, closeWatcher, timer;
@@ -396,6 +397,7 @@ function createJournal({
   journal.isRestoring = () => isRestoreRunning(journal);
 
   journal.store = store;
+  journal.core = core;
   // What a fresh scan of this folder uses (restore verification); always the current settings.
   Object.defineProperty(journal, 'scanOptions', { get: () => ({ ignore, ignorePatterns, maxFileSize, concurrency }) });
 

@@ -1,6 +1,8 @@
 // Restore: make a protected folder, or selected paths in it, match a save point exactly. Or rebuild a save
 // point in a separate empty folder. Every step is logged before it runs and every step is safe to run twice,
 // so an interrupted restore is finished by running its whole log again.
+// With a mewndo-core (journal.core), this plans and logs as always and the core runs the steps and verifies
+// (core/src/restore.rs: the restore ladder, staging, one flush at the end).
 //
 // Order: trash new things -> remove new empty folders -> create folders -> write files and links.
 // Nothing is deleted: anything new or about to be replaced is moved into
@@ -83,9 +85,12 @@ function buildPlan(target, current, paths) {
   return plan;
 }
 
-function stepsFor(plan, target) {
+// A trash step notes what the index said the item was, so the core can rename a moved-aside file back if the same
+// content is wanted elsewhere (a rename undone).
+function stepsFor(plan, target, current) {
+  const known = (p) => (current[p]?.hash ? { hash: current[p].hash, size: current[p].size, mtimeMs: current[p].mtimeMs } : {});
   return [
-    ...plan.trash.map((p) => ({ op: 'trash', path: p })),
+    ...plan.trash.map((p) => ({ op: 'trash', path: p, ...known(p) })),
     ...plan.rmdirs.map((p) => ({ op: 'rmdir', path: p })),
     ...plan.mkdirs.map((p) => ({ op: 'mkdir', path: p })),
     ...plan.write.map((p) => ({ op: 'write', path: p, hash: target[p].hash, size: target[p].size, mtimeMs: target[p].mtimeMs })),
@@ -239,7 +244,39 @@ async function removeOwnTemps(log) {
 const logFile = (journal, id) => path.join(journal.folderDir, 'restores', `${id}.json`);
 const running = new WeakSet(); // journals with a restore in progress
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// The core runs the steps and verifies, then writes the result to the log; its events become the journal's.
+async function runInCore(journal, log, { resuming, retryDelayMs, crashAfterSteps }) {
+  const off = journal.core.subscribe((e) => {
+    if (e.restore !== log.id) return;
+    if (e.kind === 'restore_progress') journal.emit('progress', { phase: e.phase, done: e.done, total: e.total });
+    if (e.kind === 'restore_retry') journal.emit('retry', { path: e.path, op: e.op, attempt: e.attempt, error: e.error });
+  });
+  try {
+    const { result } = await journal.core.request('restore', {
+      log: logFile(journal, log.id),
+      store: journal.store.dir,
+      options: { ignore: journal.scanOptions.ignore, ignore_patterns: journal.scanOptions.ignorePatterns, max_file_size: journal.scanOptions.maxFileSize },
+      resuming,
+      retry_delay_ms: retryDelayMs,
+      crash_after_steps: Number.isFinite(crashAfterSteps) ? crashAfterSteps : undefined,
+    }, { within: DAY_MS }); // a core that stops or hangs fails it sooner; the log stays and the next start resumes
+    return result;
+  } finally { off(); }
+}
+
 async function run(journal, log, { resuming = false, retryDelayMs = 100, crashAfterSteps = Infinity } = {}) {
+  if (journal.core) {
+    if (log.inPlace) await journal.setRestoring(true);
+    try {
+      const result = await runInCore(journal, log, { resuming, retryDelayMs, crashAfterSteps });
+      journal.emit('restored', result);
+      return result;
+    } finally {
+      if (log.inPlace) await journal.setRestoring(false);
+    }
+  }
   const ctx = { store: journal.store, trashRoot: log.trashRoot };
   const counts = { written: 0, linked: 0, trashed: 0, foldersCreated: 0, foldersRemoved: 0 };
   const failures = [];
@@ -344,6 +381,8 @@ async function restore(journal, savePointId, { paths, into, retryDelayMs, crashA
       current = (await journal.getSavePoint(beforeUndoId)).index;
       base = journal.root;
     }
+    // Undoing a restore: the files it moved aside are the ones wanted back (the core renames them back).
+    const trashFrom = into ? [] : (await listRestores(journal)).filter((r) => r.beforeUndoId === savePointId).map((r) => r.trashRoot);
     const id = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     const log = {
@@ -351,7 +390,8 @@ async function restore(journal, savePointId, { paths, into, retryDelayMs, crashA
       base, inPlace: !into, paths: paths ?? null,
       // The name starts with when it was trashed: moved files keep their own modified times.
       trashRoot: path.join(journal.folderDir, 'trash', 'Restored', `${startedAt.replace(/:/g, '-')}_${id}`),
-      steps: stepsFor(buildPlan(sp.index, current, paths), sp.index),
+      steps: stepsFor(buildPlan(sp.index, current, paths), sp.index, current),
+      trashFrom,
     };
     await writeFileAtomic(logFile(journal, id), JSON.stringify(log)); // the whole plan, before any step runs
     return await run(journal, log, { retryDelayMs, crashAfterSteps });

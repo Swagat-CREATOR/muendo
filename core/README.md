@@ -19,15 +19,33 @@ The NTFS change journal (USN) catches up on what changed while Mewndo was closed
 live feed, and the feed says which folders to rescan. Same ignore rules as v0; links and junctions are never
 followed; folders are known by their long real path.
 
+Restore (`src/restore.rs`, spec §28.6): the v0 engine plans a restore and writes its log as always; with a core
+(`createJournal({ core })`) the core runs the steps and verifies. The restore ladder, per file: rename it back out
+of Mewndo's trash when it's the version wanted (a rename undone, or undoing a restore); otherwise copy it from
+the store with the OS (`CopyFile2` on Windows, which block clones on ReFS and Dev Drive), or unpack it when the
+store keeps it gzipped. Every file is staged under a temp name next to where it goes, then all are renamed into
+place; one flush at the end, then the app hears "restored" and verification (a fresh scan with full rehash) runs
+and writes the result to the restore log. Kept from v0: the before-undo save point, trash instead of delete,
+retries for locked files, crash recovery from the log. `apps/desktop/test/restore.test.js` runs every v0 restore
+test on both engines.
+
 What it can't do yet:
 - The app doesn't use any of it. Protection, scanning and restores still run in the v0 Node engine
-  (`apps/desktop/engine`), which stays the reference until this core passes every v0 test.
+  (`apps/desktop/engine`), which stays the reference until this core passes every v0 test (cutover: P1.7).
+- Restore: no hard links from the store (the spec's rung 3; it needs copy-on-first-write watching). A file is
+  renamed back out of the trash when its size and modified time match the version wanted, the rule the scanner
+  uses everywhere; verification then checks its content. Files are staged next to where they go, not in a
+  separate staging folder, so they get that folder's permissions (a file staged elsewhere and renamed in keeps
+  the permissions of where it was made). On Windows the one flush at the end is a flush of each written file, in
+  parallel (flushing a whole drive needs admin rights). The user still waits for verification in the v0 app
+  flow; the "restored" moment is sent as progress.
 - The change journal is read without admin rights, which gives no file names, only which folders changed; a
   reconciliation scan of those folders finds the rest. Drives without a journal (FAT, exFAT, network folders), a
   journal that was reset or has moved past the saved position, and more than 2,000 changed folders all mean
   rescanning everything.
 - The change feed runs on Windows only (Mewndo v1 is a Windows app).
-- Nothing has been measured against v0's speed yet (P1.6 benchmarks).
+- Nothing has been measured against v0's speed yet (P1.6 benchmarks); restore results carry `ladder` and
+  `timings` for that.
 
 On Windows every file path goes through `src/paths.rs` (the `\\?\` form, as Node uses), so names Windows
 would otherwise change, such as `notes.` or `draft ` (trailing dot or space), and paths over 260 characters are

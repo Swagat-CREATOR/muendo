@@ -1,6 +1,6 @@
 // mewndo-core: Mewndo's background service for version 1. The desktop app starts it, talks to it over a Windows
 // named pipe (a Unix socket elsewhere) using the protocol in protocol.rs, checks it is alive and restarts it if it
-// stops. It does no file work yet: protection still runs in the Node engine.
+// stops. Protection still runs in the Node engine; the core does the file work the engine hands it.
 //
 //   mewndo-core --socket <pipe name or socket path> --log-dir <the app's log folder>
 //
@@ -10,6 +10,7 @@ mod feed;
 mod log;
 mod paths;
 mod protocol;
+mod restore;
 mod scanner;
 mod store;
 
@@ -194,11 +195,13 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(
             log.error("a request handler crashed");
             break;
         };
-        if reply.contains(r#""type":"error""#) {
-            log.warn(&format!("refused a request: {reply}"));
-        }
-        if out.send(reply).is_err() {
-            break;
+        if let Some(reply) = reply {
+            if reply.contains(r#""type":"error""#) {
+                log.warn(&format!("refused a request: {reply}"));
+            }
+            if out.send(reply).is_err() {
+                break;
+            }
         }
         if stop_now {
             log.info("shutdown requested by the app");

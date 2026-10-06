@@ -300,7 +300,7 @@ function createStore(dir) {
     return bad;
   }
 
-  return { put, holdPuts, has, extract, copyOut, usage, objects, remove, cleanTemp, hashes, verifySince };
+  return { dir, put, holdPuts, has, extract, copyOut, usage, objects, remove, cleanTemp, hashes, verifySince };
 }
 
 // Delete *.mewndo-tmp files older than maxAgeMs directly inside dir (Mewndo's own folders only).

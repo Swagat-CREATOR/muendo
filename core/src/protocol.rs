@@ -6,10 +6,15 @@
 //   app  -> core  {"v":1,"id":9,"type":"watch","root":"C:\\Projects\\app","options":{"cursor_file":"…"}}
 //   core -> app   {"v":1,"id":9,"type":"watching","root":"C:\\Projects\\app"}
 //   core -> app   {"v":1,"id":null,"type":"event","root":"C:\\Projects\\app","kind":"deleted","path":"src/a.js",…}
-// Events (id null) come on the connection that asked for the watch, until it unwatches or disconnects.
+//   app  -> core  {"v":1,"id":10,"type":"restore","log":"<folder data>\\restores\\<id>.json","store":"<data>/store"}
+//   core -> app   {"v":1,"id":null,"type":"event","root":"C:\\Projects\\app","kind":"restore_progress","restore":"<id>",…}
+//   core -> app   {"v":1,"id":10,"type":"restored","result":{"verified":true,…}}
+// Events (id null) come on the connection that asked for the watch or restore, until it unwatches or disconnects.
+// A restore runs on its own thread, so other requests are answered meanwhile: its reply can come after theirs.
 // Every message carries the protocol version `v`; a request with another version gets an `unsupported_version`
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
 use crate::feed::{self, FeedEvent, WatchOptions};
+use crate::restore;
 use crate::paths::{display, real};
 use crate::scanner::{self, Manifest, ScanOptions};
 use crate::store::{self, Store, StoreError};
@@ -67,6 +72,20 @@ pub enum Request {
     FeedPosition { root: PathBuf },
     /// Everything before `usn` is safely recorded; the next start catches up from there. Replies `ok`.
     FeedCheckpoint { root: PathBuf, usn: i64 },
+    /// Run (or with `resuming`, finish) the restore whose log the app wrote (restore.rs). `options`: the folder's
+    /// scan settings, for verification. Sends `restore_progress` and `restore_retry` events; replies `restored`
+    /// once the folder is verified and the result is in the log.
+    Restore {
+        log: PathBuf,
+        store: PathBuf,
+        #[serde(default)]
+        options: ScanOptions,
+        #[serde(default)]
+        resuming: bool,
+        retry_delay_ms: Option<u64>,
+        /// Tests only.
+        crash_after_steps: Option<usize>,
+    },
     /// Any type this version doesn't know. Only for reading requests; never sent.
     #[serde(other)]
     Unknown,
@@ -99,6 +118,10 @@ pub enum Response {
     },
     Position {
         usn: Option<i64>,
+    },
+    /// v0's restore result (see restore::run).
+    Restored {
+        result: serde_json::Value,
     },
     /// A change feed event, sent unasked (id null).
     Event {
@@ -276,9 +299,56 @@ fn failed(e: StoreError) -> Response {
     }
 }
 
-/// Answer one request line. Returns the reply line and whether the core should now stop.
-/// May take a while (store work): run it off the async threads.
-pub fn respond(line: &str, info: &Info, session: &Session) -> (String, bool) {
+/// Answer one request line. Returns the reply line (None: it comes later, on the session) and whether the core
+/// should now stop. May take a while (store work): run it off the async threads.
+pub fn respond(line: &str, info: &Info, session: &Session) -> (Option<String>, bool) {
+    if let Ok((
+        id,
+        Request::Restore {
+            log,
+            store,
+            options,
+            resuming,
+            retry_delay_ms,
+            crash_after_steps,
+        },
+    )) = decode(line)
+    {
+        let (store, out) = (info.store(&store), session.out.clone());
+        let send = move |line: String| {
+            if let Some(out) = &out {
+                let _ = out.send(line);
+            }
+        };
+        std::thread::spawn(move || {
+            let opts = restore::Options {
+                scan: options,
+                resuming,
+                retry_delay_ms: retry_delay_ms.unwrap_or(100),
+                crash_after_steps,
+            };
+            let emit = |mut event: serde_json::Value| {
+                event["v"] = PROTOCOL_VERSION.into();
+                event["id"] = serde_json::Value::Null;
+                event["type"] = "event".into();
+                send(event.to_string());
+            };
+            let reply = match restore::run(&log, &store, &opts, &emit) {
+                Ok(result) => Response::Restored { result },
+                Err(e) => Response::Error {
+                    code: ErrorCode::Failed,
+                    message: e.to_string(),
+                },
+            };
+            send(encode(Some(id), reply));
+        });
+        return (None, false);
+    }
+    let (reply, stop) = respond_now(line, info, session);
+    (Some(reply), stop)
+}
+
+fn respond_now(line: &str, info: &Info, session: &Session) -> (String, bool) {
     match decode(line) {
         Err(e) => (
             encode(
@@ -421,6 +491,7 @@ pub fn respond(line: &str, info: &Info, session: &Session) -> (String, bool) {
             let reply = with_watch(session, &root, |w| w.checkpoint(usn).map(|()| Response::Ok));
             (encode(Some(id), reply), false)
         }
+        Ok((_, Request::Restore { .. })) => unreachable!("respond runs restores"),
         Ok((_, Request::Unknown)) => unreachable!("decode turns unknown types into errors"),
     }
 }
@@ -449,6 +520,7 @@ mod tests {
 
     fn reply(line: &str) -> (serde_json::Value, bool) {
         let (out, stop) = respond(line, &Info::new(), &Session::detached());
+        let out = out.expect("answered at once");
         assert!(!out.contains('\n'), "a reply is exactly one line");
         (serde_json::from_str(&out).unwrap(), stop)
     }
