@@ -1,0 +1,21 @@
+name = "mewndo-gmail"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Per-user state (tokens + label/trash journal) in a Durable Object (free plan SQLite DO).
+[[durable_objects.bindings]]
+name = "GMAIL_USER"
+class_name = "GmailUser"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GmailUser"]
+
+# Daily watch renewal (Gmail watches expire in 7 days).
+[triggers]
+crons = ["17 4 * * *"]
+
+# Secrets (NOT stored here): wrangler secret put GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+[vars]
+GOOGLE_PUBSUB_TOPIC = "projects/mewndo/topics/mewndo-gmail"

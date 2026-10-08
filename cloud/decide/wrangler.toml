@@ -1,0 +1,25 @@
+name = "mewndo-decide"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Workers AI binding. Model id is overridable (DECIDE_MODEL) so we can switch to
+# Clef, Jev or a self-hosted Clef-flash without touching code (spec §29.2/§4.1).
+[ai]
+binding = "AI"
+
+[vars]
+DECIDE_MODEL = "@cf/cloudflare/clef-flash"
+# Flat neuron estimate per model call; re-measure on your account (see decide.js).
+DECIDE_NEURONS_PER_CALL = "60"
+
+# One global Durable Object holds the daily neuron tally (free plan: SQLite DO).
+[[durable_objects.bindings]]
+name = "NEURON_METER"
+class_name = "NeuronMeter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NeuronMeter"]
+
+# Secret (NOT stored here): wrangler secret put MEWNDO_DECIDE_TOKEN

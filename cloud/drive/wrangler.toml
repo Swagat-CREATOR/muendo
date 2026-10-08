@@ -1,0 +1,26 @@
+name = "mewndo-drive"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "DRIVE_USER"
+class_name = "DriveUser"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DriveUser"]
+
+# Copies of files in watched folders. Free tier is 10 GB; src/heal.js refuses to
+# go over it and warns from 8 GB (CLAUDE.md rule 6: no paid service unasked).
+[[r2_buckets]]
+binding = "COPIES"
+bucket_name = "mewndo-drive-copies"
+
+# Renew the changes watch daily, before it expires.
+[triggers]
+crons = ["23 4 * * *"]
+
+# Secrets (NOT here): wrangler secret put GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+[vars]
+WORKER_ORIGIN = "https://mewndo-drive.example.workers.dev"

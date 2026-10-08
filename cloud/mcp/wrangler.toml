@@ -1,0 +1,18 @@
+name = "mewndo-mcp"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Per-user state and the hold queue (free plan SQLite DO).
+[[durable_objects.bindings]]
+name = "MEWNDO_USER"
+class_name = "MewndoUser"
+
+# OAuth clients, codes and token hashes.
+[[durable_objects.bindings]]
+name = "OAUTH"
+class_name = "OAuthStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MewndoUser", "OAuthStore"]

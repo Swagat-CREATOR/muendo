@@ -28,13 +28,15 @@ function sameToken(given, token) {
 // onSavePoint({ agent, event, cwd, command, sessionId }) -> result, sent back as JSON.
 // onGuard(hookInput) -> the hook's answer (Guard, guard.js): POST /guard with an agent's hook input as the body.
 // port 0 picks a free port (tests); hook.json always records the port actually used.
-async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePoint, onGuard = null }) {
+// onMcp(tool, args, { agent, cwd }) -> the tool's answer: POST /mcp/<tool> with { args, cwd } (mewndo-core mcp).
+async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePoint, onGuard = null, onMcp = null }) {
   const file = path.join(dataDir, 'hook.json');
   const token = await loadToken(file);
   let port = wantedPort;
   const reply = (res, status, body) => {
-    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    res.end(JSON.stringify(body));
+    const text = JSON.stringify(body);
+    res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(text) });
+    res.end(text);
   };
   const server = http.createServer((req, res) => {
     // A web page can't read the token, but it could still try requests through a hostname that points at this
@@ -42,7 +44,8 @@ async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePo
     if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)) return reply(res, 403, { error: 'wrong host' });
     const url = new URL(req.url, 'http://localhost');
     const guard = url.pathname === '/guard' && onGuard;
-    if (req.method !== 'POST' || (req.url !== '/savepoint' && !guard)) return reply(res, 404, { error: 'not found' });
+    const mcpTool = onMcp && /^\/mcp\/[a-z_]{1,40}$/.test(url.pathname) ? url.pathname.slice(5) : null;
+    if (req.method !== 'POST' || (req.url !== '/savepoint' && !guard && !mcpTool)) return reply(res, 404, { error: 'not found' });
     const agent = ['claude', 'codex', 'cursor'].includes(url.searchParams.get('agent')) ? url.searchParams.get('agent') : 'claude';
     if (!sameToken(req.headers['x-mewndo-token'], token)) return reply(res, 401, { error: 'wrong token' });
     let body = '';
@@ -57,6 +60,16 @@ async function startHookServer({ dataDir, port: wantedPort = HOOK_PORT, onSavePo
       let input;
       try { input = JSON.parse(body || '{}'); } catch { return reply(res, 400, { error: 'not JSON' }); }
       const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+      if (mcpTool) {
+        try {
+          const args = input?.args && typeof input.args === 'object' ? input.args : {};
+          const answer = await onMcp(mcpTool, args, { agent, cwd: text(input?.cwd, 4096) });
+          if (!res.destroyed) reply(res, 200, answer);
+        } catch (e) {
+          if (!res.destroyed) reply(res, 400, { error: e.message });
+        }
+        return;
+      }
       if (guard) {
         try {
           const answer = await onGuard(input && typeof input === 'object' ? input : {}, { agent });

@@ -16,7 +16,9 @@
 // Restores and other slow requests (is_slow) run alongside the rest, so their replies can come after later ones'.
 // Every message carries the protocol version `v`; a request with another version gets an `unsupported_version`
 // error and nothing else happens. Replies echo the request's `id` (null when the line couldn't be read at all).
+use crate::decide;
 use crate::feed::{self, FeedEvent, WatchOptions};
+use crate::ledger::{self, Ledger};
 use crate::paths::{display, real};
 use crate::policy;
 use crate::process::{self, Action};
@@ -109,6 +111,22 @@ pub enum Request {
         brief: Option<policy::Brief>,
         action: policy::Action,
     },
+    /// Decision service (decide.rs, spec §29.4): for cases the rules can't decide. Batches an action's questions
+    /// into one request with a deadline, a hedge and the caller's rule fallback. Replies `decided`.
+    Decide {
+        #[serde(flatten)]
+        request: decide::DecideRequest,
+    },
+    /// Flight Recorder (ledger.rs, spec §30.2): record one event in the device's hash-chained, signed ledger
+    /// under `data_dir`. Replies `ledger_record`.
+    LedgerAppend {
+        data_dir: PathBuf,
+        event: ledger::Event,
+    },
+    /// Check the whole ledger chain under `data_dir`. Replies `ledger_status`.
+    LedgerVerify {
+        data_dir: PathBuf,
+    },
     /// Brake (process.rs): freeze, resume or end the process tree of `pid`. Replies `processes`.
     ProcessFreeze {
         pid: u32,
@@ -157,6 +175,23 @@ pub enum Response {
     Verdict {
         #[serde(flatten)]
         verdict: policy::Verdict,
+    },
+    /// The decision for a `decide` request (model answers or a rule fallback), with its bookkeeping.
+    Decided {
+        #[serde(flatten)]
+        decided: decide::Decided,
+    },
+    /// One appended ledger record (spec §30.2).
+    LedgerRecord {
+        #[serde(flatten)]
+        record: ledger::Record,
+    },
+    /// Whether the ledger chain is intact, and how many records it holds.
+    LedgerStatus {
+        intact: bool,
+        count: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
     },
     /// The processes acted on, root first, and the ones left alone (system processes, Mewndo itself).
     Processes {
@@ -278,6 +313,11 @@ pub struct Info {
     policies: policy::Sessions,
     /// Content stores opened so far. Each is cleaned of stale temp files the first time it's used.
     stores: Mutex<HashMap<PathBuf, Arc<Store>>>,
+    /// Flight Recorder ledgers opened so far, one per data folder.
+    ledgers: Mutex<HashMap<PathBuf, Arc<Ledger>>>,
+    /// Decision-service transport, built from the environment, or None when it isn't configured (then every
+    /// decision uses the caller's rule fallback).
+    decider: Option<Arc<dyn decide::Responder>>,
 }
 
 impl Info {
@@ -286,6 +326,8 @@ impl Info {
             started: Instant::now(),
             policies: policy::Sessions::default(),
             stores: Mutex::new(HashMap::new()),
+            ledgers: Mutex::new(HashMap::new()),
+            decider: decide::configured(),
         }
     }
 
@@ -299,6 +341,17 @@ impl Info {
                 store
             })
             .clone()
+    }
+
+    /// Open (once) and cache the Flight Recorder ledger under `dir`.
+    fn ledger(&self, dir: &Path) -> std::io::Result<Arc<Ledger>> {
+        let mut ledgers = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(l) = ledgers.get(dir) {
+            return Ok(l.clone());
+        }
+        let l = Arc::new(Ledger::open(dir)?);
+        ledgers.insert(dir.to_path_buf(), l.clone());
+        Ok(l)
     }
 }
 
@@ -361,6 +414,7 @@ pub fn is_slow(line: &str) -> bool {
                 | Request::ProcessFreeze { .. }
                 | Request::ProcessResume { .. }
                 | Request::ProcessEnd { .. }
+                | Request::Decide { .. }
         ))
     )
 }
@@ -568,6 +622,37 @@ fn respond_now(line: &str, info: &Info, session: &Session) -> (String, bool) {
             let verdict = info.policies.check(&session, brief, &action);
             (encode(Some(id), Response::Verdict { verdict }), false)
         }
+        Ok((id, Request::Decide { request })) => {
+            let decided = match &info.decider {
+                Some(responder) => decide::decide(responder, &request),
+                None => decide::immediate_fallback(&request),
+            };
+            (encode(Some(id), Response::Decided { decided }), false)
+        }
+        Ok((id, Request::LedgerAppend { data_dir, event })) => {
+            let reply = match info.ledger(&data_dir).and_then(|l| l.append(event)) {
+                Ok(record) => Response::LedgerRecord { record },
+                Err(e) => io_failed(&e),
+            };
+            (encode(Some(id), reply), false)
+        }
+        Ok((id, Request::LedgerVerify { data_dir })) => {
+            let reply = match info.ledger(&data_dir) {
+                Ok(l) => {
+                    let (intact, problem) = match l.verify() {
+                        Ok(()) => (true, None),
+                        Err(t) => (false, Some(t.to_string())),
+                    };
+                    Response::LedgerStatus {
+                        intact,
+                        count: l.len(),
+                        problem,
+                    }
+                }
+                Err(e) => io_failed(&e),
+            };
+            (encode(Some(id), reply), false)
+        }
         Ok((id, Request::ProcessFreeze { pid })) => {
             (encode(Some(id), control(pid, Action::Freeze)), false)
         }
@@ -691,6 +776,52 @@ mod tests {
     fn extra_fields_are_ignored_so_newer_apps_can_add_optional_ones() {
         let (r, _) = reply(r#"{"v":1,"id":5,"type":"status","hint":"x"}"#);
         assert_eq!(r["type"], "status");
+    }
+
+    #[test]
+    fn decide_without_a_configured_service_falls_back_to_the_rules() {
+        // No MEWNDO_DECIDE_URL in the test environment, so Info has no decider and
+        // the decision is an immediate rule fallback. Also checks that the flattened
+        // DecideRequest decodes inside the internally-tagged request enum.
+        let line = r#"{"v":1,"id":9,"type":"decide","caller":"send","state":{"brief":"x"},"questions":[{"id":"a","type":"noul","text":"ok?"}],"fallback":"ask"}"#;
+        let (r, stop) = reply(line);
+        assert_eq!(r["type"], "decided");
+        assert_eq!(r["id"], 9);
+        assert_eq!(r["source"], "rules");
+        assert_eq!(r["fallback_used"], true);
+        assert_eq!(r["deadline_met"], false);
+        assert_eq!(r["fallback"], "ask");
+        assert!(!stop);
+    }
+
+    #[test]
+    fn ledger_append_then_verify_over_the_protocol() {
+        // Same Info for both requests, so the cached ledger (and its device key) is shared.
+        let info = Info::new();
+        let session = Session::detached();
+        let dir = std::env::temp_dir().join(format!(
+            "mewndo-proto-ledger-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir_json = serde_json::to_string(&dir).unwrap(); // escapes backslashes on Windows
+        let append = format!(
+            r#"{{"v":1,"id":1,"type":"ledger_append","data_dir":{dir_json},"event":{{"time_ms":1,"kind":"guard","agent":"claude","vendor":"anthropic","principal":"me","brief_hash":"x","action":{{"t":1}},"target":"a.txt","decision":"deny"}}}}"#
+        );
+        let (out, _) = respond(&append, &info, &session);
+        let r: serde_json::Value = serde_json::from_str(&out.unwrap()).unwrap();
+        assert_eq!(r["type"], "ledger_record");
+        assert_eq!(r["seq"], 0);
+        assert_eq!(r["event"]["target"], "a.txt");
+
+        let verify = format!(r#"{{"v":1,"id":2,"type":"ledger_verify","data_dir":{dir_json}}}"#);
+        let (out, _) = respond(&verify, &info, &session);
+        let r: serde_json::Value = serde_json::from_str(&out.unwrap()).unwrap();
+        assert_eq!(r["type"], "ledger_status");
+        assert_eq!(r["intact"], true);
+        assert_eq!(r["count"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

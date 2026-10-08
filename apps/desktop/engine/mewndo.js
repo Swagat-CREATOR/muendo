@@ -782,6 +782,99 @@ function createMewndo({
   };
   mewndo.cancelHold = (id) => !!dropHold(id);
 
+  // --- Local MCP tools (spec §22.3) -----------------------------------------------------------------------------
+  // What `mewndo-core mcp` asks for an agent. cwd: the agent's working folder, which picks the protected folder.
+  // Undo is never offered here. Deletes are only ever requested: they wait as holds for the user, and approved ones
+  // go to Mewndo's trash. Progress notes are kept as "Agent says" for the next Continue card.
+  const progressNotes = new Map(); // folder -> [{ agent, note, at }] (ponytail: in memory, the newest 20)
+  mewndo.mcp = async (tool, args, { agent = 'claude', cwd = '' } = {}) => {
+    const name = AGENT_NAMES[agent] ?? agent;
+    const real = await fsp.realpath(cwd || '.').catch(() => path.resolve(cwd || '.'));
+    const root = [...journals.keys()].find((r) => samePath(r, real) || isInside(real, r)) ?? null;
+    const need = () => {
+      if (!root) throw new Error(`${real} is not in a folder Mewndo protects. Ask the user to protect it in Mewndo.`);
+      return journals.get(root);
+    };
+    const str = (v, max = 500) => (typeof v === 'string' ? v.slice(0, max) : '');
+    switch (tool) {
+      case 'mewndo_status': {
+        if (!root) return { protected: false, folder: real };
+        const newest = (await journals.get(root).listSavePoints()).at(-1) ?? null;
+        return {
+          protected: true, folder: root, paused: !!pausedUntil,
+          newestSavePoint: newest && { id: newest.id, label: newest.label, createdAt: newest.createdAt },
+          pendingHolds: holdList().filter((h) => h.folder === root).map(({ id, what, agent: by, expiresAt }) => ({ id, what, agent: by, expiresAt })),
+        };
+      }
+      case 'create_save_point': {
+        const sp = await need().createSavePoint({ trigger: 'hook', agent: name, label: str(args.label, 200) || `${name} asked for a save point`, quick: true });
+        return { savePoint: { id: sp.id, label: sp.label, createdAt: sp.createdAt } };
+      }
+      case 'list_changes': {
+        const j = need();
+        const id = str(args.since, 100) || (await j.listSavePoints()).at(-1)?.id;
+        if (!id) return { since: null, note: 'No save point yet.' };
+        const d = await j.diffSince(id);
+        const cap = (list) => list.slice(0, 500);
+        return { since: id, deleted: cap(d.deleted), edited: cap(d.edited), moved: cap(d.moved), created: cap(d.created) };
+      }
+      case 'request_delete': {
+        need();
+        const paths = (Array.isArray(args.paths) ? args.paths : []).filter((p) => typeof p === 'string' && p).slice(0, 1000);
+        if (!paths.length) throw new Error('Name the files to delete.');
+        const full = paths.map((p) => path.resolve(root, p));
+        const outside = full.find((f) => !isInside(f, root));
+        if (outside) throw new Error(`${outside} is outside the protected folder.`);
+        const reason = str(args.reason, 300);
+        const what = `Delete ${paths.length === 1 ? path.basename(full[0]) : `${paths.length} files`}`;
+        const id = mewndo.hold({
+          agent: name, folder: root, what, ms: 5 * 60_000,
+          run: () => trashFiles(root, full, `${name}: ${reason}`),
+        });
+        return { status: 'pending_approval', hold: id, what, reason, note: 'The user approves or cancels this on the Mewndo bar. Approved files go to Mewndo\'s trash. Do not delete them yourself.' };
+      }
+      case 'get_project_card': {
+        const project = str(args.project, 4096);
+        const at = project ? await fsp.realpath(project).catch(() => path.resolve(project)) : real;
+        const folder = [...journals.keys()].find((r) => samePath(r, at) || isInside(at, r));
+        if (!folder) throw new Error('That folder is not protected by Mewndo.');
+        const { card } = await continueCard(name, { folder, at: now(), reason: 'the agent asked for it' }, (progressNotes.get(folder) ?? []).map((n) => n.note));
+        return { folder, card };
+      }
+      case 'append_progress': {
+        need();
+        const note = str(args.note, 300).trim();
+        if (!note) throw new Error('Write the note first.');
+        const list = [...(progressNotes.get(root) ?? []), { agent: name, note, at: now() }].slice(-20);
+        progressNotes.set(root, list);
+        return { stored: true, as: 'Agent says (not yet verified by the journal)' };
+      }
+      default: throw new Error(`unknown tool: ${tool}`);
+    }
+  };
+
+  // Approved deletes: a save point first, then each file moves to Mewndo's trash for this folder (never deleted).
+  async function trashFiles(root, files, label) {
+    const j = journals.get(root);
+    if (!j) throw new Error('That folder is no longer protected.');
+    await j.createSavePoint({ trigger: 'hook', label: `Before deleting: ${label}`.slice(0, 200), quick: true });
+    const bin = path.join(j.folderDir, 'trash', 'Deleted', new Date(now()).toISOString().replace(/[:.]/g, '-'));
+    const moved = [];
+    for (const f of files) {
+      const st = await fsp.lstat(f).catch(() => null);
+      if (!st || st.isDirectory()) continue; // ponytail: files and links only; folders stay
+      const to = path.join(bin, path.relative(root, f));
+      await fsp.mkdir(path.dirname(to), { recursive: true });
+      await fsp.rename(f, to).catch(async (e) => {
+        if (e.code !== 'EXDEV') throw e;
+        await fsp.copyFile(f, to);
+        await fsp.rm(f);
+      });
+      moved.push(path.relative(root, f));
+    }
+    return { trashed: moved, trashFolder: bin };
+  }
+
   // --- Brake and Heal (spec §24.3, §24.4) ----------------------------------------------------------------------
   // Brake: hooked agents get stopped at their next hook (Claude Code: continue false; Codex and Cursor: every action
   // refused) until the user resumes them. Any other agent's processes are frozen (mewndo-core's process control).
@@ -1031,7 +1124,7 @@ function createMewndo({
     }
     if (hookServer) {
       try {
-        hookServerHandle = await startHookServer({ dataDir, port: hookServer.port, onSavePoint: hookSavePoint, onGuard: mewndo.guard });
+        hookServerHandle = await startHookServer({ dataDir, port: hookServer.port, onSavePoint: hookSavePoint, onGuard: mewndo.guard, onMcp: mewndo.mcp });
         hookServerProblem = null;
       } catch (e) {
         hookServerProblem = e.code === 'EADDRINUSE'

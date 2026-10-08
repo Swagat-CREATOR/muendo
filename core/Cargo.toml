@@ -7,13 +7,19 @@ publish = false
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] } # exact: v0 index mtimes must read back identically
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "io-std"] }
 sha2 = "0.10"
 flate2 = "1" # pure Rust (miniz_oxide); writes standard gzip, as Node's zlib does
+rmcp = { version = "3.5", features = ["server", "transport-io", "macros"] }
+schemars = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # O_NOFOLLOW, ELOOP
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading", "Win32_Security", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop", "Win32_UI_Shell"] }
 windows-link = "0.2" # ntdll's NtSuspendProcess, which windows-sys leaves out (undocumented)
+# Decision-service HTTPS (decide.rs). native-tls uses the OS stack (SChannel) so
+# there is no ring/OpenSSL C build; keeps the near-full Windows dev box building.
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"

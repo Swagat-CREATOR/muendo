@@ -6,8 +6,11 @@
 //
 // It prints "ready" once it is listening, and stops when asked to, or when its stdin closes (the app is gone),
 // so it never outlives the app.
+mod decide;
 mod feed;
+mod ledger;
 mod log;
+mod mcp;
 mod paths;
 mod policy;
 mod process;
@@ -48,7 +51,62 @@ fn parse_args() -> Result<Args, String> {
     }
 }
 
+// Mewndo's data folder, as the hook script finds it: MEWNDO_DATA_DIR, MEWNDO_USER_DATA/data, or the app's own.
+fn default_data_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("MEWNDO_DATA_DIR") {
+        return PathBuf::from(d);
+    }
+    if let Some(d) = std::env::var_os("MEWNDO_USER_DATA") {
+        return PathBuf::from(d).join("data");
+    }
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+    } else if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support")
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"))
+    };
+    base.join("mewndo").join("data")
+}
+
+// `mewndo-core mcp [--agent claude|codex|cursor] [--data <folder>]`: the local MCP server on stdio (mcp.rs).
+fn run_mcp() -> ExitCode {
+    let (mut agent, mut data) = ("claude".to_string(), default_data_dir());
+    let mut args = std::env::args().skip(2);
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next()) {
+            ("--agent", Some(a)) => agent = a,
+            ("--data", Some(d)) => data = PathBuf::from(d),
+            _ => {
+                eprintln!("usage: mewndo-core mcp [--agent claude|codex|cursor] [--data <folder>]");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    match runtime.block_on(mcp::serve(data, agent)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("mewndo-core mcp: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        return run_mcp();
+    }
     let args = match parse_args() {
         Ok(args) => args,
         Err(e) => {
