@@ -38,3 +38,13 @@ isn't running, or hangs` (5 Oct 2026, full Windows run after the process control
 
 If it fails again, keep the budget: it's the promise that a hook never slows the agent. Measure where the time
 goes (Node start, the HTTP call, the save point) instead.
+
+## Rust test: the policy rules' 5 ms budget can be missed on a cold first run
+
+Found 8 Oct 2026. `check` in `policy.rs`'s tests asserts that a verdict takes under 5 ms. On WSL, the first run of a
+freshly built test binary failed it in 3 of 75 tests (about 11 ms each), and in 4 of 8 when only the policy tests
+ran; the next runs all passed. The rules are pure CPU work with no file or network access, so the time is the
+thread waiting to be scheduled, not the rules.
+
+If it fails again, keep the budget: it's the promise in spec §24 that the guard never slows the agent. Measure the
+check alone (outside the parallel test runner) before changing anything.

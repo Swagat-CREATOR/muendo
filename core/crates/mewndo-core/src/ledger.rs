@@ -70,7 +70,10 @@ impl std::fmt::Display for Tamper {
         match self {
             Tamper::Altered { seq } => write!(f, "record {seq} was altered"),
             Tamper::BadSignature { seq } => write!(f, "record {seq} has a bad signature"),
-            Tamper::Broken { seq } => write!(f, "the chain is broken at record {seq} (an event was dropped or reordered)"),
+            Tamper::Broken { seq } => write!(
+                f,
+                "the chain is broken at record {seq} (an event was dropped or reordered)"
+            ),
         }
     }
 }
@@ -140,7 +143,7 @@ impl Ledger {
             Ok(text) => text
                 .lines()
                 .filter(|l| !l.trim().is_empty())
-                .map(|l| serde_json::from_str::<Record>(l))
+                .map(serde_json::from_str::<Record>)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -191,10 +194,6 @@ impl Ledger {
     pub fn len(&self) -> usize {
         self.records.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 /// Verify a sequence of records against `key`. Pulled out so tests (and a future
@@ -220,6 +219,7 @@ pub fn verify_chain(records: &[Record], key: &[u8]) -> Result<(), Tamper> {
 }
 
 /// Hash some bytes to the hex form the ledger uses for brief_hash/before/after.
+#[cfg(test)]
 pub fn hash_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
@@ -256,7 +256,9 @@ mod win_cred {
     use windows_sys::Win32::Security::Credentials::{
         CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredFree, CredReadW, CredWriteW,
     };
-    use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+    };
 
     const TARGET: &[u16] = &{
         // "Mewndo/ledger-device-key\0" as UTF-16.
@@ -316,7 +318,10 @@ mod win_cred {
         cred.CredentialBlob = key.as_ptr() as *mut u8;
         cred.CredentialBlobSize = key.len() as u32;
         cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
-        cred.LastWritten = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        cred.LastWritten = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
         let ok = unsafe { CredWriteW(&cred, 0) };
         if ok == 0 {
             return Err(Error::last_os_error());
@@ -383,10 +388,16 @@ mod tests {
         // Read the records back and alter one event's target, leaving its hash and sig.
         let mut records = l.records.lock().unwrap().clone();
         records[1].event.target = "hacked.txt".into();
-        assert_eq!(verify_chain(&records, &l.key), Err(Tamper::Altered { seq: 1 }));
+        assert_eq!(
+            verify_chain(&records, &l.key),
+            Err(Tamper::Altered { seq: 1 })
+        );
         // Even if the attacker recomputes the hash, they can't forge the signature.
         records[1].hash = link_hash(records[1].seq, &records[1].prev, &records[1].event);
-        assert_eq!(verify_chain(&records, &l.key), Err(Tamper::BadSignature { seq: 1 }));
+        assert_eq!(
+            verify_chain(&records, &l.key),
+            Err(Tamper::BadSignature { seq: 1 })
+        );
         // Even with the device key to re-sign it, the next record's prev link no longer matches.
         records[1].sig = hex(&hmac_sha256(&l.key, records[1].hash.as_bytes()));
         assert_eq!(
@@ -405,7 +416,10 @@ mod tests {
         let mut records = l.records.lock().unwrap().clone();
         records.remove(1); // drop the middle event
         // seq now goes 0, 2 -> the gap is caught.
-        assert_eq!(verify_chain(&records, &l.key), Err(Tamper::Broken { seq: 2 }));
+        assert_eq!(
+            verify_chain(&records, &l.key),
+            Err(Tamper::Broken { seq: 2 })
+        );
     }
 
     #[test]
@@ -414,7 +428,10 @@ mod tests {
         l.append(event("guard", "a.txt")).unwrap();
         let mut records = l.records.lock().unwrap().clone();
         records[0].sig = hex(&hmac_sha256(b"attacker-key", records[0].hash.as_bytes()));
-        assert_eq!(verify_chain(&records, &l.key), Err(Tamper::BadSignature { seq: 0 }));
+        assert_eq!(
+            verify_chain(&records, &l.key),
+            Err(Tamper::BadSignature { seq: 0 })
+        );
     }
 
     #[test]
@@ -442,7 +459,10 @@ mod tests {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos();
-                p.push(format!("mewndo-ledger-test-{n}-{:?}", std::thread::current().id()));
+                p.push(format!(
+                    "mewndo-ledger-test-{n}-{:?}",
+                    std::thread::current().id()
+                ));
                 std::fs::create_dir_all(&p).unwrap();
                 TempDir(p)
             }

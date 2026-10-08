@@ -184,7 +184,7 @@ pub enum Response {
     /// One appended ledger record (spec §30.2).
     LedgerRecord {
         #[serde(flatten)]
-        record: ledger::Record,
+        record: Box<ledger::Record>,
     },
     /// Whether the ledger chain is intact, and how many records it holds.
     LedgerStatus {
@@ -631,7 +631,9 @@ fn respond_now(line: &str, info: &Info, session: &Session) -> (String, bool) {
         }
         Ok((id, Request::LedgerAppend { data_dir, event })) => {
             let reply = match info.ledger(&data_dir).and_then(|l| l.append(event)) {
-                Ok(record) => Response::LedgerRecord { record },
+                Ok(record) => Response::LedgerRecord {
+                    record: Box::new(record),
+                },
                 Err(e) => io_failed(&e),
             };
             (encode(Some(id), reply), false)

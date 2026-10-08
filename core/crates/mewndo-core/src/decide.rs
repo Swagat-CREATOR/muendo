@@ -240,7 +240,7 @@ mod tests {
         n: AtomicUsize,
     }
     impl Fake {
-        fn new(calls: Vec<(Duration, Result<String, String>)>) -> Arc<dyn Responder> {
+        fn script(calls: Vec<(Duration, Result<String, String>)>) -> Arc<dyn Responder> {
             Arc::new(Fake {
                 calls: Mutex::new(calls),
                 n: AtomicUsize::new(0),
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn model_answer_within_deadline_is_used() {
-        let r = Fake::new(vec![(
+        let r = Fake::script(vec![(
             Duration::from_millis(10),
             Ok(r#"{"answers":[{"id":"a","prob":0.9}]}"#.into()),
         )]);
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn hedge_second_request_wins_when_the_first_is_slow() {
         // First request stalls past the deadline; the hedge (fired at 25 ms) is quick.
-        let r = Fake::new(vec![
+        let r = Fake::script(vec![
             (Duration::from_millis(500), Ok("{}".into())),
             (Duration::from_millis(5), Ok(r#"{"answers":[]}"#.into())),
         ]);
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn deadline_passing_falls_back_to_the_rules() {
-        let r = Fake::new(vec![
+        let r = Fake::script(vec![
             (Duration::from_millis(500), Ok("{}".into())),
             (Duration::from_millis(500), Ok("{}".into())),
         ]);
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn an_erroring_request_falls_back() {
         // No hedge for Heal; the one request errors, so we fall back at the deadline.
-        let r = Fake::new(vec![(Duration::from_millis(5), Err("boom".into()))]);
+        let r = Fake::script(vec![(Duration::from_millis(5), Err("boom".into()))]);
         let d = decide(&r, &req(Caller::Heal));
         assert_eq!(d.source, Source::Rules);
         assert!(d.fallback_used);
