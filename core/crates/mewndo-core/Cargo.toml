@@ -1,0 +1,47 @@
+# The always-on service (spec §38.1). Versions come from the workspace; see core/Cargo.toml.
+[package]
+name = "mewndo-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mewndo-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# rt-multi-thread and time: the v2 pipe server's accept loop and the desk writer's 10 ms batches (§33.10 Part A).
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time", "io-std"] }
+sha2.workspace = true
+flate2.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+ulid.workspace = true
+
+# Real SQLite needs a C compiler (docs/decisions.md, "desk.db"), which the windows-gnu dev box has not got. Both
+# targets that have one get the real desk database; windows-gnu builds the writer task with a sink that keeps no
+# database, so the pipe and the rest of the core still build and run there.
+[target.'cfg(unix)'.dependencies]
+rusqlite.workspace = true
+libc.workspace = true
+
+[target.'cfg(all(windows, target_env = "msvc"))'.dependencies]
+rusqlite.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
+    "Win32_Security_Cryptography",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_RemoteDesktop",
+    "Win32_UI_Shell",
+] }
+windows-link.workspace = true
+ureq.workspace = true
+native-tls.workspace = true

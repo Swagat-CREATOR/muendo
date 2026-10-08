@@ -6,7 +6,8 @@
   ],
   "scripts": {
     "start": "cargo build --manifest-path core/Cargo.toml && npm start -w apps/desktop",
-    "test": "cargo test --manifest-path core/Cargo.toml && npm test -w apps/desktop",
+    "test": "cargo test --manifest-path core/Cargo.toml && npm test -w apps/desktop && npm run test:cloud",
+    "test:cloud": "node --test \"cloud/*/test/**/*.test.js\"",
     "reliability": "npm run reliability -w apps/desktop",
     "responsiveness": "npm run responsiveness -w apps/desktop",
     "dist": "cargo build --release --manifest-path core/Cargo.toml && npm run dist -w apps/desktop",

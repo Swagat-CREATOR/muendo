@@ -1,25 +1,40 @@
-[package]
-name = "mewndo-core"
+# The Mewndo Rust workspace (spec §38.2). One lock file and one target folder for every crate, so the crates
+# share exactly one version of each dependency and a build of one is a build of all.
+#
+# Versions are pinned here, in [workspace.dependencies], and listed in docs/versions.md (§32.5 rule 4). A crate
+# asks for a dependency with `name.workspace = true` and never names a version of its own.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 publish = false
 
-[dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] } # exact: v0 index mtimes must read back identically
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "io-std"] }
-sha2 = "0.10"
-flate2 = "1" # pure Rust (miniz_oxide); writes standard gzip, as Node's zlib does
-rmcp = { version = "3.5", features = ["server", "transport-io", "macros"] }
-schemars = "1"
+[workspace.dependencies]
+# --- shared by every crate ---------------------------------------------------------------------------------------
+serde = { version = "1.0.228", features = ["derive"] }
+# float_roundtrip, exact: v0 index mtimes must read back identically.
+serde_json = { version = "1.0.145", features = ["float_roundtrip"] }
+tokio = { version = "1.48.0", default-features = false }
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2" # O_NOFOLLOW, ELOOP
+# --- the workspace's own crates ----------------------------------------------------------------------------------
+mewndo-proto = { path = "crates/mewndo-proto" }
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading", "Win32_Security", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop", "Win32_UI_Shell"] }
-windows-link = "0.2" # ntdll's NtSuspendProcess, which windows-sys leaves out (undocumented)
-# Decision-service HTTPS (decide.rs). native-tls uses the OS stack (SChannel) so
-# there is no ring/OpenSSL C build; keeps the near-full Windows dev box building.
-ureq = { version = "2", default-features = false, features = ["native-tls"] }
-native-tls = "0.2"
+# --- used by one or two crates -----------------------------------------------------------------------------------
+sha2 = "0.10.9"
+flate2 = "1.1.5"                                                    # pure Rust (miniz_oxide); standard gzip, as Node's zlib writes
+rmcp = { version = "3.5.0", features = ["server", "transport-io", "macros"] }
+schemars = "1.0.4"
+ulid = "1.2.1"                                                      # card, trace and span ids (§38.2)
+# Real SQLite is a C amalgamation, so it needs a C compiler: present on Linux and on Windows-MSVC (CI, and the
+# toolchain §32.5 rule 4 asks for), absent on the windows-gnu dev box. See docs/decisions.md, "desk.db".
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+libc = "0.2.177"                                                    # O_NOFOLLOW, ELOOP
+windows-sys = "0.61.2"
+windows-link = "0.2.1"                                              # ntdll's NtSuspendProcess, which windows-sys leaves out
+# Decision-service HTTPS (decide.rs). native-tls uses the OS stack (SChannel) so there is no ring or OpenSSL C
+# build; that keeps the windows-gnu dev box building.
+ureq = { version = "2.12.1", default-features = false, features = ["native-tls"] }
+native-tls = "0.2.14"
