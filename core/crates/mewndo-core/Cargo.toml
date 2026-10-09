@@ -7,6 +7,14 @@ publish.workspace = true
 
 [dependencies]
 mewndo-proto.workspace = true
+# Every sibling is listed here up front so parallel work on the handlers, the lanes and the
+# cloud link never has to touch this file. Cargo does not warn about an unused dependency.
+mewndo-router.workspace = true
+mewndo-trace.workspace = true
+mewndo-inbox.workspace = true
+mewndo-pty.workspace = true
+mewndo-computer.workspace = true
+mewndo-overlay.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # rt-multi-thread and time: the v2 pipe server's accept loop and the desk writer's 10 ms batches (§33.10 Part A).
@@ -45,3 +53,8 @@ windows-sys = { workspace = true, features = [
 windows-link.workspace = true
 ureq.workspace = true
 native-tls.workspace = true
+# The hub link (§37.6 K8). Windows-only for the same reason as ureq: native-tls is SChannel on
+# Windows and OpenSSL everywhere else, and this box has no OpenSSL headers. §32.5 rule 5 applies
+# - the card mapping and the backoff are pure and tested on every target; only the socket is
+# behind cfg(windows).
+tokio-tungstenite.workspace = true

@@ -1,0 +1,9 @@
+# Agent Inbox: cards, their states and the 2-second grace (spec §33.10 Part D).
+# Versions come from the workspace; see core/Cargo.toml.
+[package]
+name = "mewndo-inbox"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

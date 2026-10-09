@@ -19,8 +19,22 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["float_roundtrip"] }
 tokio = { version = "1.48.0", default-features = false }
 
-# --- the workspace's own crates ----------------------------------------------------------------------------------
+# --- the workspace's own crates (§38.2) --------------------------------------------------------------------------
 mewndo-proto = { path = "crates/mewndo-proto" }
+mewndo-router = { path = "crates/mewndo-router" }
+mewndo-trace = { path = "crates/mewndo-trace" }
+mewndo-inbox = { path = "crates/mewndo-inbox" }
+mewndo-pty = { path = "crates/mewndo-pty" }
+mewndo-computer = { path = "crates/mewndo-computer" }
+mewndo-overlay = { path = "crates/mewndo-overlay" }
+
+# --- shared by more than one crate, so pinned once here (§32.5 rule 4) -------------------------------------------
+# These four arrived with mewndo-router and mewndo-trace, which had to pin them locally while another session held
+# this file. Both crates now say `name.workspace = true` instead, so the lock holds one version of each.
+blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }  # no C: the windows-gnu box has no compiler
+regex = "1.13.1"
+shell-words = "1.1.1"
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 
 # --- used by one or two crates -----------------------------------------------------------------------------------
 sha2 = "0.10.9"
@@ -38,3 +52,8 @@ windows-link = "0.2.1"                                              # ntdll's Nt
 # build; that keeps the windows-gnu dev box building.
 ureq = { version = "2.12.1", default-features = false, features = ["native-tls"] }
 native-tls = "0.2.14"
+# ConPTY lanes (§33.10 Part G) and finding the agent executable for one.
+portable-pty = "0.9.0"
+which = "8.0.0"
+# The desktop's link to the cloud hub (§37.6 K8). native-tls again, for the same reason as ureq above.
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "native-tls"] }

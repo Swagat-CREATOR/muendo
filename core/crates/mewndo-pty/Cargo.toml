@@ -1,0 +1,9 @@
+# ConPTY lanes: agents Mewndo starts and owns the input of (spec §33.10 Part G).
+# Versions come from the workspace; see core/Cargo.toml.
+[package]
+name = "mewndo-pty"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

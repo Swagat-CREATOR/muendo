@@ -1,0 +1,9 @@
+# Guarded computer use: the MCP proxy in front of cua-driver (spec §36.6 U3 to U5).
+# Versions come from the workspace; see core/Cargo.toml.
+[package]
+name = "mewndo-computer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
