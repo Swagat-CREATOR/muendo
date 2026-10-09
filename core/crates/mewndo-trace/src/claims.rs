@@ -522,17 +522,28 @@ mod tests {
 
     #[test]
     fn extraction_is_fast_enough_for_the_stop_hook() {
-        // §35.2: claim extraction is budgeted under 5 ms. Generous, and deliberately so: docs/known-issues.md
-        // records that a tight timing assert flakes on a freshly built test binary's first run, where the time
-        // is the thread waiting to be scheduled rather than the work.
+        // §35.2: claim extraction is budgeted under 5 ms, and the Stop hook holds a real agent
+        // while it runs, so the budget stays where the spec put it.
+        //
+        // The measurement, not the budget, is what needed care. A single reading inside a parallel
+        // test runner mostly measures this thread waiting to be scheduled: docs/known-issues.md has
+        // two entries where exactly that flaked (policy.rs's 5 ms rules check, the savepoint hook's
+        // one second), and this assert flaked one run in five at 10 ms. Taking the best of several
+        // readings answers the question the budget actually asks - can the work finish in time -
+        // instead of asking whether the OS felt like running us promptly. Loosening the number
+        // would have hidden a real regression later; this does not.
         let message = "All tests pass. ".repeat(200);
-        let start = std::time::Instant::now();
-        let claims = extract(&message);
-        assert_eq!(claims.len(), 1);
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..20 {
+            let start = std::time::Instant::now();
+            let claims = extract(&message);
+            let took = start.elapsed();
+            assert_eq!(claims.len(), 1);
+            best = best.min(took);
+        }
         assert!(
-            start.elapsed() < std::time::Duration::from_millis(10),
-            "claim extraction took {:?}",
-            start.elapsed()
+            best < std::time::Duration::from_millis(5),
+            "claim extraction took {best:?} at its fastest of 20 runs; §35.2 budgets 5 ms"
         );
     }
 }
