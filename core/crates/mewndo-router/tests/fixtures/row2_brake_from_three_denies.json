@@ -1,0 +1,17 @@
+{
+  "row": "2",
+  "name": "or 3 denies in 2 minutes",
+  "why": "Row 2's other half needs no model at all: counting denies is a fact, not an opinion, so this brake fires with the router off, in shadow mode and on a machine with no network.",
+  "mode": "shadow",
+  "rules": {
+    "destructive": false,
+    "facts": { "in_journal": true, "same_action_failed_recently": 0, "recent_denies": 3 }
+  },
+  "expect": {
+    "verdict": "brake",
+    "rule": "row2_three_denies",
+    "backend": "rules",
+    "confidence": 1.0,
+    "reason_contains": "three actions were refused"
+  }
+}

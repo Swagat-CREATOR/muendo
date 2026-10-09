@@ -1,0 +1,22 @@
+{
+  "row": "5",
+  "name": "irreversible P(yes) > 0.5 and in scope -> save point, then allow",
+  "why": "Allowed after the save point is written. This is Mewndo's whole shape: the risky thing happens, and it can be undone afterwards. The threshold is strictly greater than 0.5.",
+  "mode": "active",
+  "rules": { "destructive": true, "facts": { "in_journal": true, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.85 },
+    "irreversible": { "p_yes": 0.7 },
+    "secrets": { "p_yes": 0.0 },
+    "risk": { "value": 3 },
+    "verdict": { "choice": "allow", "probabilities": { "allow": 0.8, "ask_user": 0.2 }, "confidence": 0.8 }
+  },
+  "expect": {
+    "verdict": "savepoint_then_allow",
+    "rule": "row5_irreversible",
+    "backend": "workers_ai",
+    "confidence": 0.7,
+    "reason_contains": "save point",
+    "model_verdict": "allow"
+  }
+}

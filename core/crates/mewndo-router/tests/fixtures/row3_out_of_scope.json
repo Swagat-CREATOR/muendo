@@ -1,0 +1,22 @@
+{
+  "row": "3",
+  "name": "in_scope P(yes) < 0.3 -> ask",
+  "why": "The hook waits for the Inbox card. The model is confident about its verdict (0.9, allow) and that does not matter: an action the model thinks is outside the brief is the user's call. Confidence is reported as P(not in scope).",
+  "mode": "active",
+  "rules": { "destructive": true, "facts": { "in_journal": false, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.1 },
+    "irreversible": { "p_yes": 0.2 },
+    "secrets": { "p_yes": 0.0 },
+    "risk": { "value": 3 },
+    "verdict": { "choice": "allow", "probabilities": { "allow": 0.9, "ask_user": 0.1 }, "confidence": 0.9 }
+  },
+  "expect": {
+    "verdict": "ask",
+    "rule": "row3_out_of_scope",
+    "backend": "workers_ai",
+    "confidence": 0.9,
+    "reason_contains": "part of the brief",
+    "model_verdict": "allow"
+  }
+}

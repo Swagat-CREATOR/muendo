@@ -1,0 +1,73 @@
+# T5's claim patterns (spec §35.5). These decide whether a user is warned that an agent claimed something the
+# evidence does not support, so they live in data, not in code: `Claims::builtin()` embeds this file with
+# `include_str!` for the shipped defaults, and `Claims::parse` reads an override from
+# `%APPDATA%\Mewndo\claims.toml` at start-up, so a pattern that over- or under-fires on a real transcript can be
+# fixed without a new build (the same defaults-plus-override shape as the Router's rules files, §34.9 R1).
+#
+# Order is priority. Every pattern is tried in the order written here and at most 10 claims are kept (§35.5 T5),
+# so the claim types that can actually warn a user about lost work come first.
+#
+# Rules for writing a pattern:
+#   * `(?i)` on every pattern: agents write "Tests pass" and "tests pass".
+#   * The subject, when there is one, is the named group `subj`. It is cleaned up in Rust (backticks, wrapping
+#     quotes and trailing punctuation stripped) and then checked against `subject` below, so the pattern can stay
+#     a dumb `[^\s,;:!?]+` instead of growing a path grammar nobody can read.
+#   * `subject`: "path" needs a `/`, a `\` or an extension; "file" needs an extension; "folder" takes a bare name
+#     and is compared as `<name>/`; "name" takes anything (an address or a person); absent means no subject.
+#   * Never write a look-behind: the regex crate has none, and negations are handled in Rust by looking at the
+#     four words before the match (claims.rs `negated`). Patterns that contain their own negation ("didn't touch",
+#     "no changes to") are safe because that word is inside the match, not before it.
+
+# --- tests and build -------------------------------------------------------------------------------------------
+[[claim]]
+type = "tests_pass"
+pattern = '''(?i)\b(?:all\s+)?tests?\s+(?:now\s+)?(?:pass(?:es|ed|ing)?|are\s+green|succeed(?:s|ed)?)\b'''
+
+[[claim]]
+type = "tests_fail"
+pattern = '''(?i)\b(?:\d+\s+)?tests?\s+(?:still\s+)?(?:fail(?:s|ed|ing)?|are\s+red)\b'''
+
+[[claim]]
+type = "build_ok"
+pattern = '''(?i)\bbuild\s+(?:succeeds|succeeded|passes|passed|is\s+green|works|compiles)\b'''
+
+# --- "I left your files alone" --------------------------------------------------------------------------------
+# The folder wording comes first: "didn't touch the db folder" names a directory by a bare word, which the "path"
+# check would throw away. Matching it as a folder turns it into `db/`, which is what T6 compares against.
+[[claim]]
+type = "untouched"
+subject = "folder"
+pattern = '''(?i)\b(?:didn't|didnt|did\s+not|haven't|havent|have\s+not|never|without)\s+(?:touch|modif|chang|edit|alter)\w*\s+(?:the\s+|any\s+|your\s+)?(?<subj>[^\s,;:!?]+)\s+(?:folder|directory|dir)\b'''
+
+[[claim]]
+type = "untouched"
+subject = "path"
+pattern = '''(?i)\b(?:didn't|didnt|did\s+not|haven't|havent|have\s+not|never|without)\s+(?:touch|modif|chang|edit|alter)\w*\s+(?:the\s+|any\s+|anything\s+(?:in|under)\s+|your\s+)?(?<subj>[^\s,;:!?]+)'''
+
+[[claim]]
+type = "no_changes"
+subject = "folder"
+pattern = '''(?i)\bno\s+(?:other\s+)?changes\s+(?:to|in|under)\s+(?:the\s+|your\s+)?(?<subj>[^\s,;:!?]+)\s+(?:folder|directory|dir)\b'''
+
+[[claim]]
+type = "no_changes"
+subject = "path"
+pattern = '''(?i)\bno\s+(?:other\s+)?changes\s+(?:to|in|under)\s+(?:the\s+|your\s+)?(?<subj>[^\s,;:!?]+)'''
+
+# --- files that should or should not exist now -----------------------------------------------------------------
+# "created" needs an extension (§35.5 T5), so "created a test for it" is not read as a file claim.
+[[claim]]
+type = "created"
+subject = "file"
+pattern = '''(?i)\b(?:created|added|wrote)\s+(?:a\s+new\s+file\s+|a\s+new\s+|a\s+file\s+|the\s+file\s+|new\s+file\s+)?(?<subj>[^\s,;:!?]+)'''
+
+[[claim]]
+type = "deleted"
+subject = "path"
+pattern = '''(?i)\b(?:deleted|removed)\s+(?:the\s+file\s+|the\s+|a\s+|your\s+)?(?<subj>[^\s,;:!?]+)'''
+
+# --- things that left the machine -------------------------------------------------------------------------------
+[[claim]]
+type = "email_sent"
+subject = "name"
+pattern = '''(?i)\bsent\s+(?:the\s+|an?\s+|your\s+)?(?:e-?mail|mail|message)\s+to\s+(?<subj>[^\s,;:!?]+)'''

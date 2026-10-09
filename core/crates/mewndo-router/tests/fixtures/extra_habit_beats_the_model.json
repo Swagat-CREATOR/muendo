@@ -1,0 +1,23 @@
+{
+  "row": "habit",
+  "name": "the user's own standing answer beats the model",
+  "why": "§34.7. The user has answered this exact action three times and said yes; the model now wants to ask again. The habit wins, because the one thing worse than an unnecessary card is the same unnecessary card for the fourth time. It still loses to a hard rule and to the brake, which the two row-1 and row-2 fixtures cover.",
+  "mode": "active",
+  "habit": "allow",
+  "rules": { "destructive": false, "facts": { "in_journal": true, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.5 },
+    "irreversible": { "p_yes": 0.1 },
+    "secrets": { "p_yes": 0.0 },
+    "risk": { "value": 2 },
+    "verdict": { "choice": "ask_user", "probabilities": { "ask_user": 0.7, "allow": 0.3 }, "confidence": 0.7 }
+  },
+  "expect": {
+    "verdict": "allow",
+    "rule": "habit",
+    "backend": "habit",
+    "confidence": 1.0,
+    "reason_contains": "Settings",
+    "model_verdict": "ask_user"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "row": "7",
+  "name": "otherwise -> allow",
+  "why": "The ordinary case, and the one the agent should never notice: in the brief, easy to undo, nothing on any list, and the model is confident it is fine. This is what the auto-approve counter on the dock counts (§34.5).",
+  "mode": "active",
+  "rules": { "destructive": false, "facts": { "in_journal": true, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.97 },
+    "irreversible": { "p_yes": 0.05 },
+    "secrets": { "p_yes": 0.0 },
+    "risk": { "value": 1 },
+    "verdict": { "choice": "allow", "probabilities": { "allow": 0.93, "ask_user": 0.07 }, "confidence": 0.93 }
+  },
+  "expect": {
+    "verdict": "allow",
+    "rule": "row7_model_verdict",
+    "backend": "workers_ai",
+    "confidence": 0.93,
+    "reason_contains": "Inside the brief",
+    "model_verdict": "allow"
+  }
+}

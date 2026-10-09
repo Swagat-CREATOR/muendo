@@ -1,0 +1,22 @@
+{
+  "row": "2",
+  "name": "verdict = brake with confidence >= 0.8",
+  "why": "The session is frozen (§24). The threshold is exactly 0.8, and in_scope 0.1 is also true here so this fixture proves row 2 is read before row 3.",
+  "mode": "active",
+  "rules": { "destructive": true, "facts": { "in_journal": false, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.1 },
+    "irreversible": { "p_yes": 0.9 },
+    "secrets": { "p_yes": 0.4 },
+    "risk": { "value": 5 },
+    "verdict": { "choice": "brake", "probabilities": { "brake": 0.85, "deny": 0.15 }, "confidence": 0.85 }
+  },
+  "expect": {
+    "verdict": "brake",
+    "rule": "row2_brake",
+    "backend": "workers_ai",
+    "confidence": 0.85,
+    "reason_contains": "Frozen",
+    "model_verdict": "brake"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "row": "1",
+  "name": "a hard rule matches: the model isn't consulted",
+  "why": "The §34.3 example. The rules found a delete outside the brief; the model wants to allow it with 0.99 confidence. §34.6: the model can never override a hard rule, in either mode.",
+  "mode": "active",
+  "rules": {
+    "decided": "deny",
+    "rule": "outside_brief",
+    "reason": "Mewndo: db/ is outside your brief. Ask the user if this is needed.",
+    "destructive": true,
+    "facts": { "paths_outside_brief": ["db/migrations"], "in_journal": true, "same_action_failed_recently": 0 }
+  },
+  "answers": {
+    "in_scope": { "p_yes": 0.95 },
+    "irreversible": { "p_yes": 0.05 },
+    "secrets": { "p_yes": 0.0 },
+    "risk": { "value": 1 },
+    "verdict": { "choice": "allow", "probabilities": { "allow": 0.99, "deny": 0.01 }, "confidence": 0.99 }
+  },
+  "expect": {
+    "verdict": "deny",
+    "rule": "outside_brief",
+    "backend": "rules",
+    "confidence": 1.0,
+    "reason_contains": "outside your brief",
+    "model_verdict": "allow"
+  }
+}

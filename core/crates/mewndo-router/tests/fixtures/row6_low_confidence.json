@@ -1,0 +1,22 @@
+{
+  "row": "6",
+  "name": "verdict confidence < 0.6 -> ask",
+  "why": "Nothing above fired and the model is not sure. §34.9's pitfall is that the probabilities may not sum to 1, so it is the choice's own confidence that is read, never a raw probability.",
+  "mode": "active",
+  "rules": { "destructive": false, "facts": { "in_journal": false, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.6 },
+    "irreversible": { "p_yes": 0.3 },
+    "secrets": { "p_yes": 0.1 },
+    "risk": { "value": 3 },
+    "verdict": { "choice": "allow", "probabilities": { "allow": 0.45, "ask_user": 0.4, "deny": 0.15 }, "confidence": 0.45 }
+  },
+  "expect": {
+    "verdict": "ask",
+    "rule": "row6_low_confidence",
+    "backend": "workers_ai",
+    "confidence": 0.45,
+    "reason_contains": "not sure enough",
+    "model_verdict": "allow"
+  }
+}

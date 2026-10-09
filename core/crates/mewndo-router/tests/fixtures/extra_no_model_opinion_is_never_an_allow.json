@@ -1,0 +1,14 @@
+{
+  "row": "fallback",
+  "name": "no model opinion on a destructive action -> ask, never allow",
+  "why": "§34.8: past the deadline the rules decide and a destructive action becomes ask. This is the shape of every failure mode at once -- router off, deadline passed, gateway down, unparsable answer -- and none of them may produce an allow the rules did not reach themselves.",
+  "mode": "active",
+  "rules": { "destructive": true, "facts": { "in_journal": false, "same_action_failed_recently": 0 } },
+  "expect": {
+    "verdict": "ask",
+    "rule": "rules_fallback",
+    "backend": "rules",
+    "confidence": 1.0,
+    "reason_contains": "Waiting for the user"
+  }
+}

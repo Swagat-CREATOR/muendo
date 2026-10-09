@@ -1,0 +1,22 @@
+{
+  "row": "7",
+  "name": "a confident model deny is a deny, not an allow",
+  "why": "Read literally, \"otherwise -> allow\" would turn a 0.9-confidence `deny` into an allow, which cannot be what a row that exists to catch the ordinary case means. Row 7 honours the model's own confident choice; `allow` is the common one.",
+  "mode": "active",
+  "rules": { "destructive": true, "facts": { "in_journal": false, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.8 },
+    "irreversible": { "p_yes": 0.2 },
+    "secrets": { "p_yes": 0.9 },
+    "risk": { "value": 4 },
+    "verdict": { "choice": "deny", "probabilities": { "deny": 0.9, "allow": 0.1 }, "confidence": 0.9 }
+  },
+  "expect": {
+    "verdict": "deny",
+    "rule": "row7_model_verdict",
+    "backend": "workers_ai",
+    "confidence": 0.9,
+    "reason_contains": "refused",
+    "model_verdict": "deny"
+  }
+}

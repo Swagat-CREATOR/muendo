@@ -1,0 +1,151 @@
+# Built-in router rules (spec §34.9 R1). Embedded in the binary with include_str!, so a fresh install is
+# already safe; the user's own %APPDATA%\Mewndo\rules.toml is merged on top (it can only add, never remove,
+# because a rule the user never wrote should not be able to disappear with a typo).
+#
+# Phrases are matched against the normalized command (lowercased, whitespace collapsed, program basenames
+# without .exe) on word boundaries, so `format` does not match `formatter` or `--format=json`.
+# `...` in a phrase means "and then, later in the same command", which is how `curl ... | sh` is written.
+
+# Never, in either mode, in either direction. These wipe a disk or a home folder: there is nothing to ask about.
+[deny]
+commands = [
+    "format",                 # format c:, format /fs:ntfs d:
+    "diskpart",
+    "del /s /q c:\\",
+    "rd /s /q c:\\",
+    "rm -rf /",
+    "rm -rf /*",
+    "rm -rf ~",
+    "rm -rf ~/",
+    "rm -fr /",
+    "mkfs",
+    "dd if=/dev/zero",
+    "cipher /w",              # overwrites free space: makes Mewndo's own history unrecoverable
+    "vssadmin delete shadows",
+    "wmic shadowcopy delete",
+]
+
+# The user decides. Each of these can destroy work that git cannot bring back, or publish something.
+[ask]
+commands = [
+    "git push --force",
+    "git push -f",
+    "git push --force-with-lease",   # safer than --force, still rewrites a remote branch
+    "git reset --hard",
+    "git clean",
+    "git checkout .",
+    "git restore .",
+    "npm publish",
+    "yarn publish",
+    "pnpm publish",
+    "cargo publish",
+    "twine upload",
+    "curl ... | sh",
+    "curl ... | bash",
+    "wget ... | sh",
+    "wget ... | bash",
+    "iwr ... | iex",                 # the PowerShell spelling of curl | sh
+    "invoke-webrequest ... | invoke-expression",
+    "iex",
+    "rm -rf node_modules/..",        # a traversal out of a folder the agent was told to clean
+]
+
+# Paths no agent may read or write, whatever the brief says. The v0 protected folders are added at load time
+# from v0 settings (§34.9 R1), because they are the user's choice and are not known at compile time.
+# An entry with no slash matches the file name; an entry with a slash matches the whole path or any path
+# inside it.
+[protect]
+paths = [
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "id_rsa*",
+    "id_dsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
+    "*.kdbx",
+    ".netrc",
+    ".pgpass",
+    ".git-credentials",
+    "*/.ssh/*",
+    "*/.gnupg/*",
+    "*/.aws/credentials",
+    "*/.password-store/*",
+    "*/user data/*",            # browser profiles: saved passwords and cookies
+]
+
+# Read-only or well understood: no model call, no card, no wait. §34.2 says the router never even runs for
+# these, but it is cheap to decide them again here in case a handler sends one anyway.
+[allow]
+commands = [
+    "git status",
+    "git diff",
+    "git log",
+    "git branch",
+    "git stash list",
+    "ls",
+    "dir",
+    "pwd",
+    "cd",
+    "echo",
+    "cat",
+    "type",
+    "node --version",
+    "npm test",
+    "npm run test",
+]
+
+# Test commands (§35.5 T3). A receipt needs to know that the agent really ran the tests, so this list is read
+# by the receipt check as well as by the router. The user's own `[tests]` entries are appended.
+[tests]
+commands = [
+    "npm test",
+    "npm run test",
+    "pnpm test",
+    "yarn test",
+    "bun test",
+    "npx jest",
+    "npx vitest",
+    "pytest",
+    "python -m pytest",
+    "cargo test",
+    "go test",
+    "dotnet test",
+    "mvn test",
+    "gradle test",
+    "./gradlew test",
+    "node --test",
+    "deno test",
+]
+
+# Computer use (§36). A click is judged by the name on the control, because that is all the proxy can see.
+[computer]
+always_ask_names = [
+    "send",
+    "pay",
+    "buy",
+    "delete",
+    "remove",
+    "transfer",
+    "submit order",
+    "publish",
+    "place order",
+    "confirm payment",
+]
+# Windows Mewndo must never drive, even to look: the user's money, the user's passwords, and Mewndo itself
+# (an agent that can click Mewndo can turn Mewndo off).
+private_windows = [
+    "banking",
+    "bank",
+    "online banking",
+    "1password",
+    "bitwarden",
+    "keepass",
+    "lastpass",
+    "dashlane",
+    "password manager",
+    "mewndo",
+]

@@ -1,0 +1,22 @@
+{
+  "row": "4",
+  "name": "skip_duplicate with nothing recorded as failing is not a deny",
+  "why": "Row 4 needs both halves. Without the span-table evidence there is nothing to skip, and refusing work on a model's hunch would stop an agent that is actually making progress. It falls through to row 7.",
+  "mode": "active",
+  "rules": { "destructive": false, "facts": { "in_journal": true, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.9 },
+    "irreversible": { "p_yes": 0.1 },
+    "secrets": { "p_yes": 0.0 },
+    "risk": { "value": 1 },
+    "verdict": { "choice": "skip_duplicate", "probabilities": { "skip_duplicate": 0.9, "allow": 0.1 }, "confidence": 0.9 }
+  },
+  "expect": {
+    "verdict": "allow",
+    "rule": "row7_model_verdict",
+    "backend": "workers_ai",
+    "confidence": 0.9,
+    "reason_contains": "nothing recorded it failing",
+    "model_verdict": "skip_duplicate"
+  }
+}

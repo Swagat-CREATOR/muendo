@@ -1,0 +1,31 @@
+# Receipts (spec §35): the check at Stop that compares what an agent SAYS it did with what its spans and the
+# journal show it did. A library only, called from every Stop handler in mewndo-core (§35.5 "Where it plugs in").
+#
+# Versions are named here instead of `name.workspace = true` because this crate was written while another agent
+# held core/Cargo.toml. MOVE THEM TO [workspace.dependencies] at the next chance and switch these lines to
+# `name.workspace = true`: §32.5 rule 4 wants exactly one pinned version per dependency for the whole workspace,
+# listed in docs/versions.md. serde and serde_json already exist there at these versions, so nothing resolves twice.
+[package]
+name = "mewndo-trace"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+# T5's claim patterns, T2's runner summary lines, T9's failing-test names and T1's timestamp stripping.
+# `regex` already contains aho-corasick, which is why T3's detector needs no direct dependency on it: 20 phrases
+# checked with `contains` are faster than building an automaton per call anyway.
+regex = "1.13.1"
+# T1's output_hash. `pure`, no default features: blake3 normally assembles its SIMD kernels with `cc`, and the
+# windows-gnu dev box has no C toolchain (the same reason rusqlite is absent here; docs/decisions.md, "desk.db").
+# Hashing a 3 KB output tail does not need SIMD.
+blake3 = { version = "1.8.7", default-features = false, features = ["std", "pure"] }
+# claims.toml (T5) and the user's own [tests] commands (T3).
+toml = "1.1.8"
+
+# No rusqlite: the span and journal stores are traits this crate queries (store.rs), so the real SQLite lives in
+# mewndo-core and the rules are tested against an in-memory fake. No opentelemetry: T10 is a documented gap, see
+# the note at the end of src/lib.rs. No tokio or HTTP client: T7 builds the Router request and reads its answers,
+# but the deadline, the hedge and the warm connection stay in the one place that owns them (§34.9 R6).

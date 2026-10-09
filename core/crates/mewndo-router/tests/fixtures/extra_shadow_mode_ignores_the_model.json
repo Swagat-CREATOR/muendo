@@ -1,0 +1,23 @@
+{
+  "row": "shadow",
+  "name": "shadow mode records the model and ignores it",
+  "why": "§34.6, R9. The same answers that produce `allow` in active mode (row7_otherwise_allow) produce the rules verdict here, with the model's choice stored for the agreement rate. Every agent starts in this mode, so this is the default behaviour of the whole router.",
+  "mode": "shadow",
+  "rules": { "destructive": true, "facts": { "in_journal": true, "same_action_failed_recently": 0 } },
+  "answers": {
+    "in_scope": { "p_yes": 0.97 },
+    "irreversible": { "p_yes": 0.05 },
+    "secrets": { "p_yes": 0.0 },
+    "risk": { "value": 1 },
+    "verdict": { "choice": "allow", "probabilities": { "allow": 0.93, "ask_user": 0.07 }, "confidence": 0.93 }
+  },
+  "expect": {
+    "verdict": "ask",
+    "rule": "rules_fallback",
+    "backend": "rules",
+    "confidence": 1.0,
+    "reason_contains": "Waiting for the user",
+    "shadow": true,
+    "model_verdict": "allow"
+  }
+}

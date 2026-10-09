@@ -1,0 +1,32 @@
+# The Clef Router (spec §34, build guide §34.9): rules first, model second, user last. It runs before every
+# risky agent step, so it is a library with no runtime of its own: the core owns the threads, the sockets and
+# the database, and calls in here.
+[package]
+name = "mewndo-router"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# ponytail: these five versions belong in core/Cargo.toml's [workspace.dependencies], with the crate asking for
+# them as `name.workspace = true` like every other crate (§38.2). They are pinned here only because the
+# workspace file is being edited by someone else right now. Move them up and switch to `.workspace = true`.
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }    # already in [workspace.dependencies] at this version
+serde_json = "1.0.145"                                    # ditto; the workspace adds float_roundtrip
+# §34.9 R4 names blake3 for the action signature. `pure` + no default features keeps the SIMD C/assembly out of
+# the build, because the windows-gnu dev box has no C compiler (see core/Cargo.toml's note on rusqlite) and a
+# 16-byte id of a short string is nowhere near a bottleneck.
+blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }
+shell-words = "1.1.1"                                     # §34.9 R2: POSIX splitting for Git Bash commands
+toml = { version = "0.9.12", default-features = false, features = ["parse", "serde"] }  # §34.9 R1 rules files
+
+# Not taken, on purpose (§34.9 "Crates" lists them, the task asks for few):
+#   aho-corasick - the rule lists are a few hundred short phrases; a Vec scan over a <=300 char command is
+#                  microseconds, and `cargo test` proves it (rules_pass_is_microseconds).
+#   globset      - the protect list needs `*` and `?` over one path at a time, which is 15 lines (rules::glob).
+#   dunce        - we must never follow junctions (plot.md rule 2), so canonicalize is the wrong call; the
+#                  `\\?\` strip is lexical (normalize::norm_path).
+#   regex        - the brief phrases are literal ("don't touch X"); str::find does it.
+#   moka         - the 5-minute cache is one HashMap behind a Mutex (cache.rs, 30 lines).
+#   notify, arc-swap - rules hot reload is deferred; see rules.rs.
+#   reqwest, tokio   - the Clef transport is a trait here (clef.rs); the core owns the warm connection.
