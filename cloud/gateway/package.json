@@ -1,0 +1,16 @@
+{
+  "name": "mewndo-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mewndo decision gateway, invites and budget on Cloudflare Workers (spec §37)",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3"
+  }
+}

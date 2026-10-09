@@ -1,0 +1,31 @@
+# The gateway, hosted MCP and hub deploy together as one Worker for the demo
+# (spec §37.6). Only the gateway module and StateDO exist so far; the HUB and MCP
+# Durable Object bindings are added by K6 and K7, because wrangler refuses to
+# deploy a binding whose class the Worker does not export.
+name = "mewndo-cloud"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Workers AI binding: no API key on any tester's PC, and no extra public hop
+# (§37.6). The model id is a var so the exact clef-flash name can be corrected
+# without a code change (§32.5 rule 3 lists its schema as unverified).
+[ai]
+binding = "AI"
+
+[vars]
+DECIDE_MODEL = "@cf/cloudflare/clef-flash"
+
+# One Durable Object for invites, tokens, the daily neuron budget, the 5-minute
+# answer cache and the Kaggle backend record (§37.6 K2). Free plan: SQLite class.
+[[durable_objects.bindings]]
+name = "STATE"
+class_name = "StateDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StateDO"]
+
+# Secrets (NOT stored here):
+#   wrangler secret put ADMIN_SECRET      mints and revokes invites
+#   wrangler secret put GATEWAY_SECRET    shared with the Kaggle notebook (§37.4)
