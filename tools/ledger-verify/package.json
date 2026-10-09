@@ -1,0 +1,9 @@
+{
+  "name": "mewndo-ledger-verify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Check a Mewndo Flight Recorder export without trusting Mewndo (spec §30.2, P7.2)",
+  "bin": { "mewndo-ledger-verify": "verify.js" },
+  "scripts": { "test": "node --test \"test/**/*.test.js\"" }
+}
