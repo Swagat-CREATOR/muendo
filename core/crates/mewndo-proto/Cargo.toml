@@ -1,0 +1,10 @@
+# The pipe protocol v2 shared by mewndo-core, mewndo-hook and the app (spec §33.10 Part A, §38.5).
+[package]
+name = "mewndo-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

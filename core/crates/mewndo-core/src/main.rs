@@ -2,11 +2,14 @@
 // named pipe (a Unix socket elsewhere) using the protocol in protocol.rs, checks it is alive and restarts it if it
 // stops. Protection still runs in the Node engine; the core does the file work the engine hands it.
 //
-//   mewndo-core --socket <pipe name or socket path> --log-dir <the app's log folder>
+//   mewndo-core --socket <pipe name or socket path> --log-dir <the app's log folder> [--desk <folder>]
+//
+// With --desk it also serves the Agent Desk pipe, protocol v2 (desk.rs), from that folder.
 //
 // It prints "ready" once it is listening, and stops when asked to, or when its stdin closes (the app is gone),
 // so it never outlives the app.
 mod decide;
+mod desk;
 mod feed;
 mod ledger;
 mod log;
@@ -19,6 +22,7 @@ mod restore;
 mod scanner;
 mod screen;
 mod store;
+mod writer;
 
 use log::Log;
 use protocol::{Info, Session};
@@ -31,23 +35,30 @@ use tokio::sync::watch;
 struct Args {
     socket: String,
     log_dir: PathBuf,
+    desk: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let (mut socket, mut log_dir) = (None, None);
+    let (mut socket, mut log_dir, mut desk) = (None, None, None);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--socket" => socket = args.next(),
             "--log-dir" => log_dir = args.next().map(PathBuf::from),
+            "--desk" => desk = args.next().map(PathBuf::from),
             other => return Err(format!("unknown argument {other}")),
         }
     }
     match (socket, log_dir) {
-        (Some(socket), Some(log_dir)) => Ok(Args { socket, log_dir }),
-        _ => {
-            Err("usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder>".into())
-        }
+        (Some(socket), Some(log_dir)) => Ok(Args {
+            socket,
+            log_dir,
+            desk,
+        }),
+        _ => Err(
+            "usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder> [--desk <folder>]"
+                .into(),
+        ),
     }
 }
 
@@ -128,11 +139,21 @@ fn main() -> ExitCode {
         std::process::id()
     ));
 
+    // Before "ready": a second core for the same desk must fail at start, not after the app thinks it's up.
+    let desk = match args.desk.as_deref().map(desk::claim).transpose() {
+        Ok(desk) => desk,
+        Err(e) => {
+            log.error(&format!("mewndo-core can't start: {e}"));
+            eprintln!("{e}");
+            return ExitCode::from(3);
+        }
+    };
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
-    match runtime.block_on(serve(&args.socket, log.clone())) {
+    match runtime.block_on(serve(&args.socket, desk, log.clone())) {
         Ok(()) => {
             log.info("mewndo-core stopped");
             ExitCode::SUCCESS
@@ -145,7 +166,7 @@ fn main() -> ExitCode {
     }
 }
 
-async fn serve(address: &str, log: Arc<Log>) -> std::io::Result<()> {
+async fn serve(address: &str, desk: Option<desk::Instance>, log: Arc<Log>) -> std::io::Result<()> {
     let info = Arc::new(Info::new());
     let (stop, stopped) = watch::channel(false);
 
@@ -156,7 +177,17 @@ async fn serve(address: &str, log: Arc<Log>) -> std::io::Result<()> {
         let _ = parent_gone.send(true);
     });
 
-    listen(address, &log, info, stop, stopped).await
+    let desk = desk.map(|d| tokio::spawn(desk::serve(d, log.clone(), stopped.clone())));
+    let result = listen(address, &log, info, stop.clone(), stopped).await;
+    let _ = stop.send(true);
+    if let Some(desk) = desk {
+        match desk.await {
+            Ok(Err(e)) => log.error(&format!("desk pipe stopped: {e}")),
+            Err(e) => log.error(&format!("desk pipe crashed: {e}")),
+            Ok(Ok(())) => {}
+        }
+    }
+    result
 }
 
 #[cfg(unix)]

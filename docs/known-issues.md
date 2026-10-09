@@ -48,3 +48,14 @@ thread waiting to be scheduled, not the rules.
 
 If it fails again, keep the budget: it's the promise in spec §24 that the guard never slows the agent. Measure the
 check alone (outside the parallel test runner) before changing anything.
+
+## Desktop tests: timing checks fail when the PC is busy
+
+Found 9 Oct 2026, while other agents were building on the same 4-core PC (load 2 to 3). In full runs, a different
+timing check failed each time and every one passed when its file ran alone: the guard harness Codex and Cursor
+scenarios (Linux, 13 to 18 s), `a folder can be unprotected while its first scan is still running` ("unprotect
+took 3464 ms", Linux), and `mewndo-savepoint: asks Mewndo for a save point` (Windows: the save point wasn't listed
+200 ms after the hook exited; 3 of 3 passes alone). None of them start the core with `--desk`, so the Agent Desk
+pipe isn't involved. CI on its own runner passes.
+
+If one fails on an idle PC, it's real: keep the budget and find where the time goes.

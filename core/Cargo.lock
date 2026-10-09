@@ -631,6 +631,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "libc",
+ "mewndo-proto",
  "native-tls",
  "rmcp",
  "rusqlite",
@@ -643,6 +644,14 @@ dependencies = [
  "ureq",
  "windows-link",
  "windows-sys",
+]
+
+[[package]]
+name = "mewndo-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

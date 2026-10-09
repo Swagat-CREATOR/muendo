@@ -19,6 +19,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["float_roundtrip"] }
 tokio = { version = "1.48.0", default-features = false }
 
+# --- the workspace's own crates ----------------------------------------------------------------------------------
+mewndo-proto = { path = "crates/mewndo-proto" }
+
 # --- used by one or two crates -----------------------------------------------------------------------------------
 sha2 = "0.10.9"
 flate2 = "1.1.5"                                                    # pure Rust (miniz_oxide); standard gzip, as Node's zlib writes

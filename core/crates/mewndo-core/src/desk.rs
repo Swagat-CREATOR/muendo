@@ -1,0 +1,620 @@
+// The Agent Desk pipe: protocol v2 (spec §33.10 Part A, §38.5), framed by mewndo-proto. It runs alongside the v1
+// JSON-lines socket the app and engine use today (protocol.rs), and only when the core is started with
+// `--desk <folder>`, normally %LOCALAPPDATA%\Mewndo (docs/decisions.md, "Pipe protocol v2").
+//
+// In that folder: core.json = {pipe, pid, version, protocol}, so the hook forwarder and the app can find the pipe,
+// and desk.db (writer.rs). One core per folder: a named mutex on Windows, a lock file elsewhere.
+//
+// Every connection starts with `hello {role}`. App connections also receive everything published to the desk;
+// hook, computer and overlay connections are request and response.
+use crate::log::Log;
+use crate::writer::{self, Writer};
+use mewndo_proto::{
+    self as proto, Body, Envelope, ErrorBody, Frame, HEADER, Hello, Ping, Pong, Role, VERSION,
+};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{broadcast, mpsc, watch};
+
+const HELLO_WAIT: Duration = Duration::from_secs(5);
+
+pub struct Desk {
+    events: broadcast::Sender<Arc<Vec<u8>>>,
+    writer: Writer,
+    log: Arc<Log>,
+}
+
+impl Desk {
+    pub fn new(dir: &Path, log: Arc<Log>) -> Desk {
+        Desk {
+            events: broadcast::channel(1024).0,
+            writer: writer::start(&dir.join("desk.db"), log.clone()),
+            log,
+        }
+    }
+
+    /// Send a message to every connected app.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "first publishers: hooks (Part C) and the Inbox (Part D)"
+        )
+    )]
+    pub fn publish<B: Body>(&self, body: &B) {
+        let env = Envelope::wrap(ulid::Ulid::new().to_string(), body);
+        if let Ok(bytes) = proto::encode(&Frame::Json(env)) {
+            let _ = self.events.send(Arc::new(bytes)); // no app connected: nothing to do
+        }
+    }
+}
+
+// --- one core per desk folder -------------------------------------------------------------------------------------
+
+/// Held for as long as the core runs; a second core for the same folder can't get one.
+pub struct Instance {
+    pub dir: PathBuf,
+    #[cfg(unix)]
+    _lock: std::fs::File,
+}
+
+#[cfg(unix)]
+pub fn claim(dir: &Path) -> io::Result<Instance> {
+    use std::os::unix::io::AsRawFd;
+    std::fs::create_dir_all(dir)?;
+    let lock = std::fs::File::create(dir.join("core.lock"))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(already_running(dir));
+    }
+    Ok(Instance {
+        dir: dir.to_path_buf(),
+        _lock: lock,
+    })
+}
+
+#[cfg(windows)]
+pub fn claim(dir: &Path) -> io::Result<Instance> {
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    std::fs::create_dir_all(dir)?;
+    let name = wide(&mutex_name(dir));
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        return Err(already_running(dir));
+    }
+    // The handle is never closed: Windows releases the mutex when this process ends, however it ends.
+    Ok(Instance {
+        dir: dir.to_path_buf(),
+    })
+}
+
+/// `Local\MewndoCore` for the real desk folder (§33.10 A3); any other folder (tests, a second Windows user's
+/// session has its own Local namespace anyway) gets its own name, so cores for different folders don't collide.
+#[cfg(windows)]
+fn mutex_name(dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let real = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Mewndo"));
+    let key = dir.to_string_lossy().to_lowercase();
+    if real.is_some_and(|r| r.to_string_lossy().to_lowercase() == key) {
+        return r"Local\MewndoCore".into();
+    }
+    let hash = Sha256::digest(key.as_bytes());
+    format!(
+        r"Local\MewndoCore-{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3]
+    )
+}
+
+#[cfg(windows)]
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain([0]).collect()
+}
+
+fn already_running(dir: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::AddrInUse,
+        format!(
+            "another mewndo-core is already running for {}",
+            crate::paths::display(dir)
+        ),
+    )
+}
+
+// --- the pipe -----------------------------------------------------------------------------------------------------
+
+pub async fn serve(
+    instance: Instance,
+    log: Arc<Log>,
+    stopped: watch::Receiver<bool>,
+) -> io::Result<()> {
+    let desk = Arc::new(Desk::new(&instance.dir, log.clone()));
+    // ponytail: 32 random bits from a ULID (rand's CSPRNG); the name only has to be unguessable before core.json
+    // is written, and the pipe refuses everyone but this user anyway.
+    let tag = format!("{:08x}", ulid::Ulid::new().random() as u32);
+    let result = listen(&instance.dir, &tag, desk.clone(), stopped).await;
+    remove_core_json(&instance.dir);
+    desk.writer.flush();
+    result
+}
+
+#[cfg(unix)]
+async fn listen(
+    dir: &Path,
+    tag: &str,
+    desk: Arc<Desk>,
+    mut stopped: watch::Receiver<bool>,
+) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let address = dir.join(format!("core-{tag}.sock"));
+    let listener = tokio::net::UnixListener::bind(&address)?;
+    std::fs::set_permissions(&address, std::fs::Permissions::from_mode(0o600))?; // only this user may connect
+    write_core_json(dir, &address.to_string_lossy())?;
+    desk.log
+        .info(&format!("desk pipe listening on {}", address.display()));
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                tokio::spawn(connection(stream, desk.clone()));
+            }
+            _ = stopped.wait_for(|s| *s) => break,
+        }
+    }
+    let _ = std::fs::remove_file(&address);
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn listen(
+    dir: &Path,
+    tag: &str,
+    desk: Arc<Desk>,
+    mut stopped: watch::Receiver<bool>,
+) -> io::Result<()> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let address = format!(r"\\.\pipe\mewndo-core-{tag}");
+    let mut sa = acl::CurrentUserOnly::new()?;
+    // Safety: `sa` outlives every pipe instance created from it (it lives until this function returns).
+    let create = |first: bool, sa: &mut acl::CurrentUserOnly| unsafe {
+        ServerOptions::new()
+            .first_pipe_instance(first) // fail rather than share a pipe someone else already made
+            .create_with_security_attributes_raw(&address, sa.as_ptr())
+    };
+    let mut server = create(true, &mut sa)?;
+    write_core_json(dir, &address)?;
+    desk.log.info(&format!("desk pipe listening on {address}"));
+    loop {
+        tokio::select! {
+            connected = server.connect() => {
+                connected?;
+                // The next instance exists before this one is served, so a client never finds no pipe.
+                let client = std::mem::replace(&mut server, create(false, &mut sa)?);
+                tokio::spawn(connection(client, desk.clone()));
+            }
+            _ = stopped.wait_for(|s| *s) => break,
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+mod acl {
+    // A security descriptor that lets only the current user open the pipe: SDDL D:P(A;;GA;;;<user SID>)
+    // (§33.10 A4). Without it, the default pipe DACL lets other local accounts read it.
+    use std::io;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+        TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    pub struct CurrentUserOnly {
+        sa: SECURITY_ATTRIBUTES,
+        sd: PSECURITY_DESCRIPTOR,
+    }
+
+    // Safety: the descriptor is built once, never changed, and freed only in Drop.
+    unsafe impl Send for CurrentUserOnly {}
+
+    impl CurrentUserOnly {
+        pub fn new() -> io::Result<CurrentUserOnly> {
+            let sddl = format!("D:P(A;;GA;;;{})", current_user_sid()?);
+            let wide = super::wide(&sddl);
+            let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let ok = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut sd,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(CurrentUserOnly {
+                sa: SECURITY_ATTRIBUTES {
+                    nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                    lpSecurityDescriptor: sd,
+                    bInheritHandle: 0,
+                },
+                sd,
+            })
+        }
+
+        pub fn as_ptr(&mut self) -> *mut core::ffi::c_void {
+            &mut self.sa as *mut SECURITY_ATTRIBUTES as *mut _
+        }
+    }
+
+    impl Drop for CurrentUserOnly {
+        fn drop(&mut self) {
+            unsafe { LocalFree(self.sd) };
+        }
+    }
+
+    pub fn current_user_sid() -> io::Result<String> {
+        unsafe {
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut len = 0u32;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+            let mut buf = vec![0u64; (len as usize).div_ceil(8)]; // u64: TOKEN_USER holds pointers
+            let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+            CloseHandle(token);
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let mut text: *mut u16 = std::ptr::null_mut();
+            if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let n = (0..).take_while(|&i| *text.add(i) != 0).count();
+            let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
+            LocalFree(text.cast());
+            Ok(sid)
+        }
+    }
+}
+
+// core.json is written to a temp file and renamed into place, so a reader never sees half of it.
+fn write_core_json(dir: &Path, pipe: &str) -> io::Result<()> {
+    let body = serde_json::json!({
+        "pipe": pipe,
+        "pid": std::process::id(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol": VERSION,
+    });
+    let tmp = dir.join(format!("core.json.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, body.to_string())?;
+    std::fs::rename(&tmp, dir.join("core.json"))
+}
+
+// Only if it is still ours: a newer core may have replaced it.
+fn remove_core_json(dir: &Path) {
+    let path = dir.join("core.json");
+    let ours = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .is_some_and(|v| v["pid"] == std::process::id());
+    if ours {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// --- one connection -----------------------------------------------------------------------------------------------
+
+async fn read_frame<R: AsyncRead + Unpin>(
+    r: &mut R,
+) -> io::Result<Option<Result<Frame, proto::Error>>> {
+    let mut h = [0u8; HEADER];
+    match r.read_exact(&mut h).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    // A bad header means the framing is lost: the connection ends. A bad payload is answered and skipped.
+    let (kind, len) =
+        proto::header(&h).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let mut p = vec![0; len];
+    r.read_exact(&mut p).await?;
+    Ok(Some(proto::payload(kind, &p)))
+}
+
+fn reply<B: Body>(id: &str, body: &B) -> Arc<Vec<u8>> {
+    Arc::new(proto::encode(&Frame::Json(Envelope::wrap(id, body))).expect("replies are small"))
+}
+
+fn error(id: &str, message: String) -> Arc<Vec<u8>> {
+    reply(id, &ErrorBody { message })
+}
+
+// The answer to one request. Parts B to H add their message types here.
+fn respond(env: &Envelope) -> Arc<Vec<u8>> {
+    if env.v != VERSION {
+        return error(&env.id, proto::Error::WrongVersion(env.v).to_string());
+    }
+    match env.kind.as_str() {
+        Ping::TYPE => reply(&env.id, &Pong {}),
+        Hello::TYPE => error(&env.id, "hello was already sent".into()),
+        other => error(&env.id, format!("unknown message type {other}")),
+    }
+}
+
+async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk: Arc<Desk>) {
+    let (mut r, mut w) = tokio::io::split(stream);
+    let (out, mut outgoing) = mpsc::unbounded_channel::<Arc<Vec<u8>>>();
+    let writing = tokio::spawn(async move {
+        while let Some(frame) = outgoing.recv().await {
+            if w.write_all(&frame).await.is_err() || w.flush().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let hello = match tokio::time::timeout(HELLO_WAIT, read_frame(&mut r)).await {
+        Ok(Ok(Some(Ok(Frame::Json(env))))) => env,
+        _ => {
+            desk.log
+                .warn("desk pipe: a connection sent no hello; closed");
+            drop(out);
+            let _ = writing.await;
+            return;
+        }
+    };
+    let role = match hello.open::<Hello>() {
+        Ok(h) => h.role,
+        Err(e) => {
+            let _ = out.send(error(
+                &hello.id,
+                format!("the first message must be hello: {e}"),
+            ));
+            drop(out);
+            let _ = writing.await;
+            return;
+        }
+    };
+    let _ = out.send(reply(&hello.id, &Pong {}));
+
+    let events = (role == Role::App).then(|| {
+        let (mut rx, out, log) = (desk.events.subscribe(), out.clone(), desk.log.clone());
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(frame) => {
+                        if out.send(frame).is_err() {
+                            break;
+                        }
+                    }
+                    // ponytail: a stalled app skips what it missed; resync on reconnect if that ever matters.
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        log.warn(&format!("desk pipe: a slow app missed {n} events"))
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+    });
+
+    loop {
+        match read_frame(&mut r).await {
+            Ok(Some(Ok(Frame::Json(env)))) => {
+                if out.send(respond(&env)).is_err() {
+                    break;
+                }
+            }
+            Ok(Some(Ok(Frame::Lane { .. }))) => {} // lanes arrive with Part G
+            Ok(Some(Err(e))) => {
+                if out.send(error("", e.to_string())).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                desk.log
+                    .warn(&format!("desk pipe: connection dropped: {e}"));
+                break;
+            }
+        }
+    }
+    if let Some(events) = events {
+        events.abort();
+    }
+    drop(out);
+    let _ = writing.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mewndo_proto::{AgentStatus, encode};
+    use tokio::io::DuplexStream;
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("mewndo-desk-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn desk(name: &str) -> Arc<Desk> {
+        let d = temp(name);
+        Arc::new(Desk::new(&d, Arc::new(Log::new(&d.join("logs")))))
+    }
+
+    async fn send<B: Body>(c: &mut DuplexStream, id: &str, body: &B) {
+        c.write_all(&encode(&Frame::Json(Envelope::wrap(id, body))).unwrap())
+            .await
+            .unwrap();
+    }
+
+    async fn recv(c: &mut DuplexStream) -> Envelope {
+        match read_frame(c).await.unwrap().unwrap().unwrap() {
+            Frame::Json(env) => env,
+            other => panic!("not json: {other:?}"),
+        }
+    }
+
+    async fn connect(desk: &Arc<Desk>, role: Role) -> DuplexStream {
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(connection(server, desk.clone()));
+        send(&mut client, "h", &Hello { role }).await;
+        assert_eq!(recv(&mut client).await.kind, "pong");
+        client
+    }
+
+    #[tokio::test]
+    async fn hello_then_ping_gets_pong_with_the_same_id() {
+        let d = desk("ping");
+        let mut c = connect(&d, Role::Hook).await;
+        send(&mut c, "42", &Ping {}).await;
+        let back = recv(&mut c).await;
+        assert_eq!(
+            (back.v, back.id.as_str(), back.kind.as_str()),
+            (2, "42", "pong")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_message_must_be_hello() {
+        let d = desk("nohello");
+        let (mut c, server) = tokio::io::duplex(4096);
+        tokio::spawn(connection(server, d));
+        send(&mut c, "1", &Ping {}).await;
+        let back = recv(&mut c).await;
+        assert_eq!(back.kind, "error");
+        assert!(back.body["message"].as_str().unwrap().contains("hello"));
+        assert!(
+            read_frame(&mut c).await.unwrap().is_none(),
+            "then the connection closes"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_types_old_versions_and_bad_json_get_errors_and_the_connection_stays_up() {
+        let d = desk("errors");
+        let mut c = connect(&d, Role::Hook).await;
+        let unknown = Envelope {
+            v: 2,
+            id: "u".into(),
+            kind: "launch.rockets".into(),
+            body: Default::default(),
+        };
+        c.write_all(&encode(&Frame::Json(unknown)).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            recv(&mut c).await.body["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown message type")
+        );
+
+        let old = Envelope {
+            v: 1,
+            ..Envelope::wrap("o", &Ping {})
+        };
+        c.write_all(&encode(&Frame::Json(old)).unwrap())
+            .await
+            .unwrap();
+        let back = recv(&mut c).await;
+        assert_eq!((back.id.as_str(), back.kind.as_str()), ("o", "error"));
+
+        c.write_all(&[0, 3, 0, 0, 0, b'{', b'{', b'{'])
+            .await
+            .unwrap();
+        assert_eq!(recv(&mut c).await.kind, "error");
+
+        send(&mut c, "still", &Ping {}).await;
+        assert_eq!(recv(&mut c).await.id, "still");
+    }
+
+    #[tokio::test]
+    async fn a_bad_header_ends_the_connection() {
+        let d = desk("badheader");
+        let mut c = connect(&d, Role::Hook).await;
+        c.write_all(&[7, 0, 0, 0, 0]).await.unwrap();
+        assert!(read_frame(&mut c).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn only_apps_receive_what_the_desk_publishes() {
+        let d = desk("publish");
+        let mut app = connect(&d, Role::App).await;
+        let mut hook = connect(&d, Role::Hook).await;
+        let status = AgentStatus {
+            agent_id: "a1".into(),
+            kind: "claude-code".into(),
+            name: "Claude".into(),
+            connection: "hooked".into(),
+            status: "working".into(),
+            last_line: None,
+        };
+        d.publish(&status);
+        assert_eq!(recv(&mut app).await.open::<AgentStatus>().unwrap(), status);
+
+        send(&mut hook, "p", &Ping {}).await;
+        assert_eq!(
+            recv(&mut hook).await.kind,
+            "pong",
+            "the hook's next frame is its own reply, not the event"
+        );
+    }
+
+    #[test]
+    fn core_json_is_written_whole_and_removed_only_by_its_owner() {
+        let d = temp("corejson");
+        write_core_json(&d, "pipe-name").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(d.join("core.json")).unwrap()).unwrap();
+        assert_eq!(
+            (v["pipe"].as_str(), v["protocol"].as_u64()),
+            (Some("pipe-name"), Some(2))
+        );
+        assert_eq!(v["pid"], std::process::id());
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            1,
+            "no temp file left behind"
+        );
+
+        std::fs::write(d.join("core.json"), r#"{"pipe":"x","pid":1}"#).unwrap();
+        remove_core_json(&d);
+        assert!(
+            d.join("core.json").exists(),
+            "another core's file is left alone"
+        );
+        write_core_json(&d, "pipe-name").unwrap();
+        remove_core_json(&d);
+        assert!(!d.join("core.json").exists());
+    }
+
+    #[test]
+    fn a_second_core_for_the_same_folder_is_refused() {
+        let d = temp("instance");
+        let first = claim(&d).unwrap();
+        assert_eq!(
+            claim(&d).err().map(|e| e.kind()),
+            Some(io::ErrorKind::AddrInUse)
+        );
+        let other = temp("instance-other");
+        let _second = claim(&other).expect("another folder is another desk");
+        drop(first);
+        #[cfg(unix)] // on Windows the mutex lives until the process ends
+        claim(&d).expect("free again once the first core is gone");
+    }
+}

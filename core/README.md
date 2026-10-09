@@ -76,6 +76,10 @@ stored and restored exactly.
 
 Protocol: one JSON object per line, each with the protocol version `v` and a request `id`. See `src/protocol.rs`.
 
+With `--desk <folder>` the core also serves the Agent Desk pipe, protocol v2 (spec §33.10 Part A): framed messages
+from `crates/mewndo-proto`, `core.json` and `desk.db` in that folder, one core per folder. See
+`crates/mewndo-core/src/desk.rs` and `docs/decisions.md`.
+
 ```
 npm start    # from the repository root: builds the core, then starts the app
 npm test     # from the repository root: core tests, then the app's
