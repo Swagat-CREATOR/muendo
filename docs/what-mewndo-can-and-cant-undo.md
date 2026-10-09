@@ -91,8 +91,8 @@ delivery, receipt on the Done card, real mouse movement to pause — is a target
 
 ## What is built and what isn't
 
-Everything above is about **files on this Windows PC**. That is the only thing Mewndo protects today, and it runs
-on the v0 Node engine, with restores carried out by the Rust core.
+Read from the repository on 9 October 2026. Everything above is about **files on this Windows PC**. That is the
+only thing Mewndo protects today, and it runs on the v0 Node engine, with restores carried out by the Rust core.
 
 Written but not connected, so Mewndo can't undo anything there today:
 
@@ -102,22 +102,51 @@ Written but not connected, so Mewndo can't undo anything there today:
   mailbox, Drive or workspace is being watched. Google's own setup guide (`docs/google-setup.md`) also keeps the
   project in Testing mode, where a sign-in lasts 7 days and at most 100 people can be added, until the
   restricted-scope security review is done.
-- **The hosted MCP and Send Guard** (`cloud/mcp`): written, tested locally, not deployed. No email an agent sends
-  is checked by Mewndo.
+- **The hosted MCP and the cloud hub** (`cloud/gateway`, spec §37.6 K6 and K7): written, 73 tests pass against a
+  faked runtime, not deployed. Cloud agents can ask the user before a risky step through `ask_user`, and nobody
+  answering is never an approval — the tool replies "No answer yet … Do not go ahead without one". The desktop
+  side of that link isn't built, so today there is nothing for a card to appear on, and the WebSocket upgrade
+  itself has never run: `WebSocketPair` only exists inside Cloudflare's runtime.
+- **Send Guard** (`cloud/gmail`, spec §28.4 Flow D): written, 26 tests pass. The rules (first-time recipient,
+  look-alike domain, too many recipients, external mail with attachments, secrets and personal data, leftover
+  placeholders) and the release bar run offline, and a deadline timeout, a transport error, an unreadable answer
+  and a rules-only fallback are all **holds**, so nothing sends without a verdict. But it is not deployed, it has
+  never run against a real mailbox, Mewndo holds no send credential, and the hold queue and countdown chip aren't
+  built. **No email an agent sends is checked by Mewndo today.**
 - **The decision gateway** (`cloud/gateway`, spec §37): tested against a faked runtime, never run on Cloudflare.
   Its own "Honest limits" record that the exact request and response shape of `clef-flash` is still unverified, so
   an answer it can't parse becomes a fallback to the local rules, never a guessed verdict. Nothing points the core
   at a gateway by default: unless `MEWNDO_DECIDE_URL` is set, no model is called at all and every Guard decision is
   made by the rules in the core, on this PC.
 
-Not built at all, though spec §32 to §38 describe them: the Agent Inbox and side dock, the Clef Router, Receipts,
-guarded computer use and Show Me. `core/crates/` holds only `mewndo-core` and `mewndo-proto`.
+Started on that date, and nothing in the app calls any of it yet:
+
+- **Receipts** (`core/crates/mewndo-trace`, spec §35): the claim extractor, the evidence rules, the receipt line
+  and the test-runner detection pass their tests. Nothing calls them, so no "Done" card has ever carried a
+  receipt, and the check that an agent's summary matches what it really did does not run anywhere a user can see.
+- **The Clef Router** (`core/crates/mewndo-router`, spec §34): being written as this was read, and its own tests
+  were not all passing at the time. Guard decisions are still made by the rules in `core/src/policy.rs`.
+- **The Kaggle decision backend** (`notebooks/clef-kaggle-server.ipynb`, spec §37.4): written and never run. No
+  Kaggle session, no GPU, and the way clef-flash is loaded and scored is explicitly unverified.
+- **A standalone ledger verifier** (`tools/ledger-verify`, spec §30.2): see the Flight Recorder note below.
+
+Not built at all: the Agent Inbox and side dock, guarded computer use and Show Me (spec §33, §36). Whoever lands
+one of these owns the matching change to this page: spec §31.7 makes keeping it level with §28.10 part of the
+work, and nothing may be claimed here that isn't measured.
 
 Partly built: the **Flight Recorder**. The core keeps a local append-only log of guard decisions, heals, holds,
 approvals, save points and restores, hash-chained and signed with a device key, so rewriting or dropping an event
-is detectable. The hourly Merkle roots, the cloud anchor, the public transparency log and the standalone verifier
-aren't built, and the signature is symmetric: today only someone holding the device key can check the log, so a
-third party can't yet verify it without trusting Mewndo.
+is detectable. A standalone verifier now exists (`tools/ledger-verify`, 11 tests) that recomputes the
+hash chain, catches a tampered or dropped event, and checks an anchored Merkle root without sharing any code with
+Mewndo. Two limits stand, and they are the whole point of the feature:
+
+- The signature is symmetric (HMAC), so holding the device key lets you verify a record and equally lets you forge
+  one. A third party still **cannot** verify who wrote the log. That needs an asymmetric device key, which isn't
+  built.
+- The hourly Merkle roots, the cloud anchor and the public transparency log aren't built. Without them, dropping
+  the **last** events leaves a perfectly intact chain — no gap, no broken link — and the verifier exits 0. There
+  is a test asserting exactly that. Until roots are anchored somewhere Mewndo doesn't control, a truncated log is
+  undetectable.
 
 Builds are unsigned — there's no code-signing certificate yet. Problems found but not fixed are in
 [known issues](known-issues.md).
