@@ -729,11 +729,11 @@ mod platform {
                     } else {
                         0
                     };
-                    if ok == 0 && error != 1022
-                    /* ERROR_NOTIFY_ENUM_DIR: overflowed */
-                    {
-                        let gone = std::fs::symlink_metadata(&root).is_err();
-                        emit(if gone {
+                    // A deleted root fails the read, or the next arm, with ERROR_ACCESS_DENIED while our handle
+                    // still keeps it alive, so lstat alone races the delete.
+                    let stopped = |error: u32| {
+                        let gone = error == 5 || std::fs::symlink_metadata(&root).is_err();
+                        if gone {
                             FeedEvent::problem(
                                 "gone",
                                 format!(
@@ -749,7 +749,12 @@ mod platform {
                                     io::Error::from_raw_os_error(error as i32)
                                 ),
                             )
-                        });
+                        }
+                    };
+                    if ok == 0 && error != 1022
+                    /* ERROR_NOTIFY_ENUM_DIR: overflowed */
+                    {
+                        emit(stopped(error));
                         return;
                     }
                     let bytes = unsafe {
@@ -757,10 +762,7 @@ mod platform {
                     }
                     .to_vec();
                     if let Err(e) = arm(dir.0, buf, ov) {
-                        emit(FeedEvent::problem(
-                            "error",
-                            format!("The change feed stopped ({e}); watch again"),
-                        ));
+                        emit(stopped(e.raw_os_error().unwrap_or(0) as u32));
                         return;
                     }
                     if n == 0 {
