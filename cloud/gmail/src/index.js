@@ -13,7 +13,9 @@
 //
 // Setup is in docs/google-setup.md (P6.1). Secrets (never committed):
 //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_PUBSUB_TOPIC
+//   MEWNDO_DECIDE_URL, MEWNDO_DECIDE_TOKEN (Send Guard's decision service)
 import { healPlan } from './heal.js'
+import { guardSend, sendViaGmail } from './send-guard.js'
 
 export default {
   async fetch(request, env) {
@@ -21,6 +23,7 @@ export default {
     if (url.pathname === '/oauth/callback') return oauthCallback(request, env, url)
     if (url.pathname === '/gmail/push' && request.method === 'POST') return gmailPush(request, env)
     if (url.pathname === '/gmail/restore' && request.method === 'POST') return gmailRestore(request, env)
+    if (url.pathname === '/gmail/send' && request.method === 'POST') return gmailSend(request, env)
     return json({ error: 'not found' }, 404)
   },
 
@@ -146,6 +149,56 @@ async function gmailRestore(request, env) {
   })
 }
 
+// --- Send Guard (spec §28.4 Flow D, P5.5) ---
+// Body: { user, message:{to,cc,bcc,subject,body,attachments}, context:{brief,...} }.
+// All the decision logic is in src/send-guard.js, which is runtime-free and
+// unit-tested; this route is only the plumbing. A hold is returned to the caller
+// and NOTHING is sent. The hold queue, the countdown chip on the bar and the
+// phone approval live in cloud/mcp and apps/desktop — not here.
+async function gmailSend(request, env) {
+  const { user, message, context } = await request.json()
+  const result = await guardSend(message, context || {}, {
+    decide: (req, opts) => askDecide(env, req, opts),
+    // §29.4: a deadline that passes is a hold, so the send below is unreachable
+    // without a verdict at or above the 0.97 bar.
+    send: async (m) => {
+      const access = await sendAccessToken(env, user)
+      return sendViaGmail({ accessToken: access, message: m })
+    },
+  })
+  return json(result, result.verdict === 'release' ? 200 : 202)
+}
+
+// The decision service (cloud/decide). One POST, every question already batched
+// by buildDecisionRequest. The AbortSignal carries Send Guard's deadline, so a
+// slow model is dropped rather than waited on.
+async function askDecide(env, req, opts) {
+  const r = await fetch(env.MEWNDO_DECIDE_URL, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${env.MEWNDO_DECIDE_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify(req),
+    signal: opts?.signal,
+  })
+  if (!r.ok) throw new Error(`decide: ${r.status}`)
+  return r.json()
+}
+
+// Send Guard's own credential, with only the gmail.send scope (§P5.5). Kept
+// apart from accessToken() above, which holds the broader Rewind/Heal scopes, so
+// a bug in one cannot do the other's job. A separate refresh token is stored
+// under `send_refresh_token`; until P6.1 grants one, this route cannot send.
+async function sendAccessToken(env, user) {
+  const stub = userStub(env, user)
+  const { send_refresh_token } = await stub.fetch('https://do/state').then((r) => r.json())
+  if (!send_refresh_token) throw new Error(`no gmail.send credential for ${user} (connect Send Guard separately)`)
+  const t = await postForm('https://oauth2.googleapis.com/token', {
+    refresh_token: send_refresh_token, grant_type: 'refresh_token',
+    client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
+  })
+  if (!t.access_token) throw new Error('send token refresh failed (7-day Testing-mode expiry?)')
+  return t.access_token
+}
+
 // --- Durable Object: one per user; tokens + label/trash journal ---
 export class GmailUser {
   constructor(state) { this.state = state }
@@ -160,7 +213,9 @@ export class GmailUser {
       return json({ ok: true })
     }
     if (url.pathname === '/state') {
-      return json({ refresh_token: await s.get('refresh_token'), historyId: await s.get('historyId') })
+      // send_refresh_token is Send Guard's own gmail.send-only credential; it is
+      // absent until P6.1 grants one, and then /gmail/send cannot send.
+      return json({ refresh_token: await s.get('refresh_token'), send_refresh_token: await s.get('send_refresh_token'), historyId: await s.get('historyId') })
     }
     if (url.pathname === '/watch') {
       const b = await request.json()

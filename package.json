@@ -6,7 +6,7 @@
   ],
   "scripts": {
     "start": "cargo build --manifest-path core/Cargo.toml && npm start -w apps/desktop",
-    "test": "cargo test --manifest-path core/Cargo.toml && npm test -w apps/desktop && npm run test:cloud",
+    "test": "cargo test --manifest-path core/Cargo.toml && npm test -w apps/desktop && npm run test:cloud && npm run test:tools",
     "test:cloud": "node --test \"cloud/*/test/**/*.test.js\"",
     "reliability": "npm run reliability -w apps/desktop",
     "responsiveness": "npm run responsiveness -w apps/desktop",
@@ -15,6 +15,7 @@
     "bench": "cargo build --release --manifest-path core/Cargo.toml && npm run bench -w apps/desktop",
     "bench:windows": "scripts/windows.sh cargo build --release --manifest-path core/Cargo.toml && scripts/windows.sh node apps/desktop/scripts/bench.js",
     "test:rust": "cargo build --manifest-path core/Cargo.toml && node apps/desktop/scripts/with-core.js node --test \"apps/desktop/test/**/*.test.js\" && node apps/desktop/scripts/with-core.js node apps/desktop/scripts/reliability.js",
-    "test:rust:windows": "scripts/windows.sh cargo build --manifest-path core/Cargo.toml && scripts/windows.sh node apps/desktop/scripts/with-core.js node --test \"apps/desktop/test/**/*.test.js\" && scripts/windows.sh node apps/desktop/scripts/with-core.js node apps/desktop/scripts/reliability.js"
+    "test:rust:windows": "scripts/windows.sh cargo build --manifest-path core/Cargo.toml && scripts/windows.sh node apps/desktop/scripts/with-core.js node --test \"apps/desktop/test/**/*.test.js\" && scripts/windows.sh node apps/desktop/scripts/with-core.js node apps/desktop/scripts/reliability.js",
+    "test:tools": "node --test \"tools/*/test/**/*.test.js\""
   }
 }

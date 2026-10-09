@@ -42,9 +42,13 @@ note: no key given, so signatures were not checked
   whole value of anchoring, and it is missing.
 - **There is no exporter.** The core writes `ledger.jsonl` but has no "export" command, so
   today you point this at the data folder directly.
-- **The Merkle rule is this tool's definition**, because nothing writes roots yet: leaves are
-  the records' own 32-byte hashes, a parent is `sha256(left ‖ right)`, and an odd node at the
-  end is promoted unchanged. Whatever builds the roots must match it.
+- **The Merkle rule is this tool's definition**, because nothing writes roots yet. It is
+  RFC 6962 (Certificate Transparency): leaf = `sha256(0x00 ‖ d)`, node =
+  `sha256(0x01 ‖ L ‖ R)`, split at the largest power of two below `n`, over the records' own
+  32-byte hashes. The `0x00`/`0x01` prefixes stop a leaf being passed off as an internal
+  node; the common promote-the-odd-leaf variant has a known second-preimage weakness, where
+  two different leaf counts can give the same root. Whatever builds the roots must hash the
+  same way.
 
 ## Why the event bytes are never re-encoded
 
@@ -53,14 +57,22 @@ writes `1`, so re-serializing a parsed event would fail every record carrying a 
 probability. `rawEvent()` slices the `"event":{…}` substring out of the line by matching
 braces, respecting strings and escapes, and hashes exactly those bytes.
 
+## The hole only anchoring can close
+
+Dropping the **last** records leaves a perfectly intact chain: no `seq` gap, no broken
+`prev` link. Chain verification alone exits 0 on a truncated ledger, and there is a test
+asserting exactly that. Only a root covering the full range catches it — which is the whole
+reason §30.2 anchors roots hourly, and the whole reason this tool's value is capped until
+that anchoring is built.
+
 ## Tests
 
 ```bash
-npm test     # 10 tests
+npm test     # 11 tests
 ```
 
 They build a real ledger in a temp folder in the on-disk format, then check that a clean
 export passes and that each of these is caught: a tampered event, a dropped event, a forged
-signature, a wrong key, a missing first record, a wrong Merkle root, a ledger that is not
-JSON, and a missing file. Plus the command line's exit codes, and that the odd-leaf Merkle
-case and the verbatim event slice behave as documented.
+signature, a wrong key, a missing first record, a wrong Merkle root, a truncated tail, a
+ledger that is not JSON, and a missing file. Plus the command line's exit codes, the RFC 6962
+hashing including its domain separation, and the verbatim event slice.

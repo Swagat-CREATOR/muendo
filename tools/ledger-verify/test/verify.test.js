@@ -139,15 +139,40 @@ test('an anchored Merkle root is checked, and a wrong one is caught', (t) => {
   assert.match(bad.problems[0].problem, /Merkle root for 0..4 does not match/)
 })
 
-test('an odd number of leaves promotes the last one, and one leaf is its own root', () => {
-  const h = (s) => createHash('sha256').update(s).digest('hex')
-  const [a, b, c] = [h('a'), h('b'), h('c')]
-  assert.equal(merkleRoot([a]), a)
-  const ab = createHash('sha256').update(Buffer.from(a, 'hex')).update(Buffer.from(b, 'hex')).digest()
-  assert.equal(merkleRoot([a, b]), ab.toString('hex'))
-  const expected = createHash('sha256').update(ab).update(Buffer.from(c, 'hex')).digest('hex')
-  assert.equal(merkleRoot([a, b, c]), expected)
-  assert.equal(merkleRoot([]), null)
+test('Merkle hashing is RFC 6962, with domain separation', () => {
+  // leaf = sha256(0x00 || d), node = sha256(0x01 || L || R), split at the largest power of
+  // two below n. The prefixes stop a leaf being passed off as an internal node; promoting
+  // an odd last leaf instead has a known second-preimage weakness, where two different leaf
+  // counts can give the same root.
+  const leaf = (d) => createHash('sha256').update(Buffer.from([0x00])).update(d).digest()
+  const node = (l, r) => createHash('sha256').update(Buffer.from([0x01])).update(l).update(r).digest()
+  const [a, b, c] = ['a', 'b', 'c'].map((x) => createHash('sha256').update(x).digest())
+  const hex = (b) => b.toString('hex')
+
+  assert.equal(merkleRoot([]), createHash('sha256').digest('hex'))
+  assert.equal(merkleRoot([a].map(hex)), hex(leaf(a)))
+  assert.equal(merkleRoot([a, b].map(hex)), hex(node(leaf(a), leaf(b))))
+  // n = 3 splits 2 + 1, not 1 + 2.
+  assert.equal(merkleRoot([a, b, c].map(hex)), hex(node(node(leaf(a), leaf(b)), leaf(c))))
+  // Domain separation: a one-leaf tree over the two-leaf root is a different root.
+  assert.notEqual(merkleRoot([a, b].map(hex)), hex(leaf(node(leaf(a), leaf(b)))))
+})
+
+test('a truncated tail is caught by the anchored root, which the chain alone cannot see', (t) => {
+  const dir = folder()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const { lines, hashes } = writeLedger(dir, [event(0), event(1), event(2)])
+  const root = merkleRoot(hashes) // anchored when all three existed
+
+  // Drop the LAST record. No seq gap, no broken prev link: the chain is perfect.
+  writeFileSync(join(dir, 'ledger.jsonl'), lines.slice(0, 2).join('\n') + '\n')
+  const chainOnly = verify(dir)
+  assert.equal(chainOnly.ok, true, 'the chain alone cannot see a truncated tail - this is why anchoring exists')
+
+  writeFileSync(join(dir, 'roots.json'), JSON.stringify([{ at: 1, seq_from: 0, seq_to: 2, root }]))
+  const anchored = verify(dir)
+  assert.equal(anchored.ok, false)
+  assert.match(anchored.problems[0].problem, /covers 0..2 but the ledger stops at 1 \(the tail was truncated\)/)
 })
 
 test('the event bytes are read from the line, never re-encoded', () => {

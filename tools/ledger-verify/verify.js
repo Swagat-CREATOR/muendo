@@ -72,22 +72,31 @@ function rawEvent(line) {
   return null
 }
 
-// Leaves are the records' own 32-byte hashes; a parent is sha256(left || right); an odd
-// node at the end is promoted unchanged. This is the verifier's definition, because the
-// core does not write roots yet (P7.2); whatever builds them must match it.
+// RFC 6962 (Certificate Transparency) Merkle hashing, not the common
+// promote-or-duplicate-the-odd-leaf variant:
+//
+//   MTH({})     = sha256("")
+//   MTH({d})    = sha256(0x00 || d)
+//   MTH(D[n])   = sha256(0x01 || MTH(D[0:k]) || MTH(D[k:n])),  k = largest power of 2 < n
+//
+// The 0x00 / 0x01 prefixes are what stop a leaf being passed off as an internal node, and
+// the promote variant has a known second-preimage weakness where two different leaf counts
+// can produce the same root. Whatever writes the roots must hash the same way.
 function merkleRoot(hashesHex) {
-  if (hashesHex.length === 0) return null
-  let level = hashesHex.map((h) => Buffer.from(h, 'hex'))
-  while (level.length > 1) {
-    const next = []
-    for (let i = 0; i < level.length; i += 2) {
-      next.push(i + 1 < level.length
-        ? createHash('sha256').update(level[i]).update(level[i + 1]).digest()
-        : level[i])
-    }
-    level = next
-  }
-  return level[0].toString('hex')
+  const leaves = hashesHex.map((h) => Buffer.from(h, 'hex'))
+  return mth(leaves).toString('hex')
+}
+
+function mth(leaves) {
+  if (leaves.length === 0) return createHash('sha256').digest()
+  if (leaves.length === 1) return createHash('sha256').update(Buffer.from([0x00])).update(leaves[0]).digest()
+  let k = 1
+  while (k * 2 < leaves.length) k *= 2 // the largest power of two strictly below n
+  return createHash('sha256')
+    .update(Buffer.from([0x01]))
+    .update(mth(leaves.slice(0, k)))
+    .update(mth(leaves.slice(k)))
+    .digest()
 }
 
 function verify(folder, { key = null } = {}) {
@@ -153,7 +162,7 @@ function verify(folder, { key = null } = {}) {
     previous = record
   }
 
-  // 3. anchored Merkle roots
+  // 3. anchored Merkle roots (RFC 6962)
   const rootsPath = join(folder, 'roots.json')
   const rootResults = []
   if (existsSync(rootsPath)) {
@@ -167,8 +176,19 @@ function verify(folder, { key = null } = {}) {
     for (const entry of Array.isArray(roots) ? roots : roots.roots ?? []) {
       const from = Number(entry.seq_from ?? 0)
       const to = Number(entry.seq_to ?? hashes.length - 1)
-      const slice = hashes.slice(from, to + 1)
-      const got = merkleRoot(slice)
+      // The case the chain cannot see: dropping the LAST records leaves a perfectly intact
+      // chain, with no seq gap and no broken prev link. Only a root covering the full range
+      // catches a truncated tail, which is the whole reason anchoring exists.
+      if (to > hashes.length - 1) {
+        problems.push({
+          index: null,
+          seq: hashes.length,
+          problem: `the anchored root covers ${from}..${to} but the ledger stops at ${hashes.length - 1} (the tail was truncated)`,
+        })
+        rootResults.push({ seq_from: from, seq_to: to, expected: entry.root, got: null, ok: false })
+        continue
+      }
+      const got = merkleRoot(hashes.slice(from, to + 1))
       const ok = got === entry.root
       rootResults.push({ seq_from: from, seq_to: to, expected: entry.root, got, ok })
       if (!ok) {
