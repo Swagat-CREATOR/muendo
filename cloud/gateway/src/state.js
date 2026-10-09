@@ -85,14 +85,23 @@ class State {
   }
 
   // --- K4 one round trip per decision --------------------------------------
+  // What /v1/decide calls: the token check and prepare in the same round trip.
+  async authPrepare({ token, ...args } = {}) {
+    const who = await this.auth(token)
+    if (!who) throw { status: 401, message: 'unauthorized' }
+    return { ...(await this.prepare({ ...args, tester: who.tester })), tester: who.tester }
+  }
+
   // Reads cache, today's usage and the backend record together, applies §37.3 and
   // §37.2, and reserves the neurons when the answer is Workers AI's to give.
-  async prepare({ tester, sig, kind, estNeurons, deadlineMs, now = Date.now() } = {}) {
+  async prepare({ tester, sig, scope, kind, estNeurons, deadlineMs, now = Date.now() } = {}) {
     const day = utcDay(now)
     const cacheKey = `cache:${sig}`
     const usageKey = `usage:${day}`
     const read = await this.storage.get([cacheKey, usageKey, `backend:${KAGGLE}`])
-    const cache = read.get(cacheKey) ?? null
+    const found = read.get(cacheKey) ?? null
+    // An entry another tester or another brief wrote is not this caller's answer.
+    const cache = found && found.scope === scope ? found : null
     const usage = read.get(usageKey) ?? { day, total: 0, testers: {} }
     const backend = read.get(`backend:${KAGGLE}`) ?? null
 
@@ -108,7 +117,7 @@ class State {
 
     // A stale entry is dropped as it is found, which keeps recurring signatures
     // from piling up without a sweep on the hot path.
-    if (cache && decision.route !== 'cache') await this.storage.delete(cacheKey)
+    if (found && decision.route !== 'cache') await this.storage.delete(cacheKey)
 
     if (decision.reserve > 0) {
       usage.day = day
@@ -122,9 +131,9 @@ class State {
   // Everything that can wait until after the response (§37.6 K4.5, run under
   // ctx.waitUntil): cache the answers, correct the reservation against the real
   // neuron count if the backend reported one, and record the latency.
-  async settle({ tester, sig, answers, backend, ms, reserved = 0, actualNeurons = null, now = Date.now() } = {}) {
+  async settle({ tester, sig, scope, answers, backend, ms, reserved = 0, actualNeurons = null, now = Date.now() } = {}) {
     const writes = {}
-    if (answers && sig) writes[`cache:${sig}`] = { answers, expires: now + CACHE_SECONDS * 1000 }
+    if (answers && sig) writes[`cache:${sig}`] = { answers, scope, expires: now + CACHE_SECONDS * 1000 }
 
     if (Number.isFinite(actualNeurons) && reserved > 0 && actualNeurons !== reserved) {
       const usageKey = `usage:${utcDay(now)}`

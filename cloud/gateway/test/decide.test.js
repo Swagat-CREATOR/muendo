@@ -256,3 +256,62 @@ test('one tester cannot spend another tester\'s share', async () => {
   assert.equal((await decide(env, ctx, a.token, { headers: { 'x-mewndo-sig': 'x1' } })).body.fallback, true)
   assert.equal((await decide(env, ctx, b.token, { headers: { 'x-mewndo-sig': 'x2' } })).body.backend, 'workers_ai')
 })
+
+// The model ran in both cases, so its neurons must stay on the meter: otherwise a
+// model that keeps answering in an unknown shape would spend the free day unseen.
+test('a model that answered in an unknown shape or past the deadline keeps its neurons counted', async () => {
+  for (const ai of [
+    () => ({ response: 'Sure! I think you should allow it.' }),
+    () => ({ response: '{"verdict":"just delete it"}' }),
+    () => new Promise((resolve) => setTimeout(() => resolve(asTextModel()), 200)),
+  ]) {
+    const env = fakeEnv({ ai })
+    const ctx = fakeCtx()
+    const { token, tester } = await withTester(env, ctx)
+    const { body } = await decide(env, ctx, token, { headers: { 'x-mewndo-sig': 'spent', 'x-mewndo-deadline-ms': '40' } })
+    assert.equal(body.fallback, true)
+    await ctx.settled()
+    const usage = env.storage.map.get(`usage:${g.utcDay(Date.now())}`)
+    assert.ok(usage.total > 0, `${body.reason}: neurons stay counted`)
+    assert.equal(usage.testers[tester], usage.total)
+  }
+})
+
+test('a cached verdict is reused only by the same tester under the same brief', async () => {
+  const env = fakeEnv({ ai: asTextModel })
+  const ctx = fakeCtx()
+  const a = await withTester(env, ctx, 'Priya')
+  const b = await withTester(env, ctx, 'Sam')
+  const headers = { 'x-mewndo-sig': 'same-action' }
+  await decide(env, ctx, a.token, { headers })
+  await ctx.settled()
+  assert.equal((await decide(env, ctx, a.token, { headers })).body.backend, 'cache')
+
+  const otherBrief = structuredClone(GUARD_BODY)
+  otherBrief.state.brief = 'Clean out the old database migrations.'
+  assert.equal((await decide(env, ctx, a.token, { headers, body: otherBrief })).body.backend, 'workers_ai',
+    'in_scope depends on the brief')
+  await ctx.settled()
+  assert.equal((await decide(env, ctx, b.token, { headers })).body.backend, 'workers_ai',
+    'another tester never gets this tester\'s verdict')
+})
+
+test('a decision costs one Durable Object round trip before the answer', async () => {
+  const env = fakeEnv({ ai: asTextModel })
+  const ctx = fakeCtx()
+  const { token } = await withTester(env, ctx)
+  const get = env.STATE.get
+  let trips = 0
+  env.STATE.get = (...args) => {
+    const stub = get(...args)
+    return {
+      fetch: (url, init) => {
+        if (JSON.parse(init.body).method !== 'settle') trips++ // settle runs under waitUntil
+        return stub.fetch(url, init)
+      },
+    }
+  }
+  const { body } = await decide(env, ctx, token, { headers: { 'x-mewndo-sig': 'one-trip' } })
+  assert.equal(body.backend, 'workers_ai')
+  assert.equal(trips, 1, 'auth, cache, budget and route together')
+})

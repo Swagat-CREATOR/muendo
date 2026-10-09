@@ -5,3 +5,6 @@ out/
 .DS_Store
 Thumbs.db
 target/
+# Wrangler local secrets and state: never committed (CLAUDE.md rule 4)
+.dev.vars
+.wrangler/

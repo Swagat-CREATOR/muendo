@@ -52,8 +52,7 @@ async function route(request, env, ctx) {
 // --- K4: one decision ---------------------------------------------------------
 async function decide(request, env, ctx) {
   const token = bearer(request)
-  const who = await state(env, 'auth', token)
-  if (!who) return json({ error: 'unauthorized' }, 401)
+  if (!token) return json({ error: 'unauthorized' }, 401)
 
   const text = await request.text()
   const bodyLength = new TextEncoder().encode(text).length
@@ -75,14 +74,20 @@ async function decide(request, env, ctx) {
   // one the gateway hashes the request so identical calls still share a verdict.
   const sig = request.headers.get('x-mewndo-sig') || (await sha256Hex(sortedJson(req)))
   const estNeurons = estimateNeurons(bodyLength)
+  // A verdict depends on the brief (in_scope), so a cached one is reused only by the
+  // same tester under the same brief, never across testers (§34.8: brief hash + signature).
+  const scope = await sha256Hex(sortedJson([token, req.state.brief ?? null]))
 
-  const decision = await state(env, 'prepare', {
-    tester: who.tester,
+  // Auth, cache, budget and backend in one Durable Object round trip (§37.6 speed rules).
+  const decision = await state(env, 'authPrepare', {
+    token,
     sig,
+    scope,
     kind,
     estNeurons,
     deadlineMs: Number.isFinite(deadlineHeader) ? deadlineHeader : undefined,
   })
+  const who = { tester: decision.tester }
 
   if (decision.route === 'cache') {
     log({ at: 'decide', kind, backend: 'cache', ms: 0, tester: who.tester })
@@ -101,10 +106,11 @@ async function decide(request, env, ctx) {
       : await askWorkersAi(env, req, decision.deadlineMs)
   } catch (e) {
     const ms = Date.now() - started
-    // The reservation is released: nothing was spent, so the next call still has
-    // its budget (§37.6 K4.3).
+    // A call that never reached the model gives its reservation back (§37.6 K4.3).
+    // One that did (a missed deadline keeps running; unreadable output was still
+    // generated) keeps it, or the meter would undercount toward the hard stop.
     ctx.waitUntil(state(env, 'settle', {
-      tester: who.tester, reserved: decision.reserve, actualNeurons: 0, backend: decision.route, ms,
+      tester: who.tester, reserved: decision.reserve, actualNeurons: e?.spent ? null : 0, backend: decision.route, ms,
     }).catch(() => {}))
     log({ at: 'decide', kind, backend: decision.route, ms, error: String(e && e.message) })
     return json({ fallback: true, reason: `${decision.route}_error`, ms })
@@ -117,7 +123,8 @@ async function decide(request, env, ctx) {
     // sample is kept so the parser can be fixed against something real.
     ctx.waitUntil(Promise.all([
       state(env, 'saveSample', { backend: decision.route, raw: JSON.stringify(raw), reason: parsed.reason }),
-      state(env, 'settle', { tester: who.tester, reserved: decision.reserve, actualNeurons: 0, backend: decision.route, ms }),
+      // The model ran, so its neurons stay counted.
+      state(env, 'settle', { tester: who.tester, reserved: decision.reserve, backend: decision.route, ms }),
     ]).catch(() => {}))
     log({ at: 'decide', kind, backend: decision.route, ms, unknown_shape: parsed.reason })
     return json({ fallback: true, reason: 'unknown_answer_shape', ms })
@@ -127,6 +134,7 @@ async function decide(request, env, ctx) {
   ctx.waitUntil(state(env, 'settle', {
     tester: who.tester,
     sig,
+    scope,
     answers: parsed.answers,
     backend: decision.route,
     ms,
@@ -154,8 +162,19 @@ async function askWorkersAi(env, req, deadlineMs) {
     temperature: 0, // a guard decision must be stable for identical input
   })
   const out = await withDeadline(call, deadlineMs, 'workers_ai')
-  const text = typeof out === 'string' ? out : out?.response ?? out?.result ?? out
-  return typeof text === 'string' ? JSON.parse(extractJson(text)) : text
+  try {
+    const text = typeof out === 'string' ? out : out?.response ?? out?.result ?? out
+    return typeof text === 'string' ? JSON.parse(extractJson(text)) : text
+  } catch (e) {
+    throw spent(e)
+  }
+}
+
+// Marks an error that came after the model had already run.
+function spent(e) {
+  const err = e instanceof Error ? e : new Error(String(e))
+  err.spent = true
+  return err
 }
 
 // §37.6 K4.4 / K10.7: the notebook's FastAPI shim behind a quick tunnel.
@@ -185,7 +204,7 @@ function withDeadline(promise, ms, what) {
   let timer
   return Promise.race([
     promise.finally(() => clearTimeout(timer)),
-    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} past ${ms} ms`)), ms) }),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(spent(new Error(`${what} past ${ms} ms`))), ms) }),
   ])
 }
 
@@ -283,7 +302,7 @@ function log(fields) {
 // The Durable Object. Its methods are the ones on State; the allow-list keeps a
 // stray request from reaching anything else on the class.
 const STATE_METHODS = new Set([
-  'auth', 'prepare', 'settle', 'saveSample', 'createInvites', 'redeem', 'revoke', 'reportBackend', 'status',
+  'auth', 'prepare', 'authPrepare', 'settle', 'saveSample', 'createInvites', 'redeem', 'revoke', 'reportBackend', 'status',
 ])
 
 export class StateDO {
