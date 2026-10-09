@@ -2,7 +2,7 @@
 // Fakes for the Workers runtime, shared by the tests. Only what the gateway
 // actually uses: Durable Object storage, a Durable Object namespace, the Workers
 // AI binding and the execution context.
-import { StateDO } from '../src/index.js'
+import { StateDO, HubDO } from '../src/index.js'
 
 // The Durable Object storage API, as much of it as State uses. Values are cloned
 // in and out, like the real one, so a test can't mutate stored state by accident.
@@ -39,12 +39,24 @@ const GATEWAY_SECRET = 'kaggle-secret'
 
 // One Durable Object instance behind the STATE binding, plus an AI binding whose
 // answer each test chooses. `ai` is called with (model, input) and may throw.
-function fakeEnv({ ai, storage = fakeStorage(), ...over } = {}) {
+function fakeEnv({ ai, storage = fakeStorage(), askWaitMs = 40, ...over } = {}) {
   const object = new StateDO({ storage })
   const calls = []
+  // One hub, as if there were one tester. `pushed` is what the desktop would see
+  // over the WebSocket; `sockets` stands in for the Hibernation API.
+  const hubStorage = fakeStorage()
+  const pushed = []
+  const sockets = [{ send: (s) => pushed.push(JSON.parse(s)) }]
+  const hubObject = new HubDO(
+    { storage: hubStorage, getWebSockets: () => sockets, acceptWebSocket: () => {} },
+    { ASK_WAIT_MS: askWaitMs },
+  )
   return {
     storage,
     calls,
+    hubStorage,
+    pushed,
+    hubObject,
     ADMIN_SECRET,
     GATEWAY_SECRET,
     AI: ai
@@ -58,6 +70,10 @@ function fakeEnv({ ai, storage = fakeStorage(), ...over } = {}) {
     STATE: {
       idFromName: (name) => name,
       get: () => ({ fetch: (url, init) => object.fetch(new Request(url, init)) }),
+    },
+    HUB: {
+      idFromName: (name) => name,
+      get: () => ({ fetch: (url, init) => hubObject.fetch(new Request(url, init)) }),
     },
     ...over,
   }

@@ -11,11 +11,15 @@
 //   POST /admin/revoke      revoke a token      (x-admin-secret)
 //   GET  /admin/status      usage, Kaggle state, latency medians (x-admin-secret)
 //   POST /internal/backend  Kaggle register and heartbeat (GATEWAY_SECRET)
+//   POST /mcp               hosted MCP for cloud agents (§37.6 K6)
+//   GET  /hub               the desktop's WebSocket link (§37.6 K7)
 //
 // All decision logic is in ./gateway.js and all storage in ./state.js, both
 // runtime-free, so node:test covers them without a deploy. Deploy steps and the
 // honest limits are in ../README.md.
 import { State } from './state.js'
+import { Hub } from './hub.js'
+import { handle as mcpHandle } from './mcp.js'
 import {
   MAX_BODY_BYTES, estimateNeurons, kindOf, parseClefAnswers, sortedJson, validateDecideRequest,
 } from './gateway.js'
@@ -45,8 +49,52 @@ async function route(request, env, ctx) {
     case 'POST /admin/revoke': return adminRevoke(request, env)
     case 'GET /admin/status': return adminStatus(request, env)
     case 'POST /internal/backend': return internalBackend(request, env)
+    case 'POST /mcp': return mcp(request, env)
+    case 'GET /hub': return hub(request, env)
     default: return json({ error: 'not found' }, 404)
   }
+}
+
+// --- K6: the hosted MCP -------------------------------------------------------
+// Some agent apps cannot set headers, so ?token= is accepted too (§37.6 K6).
+async function mcp(request, env) {
+  const url = new URL(request.url)
+  const token = bearer(request) || url.searchParams.get('token') || ''
+  const who = await state(env, 'auth', token)
+  if (!who) return json({ error: 'unauthorized' }, 401)
+  const rpc = await readJson(request)
+  // The MCP client's own name is the best clue to which cloud agent this is
+  // (§37.6 K8 maps it to dots, grok-bot, muse or claude-ai).
+  const agent = rpc?.params?.clientInfo?.name || request.headers.get('x-mewndo-agent') || 'cloud agent'
+  const answer = await hubCall(env, who.tester, 'rpc', { rpc, agent })
+  return answer === null ? new Response(null, { status: 202 }) : json(answer)
+}
+
+// --- K7: the desktop link -----------------------------------------------------
+async function hub(request, env) {
+  const url = new URL(request.url)
+  const token = bearer(request) || url.searchParams.get('token') || ''
+  const who = await state(env, 'auth', token)
+  if (!who) return json({ error: 'unauthorized' }, 401)
+  if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+    return json({ error: 'expected a WebSocket upgrade' }, 426)
+  }
+  if (!env.HUB) throw { status: 500, message: 'HUB binding is missing' }
+  return env.HUB.get(env.HUB.idFromName(who.tester)).fetch(request)
+}
+
+// One hub per tester, so a card can never reach another tester's desktop.
+async function hubCall(env, tester, method, args) {
+  if (!env.HUB) throw { status: 500, message: 'HUB binding is missing' }
+  const res = await env.HUB.get(env.HUB.idFromName(tester)).fetch('https://mewndo-hub/call', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ method, args }),
+  })
+  if (res.status === 204) return null
+  const body = await res.json()
+  if (!res.ok) throw { status: res.status, message: body.error || 'hub error' }
+  return body.result
 }
 
 // --- K4: one decision ---------------------------------------------------------
@@ -318,6 +366,82 @@ export class StateDO {
     } catch (e) {
       if (e && e.status) return json({ error: e.message }, e.status)
       return json({ error: String((e && e.message) || e) }, 500)
+    }
+  }
+}
+
+// One Durable Object per tester (§37.6 K7): the cards cloud agents raise, the
+// answers the desktop sends back, and the workflows the user chose to share.
+// The WebSocket uses the Hibernation API, so an idle link costs nothing.
+const HUB_METHODS = new Set(['rpc', 'createCard', 'answer', 'getCard', 'progress', 'done', 'openCards'])
+
+export class HubDO {
+  constructor(ctx, env = {}) {
+    this.ctx = ctx
+    // ASK_WAIT_MS is a var only so the tests do not wait 110 s for an unanswered card.
+    this.hub = new Hub(ctx.storage, (message) => this.broadcast(message), {
+      waitMs: Number(env.ASK_WAIT_MS) || undefined,
+    })
+    this.skills = {
+      list: async () => [...(await ctx.storage.list({ prefix: 'skill:' })).keys()].map((k) => k.slice(6)),
+      get: async (slug) => (await ctx.storage.get(`skill:${slug}`))?.text ?? null,
+    }
+  }
+
+  async fetch(request) {
+    if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const pair = new WebSocketPair()
+      this.ctx.acceptWebSocket(pair[1])
+      // Whatever the desktop missed while it was away.
+      pair[1].send(JSON.stringify({ type: 'hub.open', cards: await this.hub.openCards({}) }))
+      return new Response(null, { status: 101, webSocket: pair[0] })
+    }
+    const { method, args } = await request.json()
+    if (!HUB_METHODS.has(method)) return json({ error: `unknown method ${method}` }, 400)
+    try {
+      if (method === 'rpc') {
+        const answer = await mcpHandle(args.rpc, { hub: this.hub, skills: this.skills, agent: args.agent })
+        return answer === null ? new Response(null, { status: 204 }) : json({ result: answer })
+      }
+      return json({ result: await this.hub[method](args ?? {}) })
+    } catch (e) {
+      if (e && e.status) return json({ error: e.message }, e.status)
+      return json({ error: String((e && e.message) || e) }, 500)
+    }
+  }
+
+  // The desktop answering a card, or sharing a Show Me workflow (§36.5 step 6).
+  async webSocketMessage(ws, raw) {
+    let message
+    try {
+      message = JSON.parse(raw)
+    } catch {
+      return ws.send(JSON.stringify({ type: 'error', message: 'not JSON' }))
+    }
+    try {
+      if (message.type === 'inbox.answer') {
+        const card = await this.hub.answer(message)
+        return ws.send(JSON.stringify({ type: 'inbox.release', card_id: card.id }))
+      }
+      if (message.type === 'skills.share') {
+        const key = `skill:${String(message.slug || '').slice(0, 80)}`
+        if (message.text == null) await this.ctx.storage.delete(key)
+        else await this.ctx.storage.put({ [key]: { text: String(message.text).slice(0, 20_000) } })
+        return ws.send(JSON.stringify({ type: 'skills.ok', slug: message.slug }))
+      }
+    } catch (e) {
+      ws.send(JSON.stringify({ type: 'error', message: String((e && e.message) || e) }))
+    }
+  }
+
+  broadcast(message) {
+    const body = JSON.stringify(message)
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.send(body)
+      } catch {
+        // A socket closing mid-send is normal; the card is already stored.
+      }
     }
   }
 }

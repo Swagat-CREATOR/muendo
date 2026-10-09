@@ -1,7 +1,6 @@
 # The gateway, hosted MCP and hub deploy together as one Worker for the demo
-# (spec §37.6). Only the gateway module and StateDO exist so far; the HUB and MCP
-# Durable Object bindings are added by K6 and K7, because wrangler refuses to
-# deploy a binding whose class the Worker does not export.
+# (spec §37.6). The MCP is served from the gateway module itself (plain JSON-RPC
+# on /mcp), so the only Durable Objects are StateDO and one HubDO per tester.
 name = "mewndo-cloud"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
@@ -22,9 +21,19 @@ DECIDE_MODEL = "@cf/cloudflare/clef-flash"
 name = "STATE"
 class_name = "StateDO"
 
+# One hub per tester (§37.6 K7): cloud-agent cards out to the desktop over a
+# hibernating WebSocket, answers back.
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "HubDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["StateDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["HubDO"]
 
 # Secrets (NOT stored here):
 #   wrangler secret put ADMIN_SECRET      mints and revokes invites

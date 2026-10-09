@@ -14,6 +14,8 @@ rules decide (§34.8). No tester's PC holds a Cloudflare key.
 | `POST /admin/revoke` | `x-admin-secret` | revoke a token |
 | `GET /admin/status` | `x-admin-secret` | usage per tester, Kaggle state, latency medians |
 | `POST /internal/backend` | `Bearer <GATEWAY_SECRET>` | Kaggle register and heartbeat (§37.4) |
+| `POST /mcp` | `Bearer <invite token>` or `?token=` | hosted MCP for cloud agents (§37.6 K6) |
+| `GET /hub` | `Bearer <invite token>` or `?token=` | the desktop's WebSocket link (§37.6 K7) |
 
 Request headers on `/v1/decide`: `x-mewndo-kind` (`guard`, `voice`, `triage`,
 `receipt`, `showme`), `x-mewndo-sig` (the device's action signature, §34.9 R4)
@@ -29,6 +31,29 @@ the calls an agent is actually waiting on.
 The gateway stops using Workers AI at 9,000 and gives each tester 1,200. A call
 is estimated at `ceil(bytes/4)` tokens × 8,182 per million, reserved before the
 call and corrected after if the backend reports its real use.
+
+## Hosted MCP and hub (K6, K7)
+
+Cloud agents (ChatGPT dots, Grok Bot, Meta Muse, claude.ai) have no hooks, so they
+ask Mewndo by calling a tool. `POST /mcp` speaks MCP's JSON-RPC: `initialize`,
+`tools/list`, `tools/call`. Tools: `ask_user`, `get_answer`, `report_progress`,
+`report_done`, `skills_list`, `skills_get`.
+
+`ask_user` raises a card in one `HubDO` — one Durable Object per tester, so a card
+can never reach another tester's desktop — pushes it over the desktop's WebSocket,
+and waits up to 110 s. **Nobody answering is never an approval:** the tool returns
+"No answer yet; call get_answer with card_id … later. Do not go ahead without one."
+The card and its answer are written to storage before the waiter is woken, so an
+eviction mid-wait still leaves the answer readable by `get_answer`. A second answer
+to the same card is ignored.
+
+The desktop sends `{"type":"inbox.answer","card_id":…,"choice":…|"text":…}` and
+`{"type":"skills.share","slug":…,"text":…}` over the socket, and receives
+`inbox.card`, `agent.status` and a `hub.open` catch-up list on connect.
+
+Add it to a cloud agent with the Worker URL plus the tester's token:
+`https://<worker>/mcp?token=<token>`. Some agent apps cannot set headers, which is
+why the query string is accepted.
 
 ## Deploy (your Cloudflare account — I can't do this from the repo)
 
@@ -77,11 +102,13 @@ faked (`test/fake-do.js`).
   but may keep running. `fetch` to Kaggle is aborted properly.
 - **No neuron count from Workers AI.** The reservation is an estimate; re-measure
   on a real account before trusting `/admin/status`.
-- **Not built yet:** the hosted MCP (`/mcp`, K6), `HubDO` (K7), the desktop
-  WebSocket link (K8), the Grok Bot skill (K9) and the Kaggle notebook (K10).
-  Their Durable Object bindings are deliberately absent from `wrangler.toml`,
-  because wrangler refuses to deploy a binding whose class the Worker does not
-  export.
+- **The hub's WebSocket is untested over a real socket.** The tests drive `HubDO`
+  through its `fetch` path and a fake Hibernation API; `WebSocketPair`,
+  `acceptWebSocket` and `getWebSockets` only exist in workerd, so the 101 upgrade
+  itself has never run here.
+- **Not built yet:** the desktop side of the link (K8, Rust `tokio-tungstenite`).
+  `skills_list` and `skills_get` return nothing until the desktop shares a Show Me
+  workflow, which needs §36.6 U9.
 
 ## Deviations from §37.6, and why
 
@@ -97,6 +124,11 @@ faked (`test/fake-do.js`).
   covered by `node --test` without a Workers runtime; the SQL API is not.
   §37.6 K2's five tables map to key prefixes `invite:`, `token:`, `usage:`,
   `cache:` and `backend:`.
+- **The MCP is hand-rolled JSON-RPC, not the Agents SDK `McpAgent`.** `McpAgent`
+  plus `@modelcontextprotocol/sdk` plus `zod` is three dependencies and cannot run
+  under plain `node --test`; `src/mcp.js` is about 90 lines for the three methods a
+  tool server needs, and its input schemas are the JSON Schema MCP puts on the wire
+  anyway. If a client needs SSE or resources, swap this one file.
 - **The DO is called over `fetch`, not RPC.** RPC needs `cloudflare:workers`,
   which plain `node --test` cannot import. The method names are the same, so a
   later switch is one function (`state()` in `src/index.js`).
