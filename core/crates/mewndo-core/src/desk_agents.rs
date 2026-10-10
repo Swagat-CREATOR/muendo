@@ -108,7 +108,7 @@ pub struct Agents {
     engine: Arc<V0Engine>,
     habit_cards: HabitCards,
     /// Guarded computer use (§36.6 U5): the answer to every `computer.action`.
-    computer: crate::computer::ComputerGate,
+    computer: Arc<crate::computer::ComputerGate>,
     /// The user's rules.toml, where an accepted habit is written. None (tests, or a core started without
     /// `--rules`): a habit lasts until the core stops.
     rules_file: Option<PathBuf>,
@@ -192,8 +192,12 @@ impl Agents {
             publisher: publisher.clone(),
             live: live.clone(),
         });
-        let computer =
-            crate::computer::ComputerGate::new(router.clone(), inbox.clone(), log.clone());
+        let computer = Arc::new(crate::computer::ComputerGate::new(
+            router.clone(),
+            inbox.clone(),
+            publisher.clone(),
+            log.clone(),
+        ));
         Agents {
             publisher,
             rules_only: Default::default(),
@@ -272,7 +276,7 @@ impl Agents {
         Ok(())
     }
 
-    pub fn computer(&self) -> &crate::computer::ComputerGate {
+    pub fn computer(&self) -> &Arc<crate::computer::ComputerGate> {
         &self.computer
     }
 

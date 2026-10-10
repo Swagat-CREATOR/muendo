@@ -54,6 +54,7 @@
 // building in between.
 pub mod classify;
 pub mod driver;
+pub mod hooks;
 pub mod link;
 pub mod proxy;
 pub mod redact;

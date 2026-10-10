@@ -12,9 +12,9 @@ use crate::desk_lanes::DeskLanes;
 use crate::log::Log;
 use crate::writer::{self, Writer};
 use mewndo_proto::{
-    self as proto, Body, ComputerAction, Envelope, ErrorBody, Frame, HEADER, Hello, HookRequest,
-    InboxAnswer, InboxUndo, LaneAttach, LaneBrake, LaneClose, LaneOpen, LaneReply, LaneResize,
-    Ping, Pong, Role, RouteRequest, VERSION,
+    self as proto, Body, ComputerAction, ComputerResume, Envelope, ErrorBody, Frame, HEADER, Hello,
+    HookRequest, InboxAnswer, InboxUndo, LaneAttach, LaneBrake, LaneClose, LaneOpen, LaneReply,
+    LaneResize, Ping, Pong, Role, RouteRequest, VERSION,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -143,7 +143,7 @@ pub async fn serve(
 ) -> io::Result<()> {
     let desk = Arc::new(Desk::new(&instance.dir, data_dir, rules_file, log.clone()));
     if computer_use {
-        desk.agents.computer().enable();
+        crate::computer::ComputerGate::enable(desk.agents.computer());
     }
     // ponytail: 32 random bits from a ULID (rand's CSPRNG); the name only has to be unguessable before core.json
     // is written, and the pipe refuses everyone but this user anyway.
@@ -393,6 +393,10 @@ async fn respond(env: Envelope, role: Role, desk: Arc<Desk>) -> Option<Arc<Vec<u
             )),
             Err(e) => refuse(e.to_string()),
         },
+        (ComputerResume::TYPE, Role::App) => {
+            desk.agents.computer().resume();
+            None
+        }
         (LaneOpen::TYPE, Role::App) => match env.open::<LaneOpen>() {
             Ok(open) => match desk.lanes.open(open).await {
                 Ok(opened) => Some(reply(&env.id, &opened)),
@@ -993,7 +997,7 @@ mod tests {
         assert_eq!(verdict.verdict, mewndo_proto::Verdict::Deny);
         assert_eq!(verdict.reason.as_deref(), Some(crate::computer::OFF));
 
-        d.agents.computer().enable();
+        d.agents.computer().enable_without_hooks();
         send(&mut c, "b", &action).await;
         let verdict: mewndo_proto::ComputerVerdict = recv(&mut c).await.open().unwrap();
         assert_eq!(

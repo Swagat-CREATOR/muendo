@@ -14,10 +14,12 @@
 // What it can't do (CLAUDE.md rule 5): no screenshot crop on the card (U5.5) and no element name, so the card
 // says "click at 412, 230", not "click Send in Outlook"; and typed text is shown as its length only (redact.rs
 // in mewndo-computer), because nothing here can tell a password field from any other.
+use crate::desk_agents::Publisher;
 use crate::log::Log;
 use mewndo_computer::classify::{Class, classify};
+use mewndo_computer::hooks::Takeover;
 use mewndo_inbox::{Answer, Card, Inbox, Opt, PermissionFacts};
-use mewndo_proto::{ComputerAction, ComputerVerdict, Verdict};
+use mewndo_proto::{ComputerAction, ComputerPause, ComputerResume, ComputerVerdict, Verdict};
 use mewndo_router::{GuardInput, Mode, Router};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -30,6 +32,7 @@ use std::time::Duration;
 pub const CARD_WAIT: Duration = Duration::from_secs(280);
 
 pub const OFF: &str = "computer use is off. The user can switch it on in Mewndo's settings.";
+pub const PAUSED: &str = "the user took over the mouse or keyboard. Wait until they choose Resume in Mewndo, then try again.";
 
 pub struct ComputerGate {
     enabled: AtomicBool,
@@ -37,6 +40,8 @@ pub struct ComputerGate {
     inbox: Inbox,
     log: Arc<Log>,
     wait: Duration,
+    takeover: Arc<Takeover>,
+    publisher: Publisher,
 }
 
 fn allow() -> ComputerVerdict {
@@ -54,14 +59,41 @@ fn deny(reason: impl Into<String>) -> ComputerVerdict {
 }
 
 impl ComputerGate {
-    pub fn new(router: Arc<Router>, inbox: Inbox, log: Arc<Log>) -> ComputerGate {
+    pub fn new(
+        router: Arc<Router>,
+        inbox: Inbox,
+        publisher: Publisher,
+        log: Arc<Log>,
+    ) -> ComputerGate {
         ComputerGate {
             enabled: AtomicBool::new(false),
             router,
             inbox,
             log,
             wait: CARD_WAIT,
+            takeover: Arc::default(),
+            publisher,
         }
+    }
+
+    /// The user's own input (U6): pauses every act if an agent was acting, and tells the apps once.
+    pub fn human_input(&self) {
+        if self.takeover.human_input(std::time::Instant::now()) {
+            self.log
+                .info("computer use paused: the user took over the mouse or keyboard");
+            self.publisher.send(&ComputerPause {
+                sessions: Vec::new(),
+            });
+        }
+    }
+
+    /// The user chose Resume (`computer.resume` from the app).
+    pub fn resume(&self) {
+        self.takeover.resume();
+        self.log.info("computer use resumed");
+        self.publisher.send(&ComputerResume {
+            sessions: Vec::new(),
+        });
     }
 
     #[cfg(test)]
@@ -71,9 +103,27 @@ impl ComputerGate {
     }
 
     /// `--computer-use`: the app passes it only when the user has switched computer use on. Off by default.
-    pub fn enable(&self) {
+    /// Also installs the takeover hooks (U6); `gate` is this gate, shared with the hook thread.
+    pub fn enable(gate: &Arc<ComputerGate>) {
+        gate.enabled.store(true, Ordering::SeqCst);
+        gate.log.info("computer use is on");
+        let weak = Arc::downgrade(gate);
+        if let Err(e) = mewndo_computer::hooks::start(move |_input| {
+            if let Some(gate) = weak.upgrade() {
+                gate.human_input();
+            }
+        }) {
+            // Without the hooks there is no takeover, so computer use stays off rather than run unwatched.
+            gate.enabled.store(false, Ordering::SeqCst);
+            gate.log.warn(&format!(
+                "computer use stays off: the takeover hooks did not start: {e}"
+            ));
+        }
+    }
+
+    #[cfg(test)]
+    pub fn enable_without_hooks(&self) {
         self.enabled.store(true, Ordering::SeqCst);
-        self.log.info("computer use is on");
     }
 
     pub fn enabled(&self) -> bool {
@@ -83,6 +133,9 @@ impl ComputerGate {
     pub async fn decide(&self, action: &ComputerAction) -> ComputerVerdict {
         if !self.enabled() {
             return deny(OFF);
+        }
+        if self.takeover.paused() {
+            return deny(PAUSED);
         }
         let verdict = match classify(&action.tool) {
             Class::Read => allow(),
@@ -140,7 +193,12 @@ impl ComputerGate {
         let (_, answer) = self.inbox.create(card).await;
         match tokio::time::timeout(self.wait, answer).await {
             Ok(Ok(answer)) => match verdict_of(&options, &answer) {
-                Some(v) if v.allows() => allow(),
+                // The user may have taken over while the card was up.
+                Some(v) if v.allows() && self.takeover.paused() => deny(PAUSED),
+                Some(v) if v.allows() => {
+                    self.takeover.acting(std::time::Instant::now());
+                    allow()
+                }
                 Some(_) => deny(said_no(&answer)),
                 None => deny("the user did not allow it"),
             },
@@ -261,7 +319,11 @@ mod tests {
             },
             Deps::default(),
         );
-        (ComputerGate::new(router, inbox.clone(), log), inbox)
+        let publisher = Publisher(tokio::sync::broadcast::channel(16).0);
+        (
+            ComputerGate::new(router, inbox.clone(), publisher, log),
+            inbox,
+        )
     }
 
     fn act(tool: &str, args: Value, point: Option<Point>) -> ComputerAction {
@@ -279,7 +341,7 @@ mod tests {
         let (gate, _) = gate("off");
         let read = act("get_desktop_state", json!({}), None);
         assert_eq!(gate.decide(&read).await, deny(OFF), "off: not even a look");
-        gate.enable();
+        gate.enable_without_hooks();
         assert_eq!(gate.decide(&read).await, allow());
         assert_eq!(
             gate.decide(&act("set_agent_cursor_enabled", json!({}), None))
@@ -292,7 +354,7 @@ mod tests {
     #[tokio::test]
     async fn an_act_is_a_card_and_the_users_answer_is_the_verdict() {
         let (gate, inbox) = gate("card");
-        gate.enable();
+        gate.enable_without_hooks();
         let gate = Arc::new(gate);
         let mut events = inbox.subscribe();
         let ask = |g: Arc<ComputerGate>| {
@@ -341,7 +403,7 @@ mod tests {
     async fn nobody_answering_is_a_refusal() {
         let (gate, _) = gate("timeout");
         let gate = gate.waiting(Duration::from_millis(50));
-        gate.enable();
+        gate.enable_without_hooks();
         assert_eq!(
             gate.decide(&act(
                 "click",
@@ -351,6 +413,49 @@ mod tests {
             .await,
             deny("nobody answered in time")
         );
+    }
+
+    #[tokio::test]
+    async fn after_a_takeover_every_act_is_refused_until_resume() {
+        let (gate, inbox) = gate("takeover");
+        gate.enable_without_hooks();
+        let gate = Arc::new(gate);
+        let mut events = inbox.subscribe();
+        // The user's input before any act: just using their computer.
+        gate.human_input();
+        let waiting = tokio::spawn({
+            let g = gate.clone();
+            async move {
+                g.decide(&act("press_key", json!({"key": "Enter"}), None))
+                    .await
+            }
+        });
+        let card = loop {
+            if let Event::Card(card) = events.recv().await.unwrap() {
+                break card;
+            }
+        };
+        inbox
+            .answer(
+                card.id.parse().unwrap(),
+                Answer {
+                    card_id: card.id.clone(),
+                    choice: Some(0),
+                    text: None,
+                    via: mewndo_proto::Via::Key,
+                },
+            )
+            .await;
+        assert_eq!(waiting.await.unwrap(), allow());
+        gate.human_input();
+        let read = act("get_screen_size", json!({}), None);
+        assert_eq!(
+            gate.decide(&read).await,
+            deny(PAUSED),
+            "reads too: the user has the computer"
+        );
+        gate.resume();
+        assert_eq!(gate.decide(&read).await, allow());
     }
 
     #[test]

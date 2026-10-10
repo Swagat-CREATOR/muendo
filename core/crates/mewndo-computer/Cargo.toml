@@ -18,7 +18,7 @@ mewndo-inbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true                                   # §36.6 U1: the pinned release's SHA-256
-windows-sys.workspace = true                            # §36.6 U6: the two low-level input hooks
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }  # §36.6 U6: the two low-level input hooks
 # rmcp is pinned in [workspace.dependencies] with ["server", "transport-io", "macros"]; the proxy is also an MCP
 # *client* of cua-driver, which it starts as a child process (§36.6 U3). Features are additive, so asking for the
 # two extra ones here cannot change the version the lock holds.
