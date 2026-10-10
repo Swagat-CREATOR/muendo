@@ -6,10 +6,11 @@
 // wrapper converted a field wrongly -- a heading, the seed, the target rectangle, seconds for milliseconds -- these
 // points would not match.
 //
-// Runs only with the `cua-motion` feature (Cargo.toml, `required-features`), because only that feature builds Cua.
+// Runs only in this opt-in crate (`cargo test --manifest-path core/optional/mewndo-cua-motion/Cargo.toml`), the one
+// build that fetches Cua.
 
+use mewndo_cua_motion::CuaPlanner;
 use mewndo_overlay::coords::Px;
-use mewndo_overlay::cua_motion::CuaPlanner;
 use mewndo_overlay::motion::{MotionPlanner, MoveRequest, duration, sample_at, wrap_angle};
 use serde_json::Value;
 

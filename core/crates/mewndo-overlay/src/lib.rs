@@ -7,8 +7,8 @@
 //! chip alone, next to the driver's cursor.
 //!
 //! - `coords` turns a cua-driver point into a virtual-screen point (pure, tested).
-//! - `motion` plans the glide (`MotionPlanner`, a built-in planner; tested), and `cua_motion` puts Cua's own planner
-//!   behind the same trait with the non-default `cua-motion` feature.
+//! - `motion` plans the glide (`MotionPlanner`, a built-in planner; tested). Cua's own planner behind the same trait
+//!   is the opt-in crate `core/optional/mewndo-cua-motion`, outside the workspace so no ordinary build fetches Cua.
 //! - `window` is the Windows part: the windows, the drawing, the animation. A no-op elsewhere.
 //!
 //! What it can't do (CLAUDE.md rule 5):
@@ -23,8 +23,6 @@
 //! - The window code is compile-checked for Windows only; it has not been run on Windows.
 
 pub mod coords;
-#[cfg(feature = "cua-motion")]
-pub mod cua_motion;
 pub mod motion;
 pub mod window;
 

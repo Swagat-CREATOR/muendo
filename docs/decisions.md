@@ -461,13 +461,13 @@ cannot push Inbox cards out of a slow app's queue. An app that falls behind on l
   capture (`max_image_dimension`) is placed as full size, because the core does not know the cap: wrong by the
   cap's factor. No target, or another display: no cursor.
 - **Motion.** A default build uses the built-in glide: straight, smoothstep-eased, `0.1 + 0.1·log2(D/W + 1)` s
-  clamped to 0.2–0.8 s. `--features cua-motion` uses Cua's `plan_move` at Cua Driver's defaults (signature arc,
+  clamped to 0.2–0.8 s. The opt-in crate `core/optional/mewndo-cua-motion` uses Cua's `plan_move` at Cua Driver's defaults (signature arc,
   native timing). Plans are in physical pixels while Cua's constants are points, so on a scaled display a move is
   a little slower than Cua's own cursor. Cua's trail, glow and magnet effects are not drawn.
 - **The git dependency resolves.** `cua-cursor-motion` is in `[workspace.dependencies]` pinned to
   `rev = 5a364bbe60e1f8a901ceacd889606b6367dc96ab`, optional in `mewndo-overlay`, named in `cua_motion.rs` only;
   the subcrate has no `build.rs`, so building it runs no Cua code. `golden_paths` passes all 48 cases of
-  `third_party/cua/cursor-motion-golden.json` to 1e-6 (`cargo test -p mewndo-overlay --features cua-motion`).
+  `third_party/cua/cursor-motion-golden.json` to 1e-6 (`cargo test --manifest-path core/optional/mewndo-cua-motion/Cargo.toml`).
 - **What the feature does not do: keep builds off the network.** Cargo locks optional dependencies too, so every
   build of the workspace, default included, needs the Cua repository's source. Checked: `cargo check --offline`
   with a cargo home holding the crates.io registry but no git checkout fails with "can't checkout from
@@ -518,4 +518,12 @@ Hugging Face page itself could not be reached from the build container).
   missing token or timeout uses Windows' System.Speech recognizer, which stays the only provider otherwise.
 - **Unverified until deployed:** the CPU cost of turning up to 2 MB into the byte array the binding takes, under
   the free plan's 10 ms CPU limit; and the koffi Credential Manager read, which has not run on Windows.
+
+**Correction, same day: Cua's motion crate moved out of the workspace.** As first built, `cua-cursor-motion` was an
+optional dependency of `mewndo-overlay` behind a `cua-motion` feature. Cargo resolves optional git dependencies
+for every build of a workspace, so every build and every CI run fetched Cua's 367 MB git database, and an offline
+build failed. The wrapper and its golden test are now the crate `core/optional/mewndo-cua-motion`, excluded from the
+workspace (`core/Cargo.toml` `exclude = ["optional"]`), with its own lock. The workspace lock has no git source at
+all, and only `cargo test --manifest-path core/optional/mewndo-cua-motion/Cargo.toml` fetches Cua (2 unit and 2
+golden tests pass there). The overlay in the shipped app uses the built-in glide; Cua's planner is not wired in.
 

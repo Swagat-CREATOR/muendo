@@ -4,8 +4,8 @@
 // planners exist:
 //
 //   Glide       built in, always there: a straight, eased glide whose length in time follows Fitts's law.
-//   CuaPlanner  Cua's own planner, the one cua-driver draws its cursor with (cua_motion.rs), behind the non-default
-//               `cua-motion` feature, so the overlay can move exactly like the driver's cursor would have.
+//   CuaPlanner  Cua's own planner, the one cua-driver draws its cursor with, in the opt-in crate
+//               core/optional/mewndo-cua-motion (outside the workspace, so no ordinary build fetches Cua).
 //
 // Units: the overlay plans in physical pixels. Cua's planner thinks in points (its peak speed is 900 pt/s), so on a
 // display scaled above 100% the same move covers more pixels and takes a little longer than Cua's driver would
@@ -107,16 +107,10 @@ pub fn wrap_angle(a: f64) -> f64 {
     if a > PI { a - 2.0 * PI } else { a }
 }
 
-/// The planner the overlay uses: Cua's with the `cua-motion` feature, the built-in glide without it.
+/// The planner the overlay uses: the built-in glide. Cua's planner (core/optional/mewndo-cua-motion) is not wired
+/// into the shipped app yet.
 pub fn default_planner() -> Box<dyn MotionPlanner> {
-    #[cfg(feature = "cua-motion")]
-    {
-        Box::new(crate::cua_motion::CuaPlanner::default())
-    }
-    #[cfg(not(feature = "cua-motion"))]
-    {
-        Box::new(Glide)
-    }
+    Box::new(Glide)
 }
 
 /// The built-in planner: a straight line, eased in and out (smoothstep), taking `0.1 + 0.1 * log2(D / W + 1)`

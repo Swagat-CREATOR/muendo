@@ -42,7 +42,7 @@ caret range, so the exact build comes from `core/Cargo.lock`:
 | `ureq` (`default-features = false`, features: `native-tls`) | `2.12.1` | caret |
 | `native-tls` | `0.2.14` | caret |
 | `toml_edit` (`default-features = false`, features: `parse`, `display`) | `0.25.17` | caret |
-| `cua-cursor-motion` (optional; only `mewndo-overlay`'s `cua-motion` feature builds it) | `git = "https://github.com/trycua/cua"`, `rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab"` | **exact commit**; every build still fetches it (docs/decisions.md, "The agent cursor (U7)") |
+| `cua-cursor-motion` (only in the opt-in crate `core/optional/mewndo-cua-motion`, outside the workspace) | `git = "https://github.com/trycua/cua"`, `rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab"` | **exact commit**; fetched only when that crate is built, never by the workspace or CI |
 | `mewndo-proto` | `{ path = "crates/mewndo-proto" }` | local path, no version |
 
 Note on a caret in Cargo: `0.10.9` and `0.37.0` are pre-1.0, where a caret allows only patch updates

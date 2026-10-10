@@ -1,9 +1,10 @@
 // §36.6 U7: Cua's cursor motion behind Mewndo's `MotionPlanner`, so the agent cursor Mewndo draws moves the way
 // cua-driver's own cursor would have (§36.6 U8 switches that one off).
 //
-// This is the only file that names `cua-cursor-motion`, a git dependency pinned in core/Cargo.toml to commit
+// This is the only file that names `cua-cursor-motion`, a git dependency pinned in this crate's Cargo.toml to commit
 // 5a364bbe60e1f8a901ceacd889606b6367dc96ab of https://github.com/trycua/cua (MIT; credit and licence in
-// third_party/cua/). It is compiled only with the non-default `cua-motion` feature. Its API, read from that commit,
+// third_party/cua/). The crate sits outside the workspace (core/Cargo.toml `exclude`) so that no ordinary build or
+// CI run fetches Cua's repository (a 367 MB git database): only building this crate does. Its API, read from that commit,
 // is written down in docs/decisions.md, "cua-driver" 5. No Cua source is copied here: this calls `plan_move` and
 // converts the types both ways.
 //
@@ -12,8 +13,8 @@
 //
 // tests/golden_paths.rs checks this wrapper against Cua's own golden trajectories.
 
-use crate::motion::{MotionPlanner, MoveRequest, Sample};
 use cua_cursor_motion as cua;
+use mewndo_overlay::motion::{MotionPlanner, MoveRequest, Sample};
 
 /// Cua's planner with one style and one timing, every other parameter at Cua Driver's defaults.
 pub struct CuaPlanner {
@@ -75,7 +76,7 @@ impl MotionPlanner for CuaPlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coords::Px;
+    use mewndo_overlay::coords::Px;
 
     #[test]
     fn names_round_trip_and_unknown_ones_are_refused() {
