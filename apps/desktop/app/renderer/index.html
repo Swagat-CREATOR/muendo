@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
@@ -52,7 +52,15 @@
     </aside>
     <div class="content">
     <section class="screen" data-screen="home" hidden>
-      <h1 class="display">Home</h1>
+      <h1 id="greeting" class="greeting">Undo anything an agent did with <span class="keycap">Alt</span> + <span class="keycap">Shift</span> + <span class="keycap">Z</span></h1>
+      <div id="banner" class="banner">
+        <div class="banner-text">
+          <h2 id="banner-title" class="banner-title"></h2>
+          <p id="banner-text"></p>
+          <button id="banner-go" class="banner-go"></button>
+        </div>
+        <span id="banner-cat" class="cat banner-cat" aria-hidden="true"><i></i></span>
+      </div>
       <p class="lead">Your agents, today's numbers and recent changes will live here. For now, <a href="#" data-go="folders">Protected folders</a> has your save points and restores.</p>
     </section>
     <section class="screen" data-screen="inbox" hidden>

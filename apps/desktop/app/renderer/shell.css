@@ -1,7 +1,8 @@
 /* The main window shell (design spec §7): a 40 px title bar (Windows draws its buttons over the right end), the
    224 px sidebar that collapses to 64 px, and one screen at a time. Tokens from design/tokens.css. */
 html, body { height: 100%; }
-body { background: var(--bg); color: var(--ink); font: var(--t-body); }
+/* Like Wispr's window: the frame and sidebar share one soft grey, and the screen sits on a white sheet. */
+body { background: var(--sidebar); color: var(--ink); font: var(--t-body); }
 #main.shell { display: grid; grid-template-columns: 224px 1fr; grid-template-rows: 40px 1fr; height: 100vh; }
 #main.shell.collapsed { grid-template-columns: 64px 1fr; }
 
@@ -10,7 +11,7 @@ body { background: var(--bg); color: var(--ink); font: var(--t-body); }
 .titlebar button, .titlebar a { -webkit-app-region: no-drag; }
 
 .sidebar { grid-row: 1 / 3; grid-column: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto;
-  padding: 8px 12px 12px; background: var(--sidebar); border-right: 1px solid var(--border); }
+  padding: 8px 12px 12px; }
 .side-top { display: flex; align-items: center; justify-content: space-between; height: 32px; -webkit-app-region: drag; }
 .side-top button { -webkit-app-region: no-drag; }
 .icon-btn { all: unset; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: var(--ink-2); cursor: pointer; }
@@ -25,7 +26,7 @@ body { background: var(--bg); color: var(--ink); font: var(--t-body); }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-item { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px;
   border-radius: 10px; border: 1px solid transparent; font: 500 14px/20px var(--font-ui); color: var(--ink-2); cursor: pointer; }
-.nav-item svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.nav-item svg, .icon-btn svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .nav-item .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nav-item:hover { background: var(--surface-2); color: var(--ink); }
 .nav-item[aria-current="page"] { background: var(--surface); border-color: var(--border); color: var(--ink); }
@@ -52,11 +53,32 @@ body { background: var(--bg); color: var(--ink); font: var(--t-body); }
 .collapsed .label, .collapsed .wordmark, .collapsed .checklist, .collapsed .count, .collapsed .cat-face { display: none; }
 .collapsed .nav-item { justify-content: center; padding: 0; }
 
-.content { grid-column: 2; grid-row: 2; min-height: 0; overflow: auto; }
-.screen { padding: 8px 32px 32px; max-width: 960px; }
+.content { grid-column: 2; grid-row: 2; min-height: 0; overflow: auto; margin: 0 8px 8px 0; border-radius: 16px;
+  background: #FFFFFF; border: 1px solid var(--border); }
+.screen { padding: 32px 40px 40px; max-width: 1000px; }
 .screen .display { margin: 8px 0 12px; }
 .screen .lead { color: var(--ink-2); max-width: 640px; }
 .screen a { color: var(--focus); }
 .folders-screen { max-width: none; padding: 0; height: 100%; display: flex; flex-direction: column; }
 .agents-setup { max-width: 640px; }
 .agents-setup button { margin: 4px 8px 4px 0; }
+
+/* Home: the greeting with the undo keys, then a banner for the next step (like Wispr's "Make Flow sound like you"). */
+.greeting { font: 500 26px/36px var(--font-ui); margin: 0 0 24px; }
+.greeting .keycap { font-size: 20px; padding: 2px 10px; margin: 0 2px; vertical-align: 2px;
+  background: var(--needs-soft, #FBEBD0); border-color: var(--needs); color: var(--ink); }
+.banner { position: relative; display: flex; align-items: center; min-height: 180px; padding: 28px 32px; border-radius: 16px; overflow: hidden;
+  color: #EEF1EC; background: radial-gradient(ellipse 34% 90% at 80% 55%, rgba(242, 176, 74, 0.42), rgba(242, 176, 74, 0) 70%),
+    radial-gradient(ellipse 22% 60% at 92% 30%, rgba(52, 214, 182, 0.18), rgba(52, 214, 182, 0) 70%), linear-gradient(90deg, #0B0C0D 45%, #1A1511); }
+.banner-text { position: relative; z-index: 1; max-width: 58%; }
+.banner-title { margin: 0 0 6px; font: 400 30px/38px var(--font-display); font-variation-settings: var(--display-axes); letter-spacing: -0.01em; }
+.banner-title em { font-style: italic; }
+.banner p { margin: 0 0 20px; color: #D5DAD4; }
+.banner-go { all: unset; cursor: pointer; padding: 9px 16px; border-radius: 10px; background: #EEF1EC; color: #121416; font: 600 14px/20px var(--font-ui); }
+.banner-go:hover { background: #FFFFFF; }
+.banner-go:focus-visible { outline: 2px solid var(--done); outline-offset: 2px; }
+/* The cat (a mask, see base.css), milk on the warm glow, a little soft at the edge like the photo in Wispr's banner. */
+.banner-cat { position: absolute; right: 7%; bottom: -14px; --cat-size: 190px; --cat: #EEF1EC;
+  filter: drop-shadow(0 0 22px rgba(242, 176, 74, 0.35)); }
+@media (max-width: 1100px) { .banner-cat { --cat-size: 150px; right: 4%; } }
+.checklist li.set::before { display: none; }

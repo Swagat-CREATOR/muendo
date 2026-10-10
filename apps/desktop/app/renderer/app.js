@@ -516,10 +516,9 @@ $('edit-rules').onclick = guard(async () => {
 });
 
 // --- The shell (design spec §7): sidebar, screens, the checklist ------------------------------------------------
-// ponytail: Protected folders is the first screen until Home (D5) has something to show.
 
 const SCREENS = [...document.querySelectorAll('#nav .nav-item')].map((b) => b.dataset.screen);
-let screen = 'folders';
+let screen = 'home';
 function go(name) {
   if (!SCREENS.includes(name)) return;
   screen = name;
@@ -593,6 +592,31 @@ function renderChecklist() {
     })));
 }
 
+// Home's banner points at the next step that isn't done yet; once everything is, it just says Mewndo has your back.
+// The cats are the design kit's poses (assets/cat), drawn as a mask so they take the banner's milk colour.
+const BANNERS = {
+  folder: { title: ['Undo anything your ', 'agent', ' did'], text: 'Mewndo keeps every version of every file, on this computer.', go: 'Protect a folder', to: () => go('folders'), cat: 'reach' },
+  agent: { title: ['Let Mewndo ', 'watch', ' your agents'], text: 'Connect Claude Code, Codex or Cursor: save points before every turn, and Guard on every command.', go: 'Connect an agent', to: () => go('agents'), cat: 'sit' },
+  undo: { title: ['Try an ', 'undo', ' now'], text: 'Pick a save point and put a folder, or just some files, back the way they were.', go: 'Open a folder', to: () => go('folders'), cat: 'pounce' },
+  shortcuts: { title: ['Make the keys ', 'yours'], text: 'Pick the undo and brief shortcuts, then test them once.', go: 'Pick shortcuts', to: () => guard(() => api.openSettings())(), cat: 'trot' },
+  done: { title: ['Mewndo has your ', 'back'], text: "Every change your agents make can be undone. Nothing leaves this computer.", go: 'See your folders', to: () => go('folders'), cat: 'loaf' },
+};
+let bannerKey = null;
+function renderHome() {
+  const keys = (state.shortcuts?.undo ?? 'Alt+Shift+Z').split('+');
+  $('greeting').replaceChildren('Undo anything an agent did with ', ...keys.flatMap((k, i) => [i ? ' + ' : '', h('span', { class: 'keycap' }, k)]));
+  const items = state.checklist?.items ?? {};
+  const key = ['folder', 'agent', 'undo', 'shortcuts'].find((k) => !items[k]) ?? 'done';
+  if (key === bannerKey) return;
+  bannerKey = key;
+  const b = BANNERS[key];
+  $('banner-title').replaceChildren(b.title[0], h('em', {}, b.title[1]), b.title[2] ?? '');
+  $('banner-text').textContent = b.text;
+  $('banner-go').textContent = b.go;
+  $('banner-go').onclick = b.to;
+  $('banner-cat').style.setProperty('--pose', `url("${new URL(`../assets/cat/cat-${b.cat}.svg`, document.baseURI).href}")`); // absolute: no doubt what it's relative to
+}
+
 // --- Keeping up to date ----------------------------------------------------------------------------------------
 
 let hookStatusLoaded = false;
@@ -604,6 +628,7 @@ async function refresh() {
   if (!state.setupDone) return showSetup();
   renderHeader();
   renderChecklist();
+  renderHome();
   if (selected && !state.folders.some((f) => f.root === selected)) {
     selected = null;
     $('folder-view').hidden = true;

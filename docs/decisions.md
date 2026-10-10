@@ -443,3 +443,14 @@ hides for good (`settings.checklistDone`).
 **What it can't do yet:** Protected folders is the first screen until Home (D5) is built; Home, Inbox, Timeline,
 Connections and Skills are short pages that say what isn't there yet. "Connect an account" is left out of the
 checklist and "Invite a tester" out of the sidebar until those exist.
+
+## Light main window and Home banners (10 Oct 2026)
+
+At the user's request the main window is light, like Wispr Flow's: the frame and sidebar share one soft grey
+(`--sidebar`) and the screen sits on a white rounded sheet; the title bar overlay uses the same grey. It no longer
+follows the system's dark mode (`data-theme="light"` on the page); a theme choice in Settings can bring dark back.
+
+Home is now the first screen: a greeting with the undo shortcut as keycaps, and a banner in the style of Wispr's
+"Make Flow sound like you": dark, a serif headline with one italic word, a line of text, one button, and one of the
+kit's cat poses in milk on a warm glow. The banner points at the next unfinished checklist step (protect a folder,
+connect an agent, try an undo, pick shortcuts) and, once all are done, says "Mewndo has your back".

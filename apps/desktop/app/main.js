@@ -7,7 +7,6 @@ const fsp = require('node:fs/promises');
 const crypto = require('node:crypto');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard, screen,
-  nativeTheme,
 } = require('electron');
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
@@ -302,11 +301,9 @@ function icon() {
 }
 
 // The title bar (design spec §7.1): Windows draws real minimize, maximize and close buttons over our own 40 px bar,
-// in the page's background and ink colours, and they follow the system theme.
-const titleBarOverlay = () => (nativeTheme.shouldUseDarkColors
-  ? { color: '#121416', symbolColor: '#EEF1EC', height: 40 }
-  : { color: '#F4F6F3', symbolColor: '#15171A', height: 40 });
-nativeTheme.on('updated', () => { if (win && !win.isDestroyed() && process.platform !== 'linux') win.setTitleBarOverlay(titleBarOverlay()); });
+// in the window's frame colour.
+// ponytail: the main window is light for now (the user's call, 10 Oct); a Settings theme choice can bring dark back.
+const titleBarOverlay = () => ({ color: '#ECEFEB', symbolColor: '#15171A', height: 40 });
 
 // The saved size and position, if it still lands on a connected display.
 function savedBounds() {
@@ -420,6 +417,7 @@ async function state() {
     usedBytes: report?.usedBytes ?? null,
     budgetBytes: report?.budgetBytes ?? null,
     checklist: checklist(folders, guarded),
+    shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
   };
 }
 
