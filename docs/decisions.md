@@ -386,3 +386,19 @@ sends it to the body.
 **What it can't do:** the cursor is polled, so the window trails the pointer when the main process is busy; in one
 scripted run on the dev machine it only caught up at the drop, and the glide took about half a second. A drag that
 never reports its end stops by itself after 10 s.
+
+## The living face (design D3b, 10 Oct 2026)
+
+The pill's status dot is now the cat's face (`cat-face-live.svg` with `mew-eyes.js`), with the protection status as a
+6 px dot at its lower right. The main process reads the SVG and hands it over once (`bar:face`), because the sandboxed
+page can't read files. The face is a plain element, not a button: it is the drag handle, and a double-click sends
+the dock back to bottom right. Tapping it no longer opens the main window; the panel's rows do that.
+
+The main process looks at the cursor 4 times a second and, while it is within 300 px of the dock's middle or a drag
+is on, sends it 30 times a second (`bar:cursor`, window coordinates), then `null` once when it leaves, so the eyes
+look back toward the middle of the screen. Moods: Brake or Guard stopped something → `caught`; a card, question or
+alert → `needs`; Rules-only mode or no agents for 5 minutes → `sleepy`; otherwise `calm`. A card that arrives while
+the pill is a dot pops the face out (scale 0.6 to 1, 180 ms).
+
+**What it can't do:** with reduced motion the cursor isn't fed and the eyes don't move or blink; only the moods change
+their shape. The peek has no "Claude needs you" chip yet. Idle CPU with the eyes following hasn't been measured.

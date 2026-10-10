@@ -28,7 +28,6 @@ body {
 /* Standing up on a side edge: the same pieces in a column. */
 .edge-left .pill, .edge-right .pill { flex-direction: column; width: 40px; height: auto; padding: 8px 0; }
 .edge-left .agents, .edge-right .agents { flex-direction: column; padding: 2px 0; }
-.edge-left .protection, .edge-right .protection { position: static; margin-bottom: 4px; }
 /* While dragging: only the compact surface, lifted (§11.8 step 2). The orientation switch hides behind a fade. */
 .dragging .flyout { display: none; }
 .dragging .pill > :not(.protection):not(.agents) { display: none; }
@@ -41,7 +40,7 @@ button { all: unset; cursor: pointer; display: grid; place-items: center; }
 button:focus-visible { outline: 2px solid #8cf; outline-offset: 2px; }
 svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
-/* Resting pill: agent dots, mic, up-arrow (with the protection dot on its corner). */
+/* Resting pill: the face, agent dots, mic, up-arrow. */
 .pill {
   display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 3px 0 6px; border-radius: 20px;
   background: var(--bg); border: 1px solid var(--edge); box-shadow: 0 2px 10px rgba(0, 0, 0, .45); cursor: grab;
@@ -51,13 +50,21 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 .round:hover:not(:disabled) { background: var(--soft); }
 .round:disabled { color: #666; cursor: default; }
 .round svg { width: 17px; height: 17px; }
-.protection {
-  position: absolute; top: 5px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--grey);
-  box-shadow: 0 0 0 2px var(--bg); z-index: 1;
+/* The living face (design spec §11.9, §11.2): milk cat, dark eyes, the protection status as a 6 px dot at its lower
+   right. It is the drag handle, and double-clicking it sends the dock back to bottom right. */
+.face { position: relative; width: 24px; height: 24px; flex: none; color: #EEF1EC; --mew-eye: #121416; }
+.face svg { width: 24px; height: 24px; display: block; stroke: none; }
+.face::after {
+  content: ""; position: absolute; right: -1px; bottom: 0; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--grey); box-shadow: 0 0 0 1.5px var(--bg);
 }
-.protected .protection { background: var(--green); }
-.drift .protection { background: var(--amber); }
-.braked .protection { background: var(--red); }
+.protected .face::after { background: var(--green); }
+.drift .face::after { background: var(--amber); }
+.braked .face::after { background: var(--red); }
+/* Mascot peek: a card arrived while the pill was a dot (§11.8). */
+.peek .face { animation: peek 180ms cubic-bezier(0.2, 0, 0, 1); }
+@keyframes peek { from { transform: scale(.6); } to { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .peek .face { animation: none; } }
 .agents { display: flex; gap: 4px; padding: 0 2px; }
 .agents:empty { display: none; }
 .agent { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
@@ -70,10 +77,10 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 .text.primary:hover { background: #e6e6e6; }
 .ticker { display: flex; gap: 6px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .ticker .del { color: #ff8a8a; } .ticker .mod { color: #f7cf7a; } .ticker .add { color: #7fe0a0; }
-/* Idle: a single black dot with the protection light. */
-.pill.dot { width: 22px; height: 22px; padding: 0; gap: 0; justify-content: center; }
+/* Idle: just the face in a small round tab. */
+.pill.dot { width: 32px; height: 32px; padding: 0; gap: 0; justify-content: center; }
+.edge-left .pill.dot, .edge-right .pill.dot { width: 32px; height: 32px; padding: 0; }
 .pill.dot > :not(.protection) { display: none; }
-.pill.dot .protection { position: static; box-shadow: none; }
 
 /* Hover hint, like Wispr Flow's "Dictate Ctrl + Alt →", with the change ticker and quick actions under it. */
 .hint { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 12px 10px; border-radius: 20px;

@@ -1,5 +1,5 @@
 // The Mewndo bar (app/bar.js). Mouse input reaches this window only while the pointer is over an element marked
-// .hit; everywhere else clicks go through to the app below. Resting: protection dot, agent dots, mic, up-arrow.
+// .hit; everywhere else clicks go through to the app below. Resting: the living face (with the protection dot), agent dots, mic, up-arrow.
 // Hover: the shortcuts hint, the change ticker (−deleted ~edited +created since the last save point) and Undo last,
 // Brake, Save point. Shrinks to a dot after 5 s idle; an alert or hover brings it back.
 // Pointer: a press that moves more than 4 px drags the bar; held 600 ms on a [data-long] element it's a long-press
@@ -74,7 +74,50 @@ function render() {
   }
   wake();
 }
-window.bar.onState((s) => { state = s; render(); });
+window.bar.onState((s) => {
+  const arrived = s.card && s.card.id !== state.card?.id;
+  const collapsed = pill.classList.contains('dot');
+  state = s;
+  render();
+  if (arrived && collapsed) peek();
+  face();
+});
+
+// The living face (design spec §11.9): the cat in the pill, whose eyes follow the cursor near the dock and react.
+// What it can't do: with reduced motion the eyes stay still and don't blink; only the moods change their shape.
+let eyes = null;
+let quietSince = Date.now(); // when the last agent went away
+const MIDDLE = { bottom: 'up', top: 'down', left: 'right', right: 'left' }; // where cards open
+window.bar.face?.().then((svg) => {
+  if (!svg) return;
+  $('protection').innerHTML = svg; // our own asset, read by the main process
+  const svgEl = $('protection').querySelector('svg');
+  svgEl.setAttribute('aria-hidden', 'true'); // the face's own label says the status
+  eyes = MewEyes(svgEl);
+  face();
+});
+function face() {
+  if (state.agents?.length) quietSince = Date.now();
+  if (!eyes) return;
+  const braked = state.status === 'braked' || state.agents?.some((a) => a.braked);
+  const quiet = Date.now() - quietSince > 5 * 60_000;
+  eyes.mood(braked ? 'caught' : state.card || state.ask || state.alert ? 'needs' : state.rulesOnly || quiet ? 'sleepy' : 'calm');
+  if (!cursorNear) eyes.lookToward(MIDDLE[state.edge ?? 'bottom']);
+}
+setInterval(face, 60_000).unref?.();
+let cursorNear = false;
+window.bar.onCursor?.((p) => {
+  cursorNear = !!p;
+  if (p) eyes?.lookAt(p.x, p.y);
+  else face();
+});
+// A card arrived while the pill was a dot: the face pops out first, looking where the card opens (§11.8 Mascot peek).
+// ponytail: no "Claude needs you" chip yet; the card says who, and it opens right after.
+function peek() {
+  pill.classList.remove('peek');
+  void pill.offsetWidth; // restart the animation
+  pill.classList.add('peek');
+}
 
 // Which edge, and where along it. A new orientation cross-fades (90 ms) so the window's one size change is hidden.
 let edge = null;
@@ -309,6 +352,6 @@ document.addEventListener('keydown', (e) => {
 // pointer capture taken on press sends click and dblclick to the body, not to what is under the pointer.
 document.addEventListener('dblclick', (e) => {
   const under = document.elementFromPoint(e.clientX, e.clientY);
-  if (under?.closest('.pill') && !under.closest('button')) window.bar.action('dock-reset');
+  if (under?.closest('.pill') && !under.closest('button')) window.bar.action('dock-reset'); // the face is not a button
 });
 wake();

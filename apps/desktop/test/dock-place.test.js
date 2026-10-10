@@ -1,7 +1,7 @@
 // Where the dock sits (app/dock-place.js, design spec §11.8): any edge, any display, whole pixels, a smooth snap.
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { CANVAS, CORNER, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath } = require('../app/dock-place');
+const { CANVAS, CORNER, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath, surfaceCentre } = require('../app/dock-place');
 
 // 1920 x 1080 at 100 %, taskbar 48 px at the bottom.
 const D1 = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1032 } };
@@ -83,4 +83,14 @@ test('the snap moves in whole pixels, never back, and ends exactly on the target
 test('fractions are clamped to the edge', () => {
   assert.strictEqual(fractionAlong(D1.workArea, 'left', { x: 0, y: -50 }), 0);
   assert.strictEqual(fractionAlong(D1.workArea, 'top', { x: 5000, y: 0 }), 1);
+});
+
+test('the surface middle, which the eyes measure "near" from, sits against the edge at the anchor', () => {
+  for (const edge of ['left', 'right', 'top', 'bottom']) {
+    const p = place(D1, { edge, fraction: 0.5 });
+    const c = surfaceCentre(p.bounds, edge, p.anchor);
+    const gap = { left: c.x - 0, right: 1920 - c.x, top: c.y - 0, bottom: 1032 - c.y }[edge];
+    assert.strictEqual(gap, 28, edge);
+    assert.strictEqual(['left', 'right'].includes(edge) ? c.y : c.x, ['left', 'right'].includes(edge) ? 516 : 960, edge);
+  }
 });

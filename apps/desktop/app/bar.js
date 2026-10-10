@@ -13,13 +13,20 @@
 // Hidden while a full-screen app is in front (fullScreen(), asked every 2 s) unless there's an alert. Kept out of
 // every screen capture (setContentProtection), so people watching a screen share never see it.
 // What it can't do: Windows can only exclude it from captures on Windows 10 version 2004 and later.
+const fs = require('node:fs');
 const path = require('node:path');
 const { BrowserWindow, screen, ipcMain, systemPreferences } = require('electron');
-const { place, drop, displayFor, snapPath } = require('./dock-place');
+const { place, drop, displayFor, snapPath, surfaceCentre } = require('./dock-place');
 
 const DRAG_TICK_MS = 8;
 const DRAG_SAFETY_MS = 10_000; // a drag whose end never arrives ends by itself
 const TOP_EVERY_MS = 1000; // re-assert always-on-top at most this often (§11.8 step 6)
+// The living face's cursor feed (§11.9): 30 Hz while the cursor is within NEAR px of the dock or a drag is on, otherwise
+// a cheap look 4 times a second to notice it coming closer. Nothing is sent while it's far.
+const NEAR = 300;
+const NEAR_MS = 33;
+const FAR_MS = 250;
+const FACE = path.join(__dirname, 'assets', 'cat', 'cat-face-live.svg');
 
 // positions: what savePositions last stored; the dock's own spot is positions.dock = { displayId, edge, fraction }.
 // onAction(name, arg?) for the bar's buttons · onVoice(wav Buffer) for the mic · fullScreen() -> Promise<boolean>.
@@ -33,6 +40,8 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
   let snapping = null;
   let toppedAt = 0;
   let over = false; // the pointer is over the visible surface (bar:mouse)
+  let near = false; // the cursor is near enough for the eyes to follow it
+  let cursorTimer = null;
 
   const alive = () => win && !win.isDestroyed();
   const visible = () => enabled && (!coveredByFullScreen || state.alert);
@@ -63,6 +72,18 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
   // the dock deaf to hover and clicks until something else reset it.
   function applyMouse() {
     if (alive()) win.setIgnoreMouseEvents(!(drag || over), { forward: true });
+  }
+
+  function watchCursor() {
+    cursorTimer = setTimeout(watchCursor, near ? NEAR_MS : FAR_MS);
+    if (!alive() || !win.isVisible() || win.webContents.isLoading() || reducedMotion()) return;
+    const p = screen.getCursorScreenPoint();
+    const b = win.getBounds();
+    const c = surfaceCentre(b, layout.edge, layout.anchor);
+    const now = !!drag || Math.hypot(p.x - c.x, p.y - c.y) <= NEAR;
+    if (now) win.webContents.send('bar:cursor', { x: p.x - b.x, y: p.y - b.y });
+    else if (near) win.webContents.send('bar:cursor', null); // gone: look toward the middle of the screen
+    near = now;
   }
 
   function keepOnTop() {
@@ -99,6 +120,7 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
       if (visible()) win.showInactive();
     });
     win.on('blur', keepOnTop);
+    if (!cursorTimer) watchCursor();
   }
 
   // Display added, removed or rescaled, or the taskbar moved: put the dock back where it belongs (§11.8 Memory).
@@ -208,6 +230,7 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
     if (ours(e) && msg && Number.isFinite(msg.offsetX) && Number.isFinite(msg.offsetY)) startDrag(msg.offsetX, msg.offsetY);
   });
   ipcMain.on('dock:drag-end', (e) => { if (ours(e)) endDrag(); });
+  ipcMain.handle('bar:face', (e) => (ours(e) ? fs.readFileSync(FACE, 'utf8') : ''));
 
   // Full-screen apps: Windows says when one is in front (mewndo-core's screen_state).
   const fullScreenTimer = setInterval(async () => {
@@ -235,6 +258,7 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
     destroy() {
       clearInterval(fullScreenTimer);
       clearInterval(snapping);
+      clearTimeout(cursorTimer);
       if (drag) { clearInterval(drag.timer); clearTimeout(drag.safety); drag = null; }
       if (alive()) win.destroy();
       win = null;

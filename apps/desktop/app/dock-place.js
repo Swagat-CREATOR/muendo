@@ -77,6 +77,17 @@ function place(display, saved) {
   return { bounds, edge, orientation, anchor, saved: { displayId: display.id, edge, fraction } };
 }
 
+// The middle of the pill or dock in screen coordinates: what "near the dock" is measured from (§11.9).
+const ACROSS = 28; // 8 px gap to the edge plus half the 40 px surface
+function surfaceCentre(bounds, edge, anchor) {
+  return {
+    bottom: { x: bounds.x + anchor, y: bounds.y + bounds.height - ACROSS },
+    top: { x: bounds.x + anchor, y: bounds.y + ACROSS },
+    left: { x: bounds.x + ACROSS, y: bounds.y + anchor },
+    right: { x: bounds.x + bounds.width - ACROSS, y: bounds.y + anchor },
+  }[edge];
+}
+
 // After a drop: the edge and position the pointer was released nearest to, on the display under it.
 function drop(display, pointer) {
   const edge = nearestEdge(display.workArea, pointer);
@@ -99,4 +110,4 @@ function snapPath(from, to, { ms = 180, step = 8 } = {}) {
   return out;
 }
 
-module.exports = { CANVAS, CORNER, DEFAULT, EDGES, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath };
+module.exports = { CANVAS, CORNER, DEFAULT, EDGES, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath, surfaceCentre };
