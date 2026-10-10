@@ -34,12 +34,14 @@ pub struct Desk {
 
 impl Desk {
     /// `dir`: the desk folder. `data_dir`: v0's data folder (save points go through its hook server).
-    pub fn new(dir: &Path, data_dir: PathBuf, log: Arc<Log>) -> Desk {
+    /// `rules_file`: the user's rules.toml, or None to use the built-in rules and keep habits in memory.
+    pub fn new(dir: &Path, data_dir: PathBuf, rules_file: Option<PathBuf>, log: Arc<Log>) -> Desk {
         let events = broadcast::channel(1024).0;
         let writer = Arc::new(writer::start(&dir.join("desk.db"), log.clone()));
         Desk {
             agents: Agents::start(
                 data_dir,
+                rules_file,
                 writer.clone(),
                 Publisher(events.clone()),
                 log.clone(),
@@ -130,10 +132,11 @@ fn already_running(dir: &Path) -> io::Error {
 pub async fn serve(
     instance: Instance,
     data_dir: PathBuf,
+    rules_file: Option<PathBuf>,
     log: Arc<Log>,
     stopped: watch::Receiver<bool>,
 ) -> io::Result<()> {
-    let desk = Arc::new(Desk::new(&instance.dir, data_dir, log.clone()));
+    let desk = Arc::new(Desk::new(&instance.dir, data_dir, rules_file, log.clone()));
     // ponytail: 32 random bits from a ULID (rand's CSPRNG); the name only has to be unguessable before core.json
     // is written, and the pipe refuses everyone but this user anyway.
     let tag = format!("{:08x}", ulid::Ulid::new().random() as u32);
@@ -492,6 +495,7 @@ mod tests {
         Arc::new(Desk::new(
             &d,
             d.join("v0"),
+            None,
             Arc::new(Log::new(&d.join("logs"))),
         ))
     }

@@ -24,6 +24,7 @@ flate2.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 ulid.workspace = true
+toml_edit.workspace = true
 
 # Real SQLite needs a C compiler (docs/decisions.md, "desk.db"), which the windows-gnu dev box has not got. Both
 # targets that have one get the real desk database; windows-gnu builds the writer task with a sink that keeps no

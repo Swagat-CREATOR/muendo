@@ -15,7 +15,7 @@ const VISIBLE = 3; // at most three cards; the rest collapse into "+N more" (§3
 const DEFAULT_GRACE_MS = 2_000;
 const VOICE_HINT = 'Hold your Wispr Flow key and speak';
 
-// The five kinds of §33.2. The Inbox engine (Part D) names them; these aliases keep the UI working if it uses the
+// The five kinds of §33.2, and the Habit card of §34.7. The Inbox engine (Part D) names them; these aliases keep the UI working if it uses the
 // longer names from the spec table.
 const ALIASES = {
   permission: 'permission', 'needs-permission': 'permission', 'needs_permission': 'permission',
@@ -23,6 +23,7 @@ const ALIASES = {
   done: 'done', stop: 'done',
   drift: 'drift', hold: 'drift', 'drift-hold': 'drift',
   receipt: 'receipt', 'receipt-warning': 'receipt', 'receipt_warning': 'receipt',
+  habit: 'habit',
 };
 const normaliseKind = (kind) => ALIASES[String(kind ?? '').toLowerCase()] ?? 'question';
 
@@ -54,6 +55,12 @@ const KEYS = {
     1: { action: 'answer', choice: 0, label: 'Send back' },
     2: { action: 'undo', label: 'Undo turn' },
     e: { action: 'dismiss', label: 'Ignore' },
+  },
+  // "Always allow `npm test` in shop?" (§34.7). The core writes the rule on yes; no agent is waiting on it.
+  habit: {
+    1: { action: 'answer', choice: 0, label: 'Yes' },
+    2: { action: 'answer', choice: 1, label: 'No' },
+    3: { action: 'answer', choice: 2, label: 'Never ask' },
   },
 };
 
@@ -91,6 +98,7 @@ function describe(card) {
     done: ['Space reply', 'V voice reply', 'U undo turn', 'E clear'],
     drift: ['1 resume with corrected brief', '2 let it', '3 stop and review'],
     receipt: ['1 send back', '2 undo turn', 'E ignore'],
+    habit: ['1 yes', '2 no', '3 never ask'],
   }[kind];
   return {
     id: card.id,

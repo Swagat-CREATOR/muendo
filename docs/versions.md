@@ -41,6 +41,7 @@ caret range, so the exact build comes from `core/Cargo.lock`:
 | `windows-link` | `0.2.1` | caret |
 | `ureq` (`default-features = false`, features: `native-tls`) | `2.12.1` | caret |
 | `native-tls` | `0.2.14` | caret |
+| `toml_edit` (`default-features = false`, features: `parse`, `display`) | `0.25.17` | caret |
 | `mewndo-proto` | `{ path = "crates/mewndo-proto" }` | local path, no version |
 
 Note on a caret in Cargo: `0.10.9` and `0.37.0` are pre-1.0, where a caret allows only patch updates

@@ -18,9 +18,10 @@ use crate::writer::Writer;
 use mewndo_inbox::{CardWriter, Config, Event, HabitRecorder, Inbox};
 use mewndo_proto::{
     AgentStatus, Body, BudgetState, Envelope, Frame, HookRequest, HookResponse, InboxAnswer,
-    InboxExpired, InboxUndo, ReceiptResult, RouteResult, SpanCreated,
+    InboxCard, InboxExpired, InboxRelease, InboxUndo, ReceiptResult, RouteResult, SpanCreated,
 };
 use mewndo_router::Router;
+use mewndo_router::habits::HabitRequest;
 use mewndo_router::voice::{LiveAgent, RouteChoice};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -46,6 +47,9 @@ impl Publisher {
 }
 
 type Live = Arc<Mutex<HashMap<String, AgentStatus>>>;
+
+/// Habit cards on screen, by card id: what "yes" on each one would write (§34.7).
+type HabitCards = Arc<Mutex<HashMap<String, (InboxCard, HabitRequest)>>>;
 
 /// The handlers' own events, to the apps; agent.status also keeps the list voice routing chooses from.
 struct AppEvents {
@@ -102,6 +106,11 @@ pub struct Agents {
     inbox: Inbox,
     router: Arc<Router>,
     engine: Arc<V0Engine>,
+    habit_cards: HabitCards,
+    /// The user's rules.toml, where an accepted habit is written. None (tests, or a core started without
+    /// `--rules`): a habit lasts until the core stops.
+    rules_file: Option<PathBuf>,
+    log: Arc<Log>,
     claude: Claude,
     codex: Codex,
     cursor: Cursor,
@@ -109,9 +118,11 @@ pub struct Agents {
 }
 
 impl Agents {
-    /// `data_dir`: v0's data folder, where hook.json says how to reach its save points.
+    /// `data_dir`: v0's data folder, where hook.json says how to reach its save points. `rules_file`: the user's
+    /// rules.toml (§34.9 R1), read now and written when a Habit card is accepted.
     pub fn start(
         data_dir: PathBuf,
+        rules_file: Option<PathBuf>,
         writer: Arc<Writer>,
         publisher: Publisher,
         log: Arc<Log>,
@@ -122,17 +133,33 @@ impl Agents {
         if clef.is_some() {
             log.info("clef: gateway configured");
         }
+        let rules = match rules_file.as_deref().map(crate::rules_file::load) {
+            Some(Ok(rules)) => rules,
+            Some(Err(e)) => {
+                log.warn(&format!("rules.toml not used, built-in rules only: {e}"));
+                mewndo_router::CompiledRules::builtin()
+            }
+            None => mewndo_router::CompiledRules::builtin(),
+        };
         let router = Router::new(
-            mewndo_router::CompiledRules::builtin(),
+            rules,
             clef.unwrap_or_else(|| Box::new(mewndo_router::clef::NoClef)),
             Box::new(mewndo_router::facts::NoFacts),
         );
-        Agents::start_with(Arc::new(router), data_dir, writer, publisher, log)
+        Agents::start_with(
+            Arc::new(router),
+            data_dir,
+            rules_file,
+            writer,
+            publisher,
+            log,
+        )
     }
 
     pub fn start_with(
         router: Arc<Router>,
         data_dir: PathBuf,
+        rules_file: Option<PathBuf>,
         writer: Arc<Writer>,
         publisher: Publisher,
         log: Arc<Log>,
@@ -149,7 +176,13 @@ impl Agents {
                 habits: Box::new(SharedHabits(router.clone())),
             },
         );
-        tokio::spawn(forward(inbox.subscribe(), publisher.clone(), log));
+        let habit_cards: HabitCards = Arc::default();
+        tokio::spawn(forward(
+            inbox.subscribe(),
+            publisher.clone(),
+            log.clone(),
+            habit_cards.clone(),
+        ));
         let live: Live = Arc::default();
         let mut deps = claude::Deps::new(inbox.clone(), router.clone());
         deps.engine = engine.clone();
@@ -166,6 +199,9 @@ impl Agents {
             inbox,
             router,
             engine,
+            habit_cards,
+            rules_file,
+            log,
             live,
         }
     }
@@ -217,6 +253,9 @@ impl Agents {
     }
 
     pub async fn answer(&self, answer: InboxAnswer) -> Result<(), String> {
+        if let Some(habit) = self.take_habit(&answer.card_id) {
+            return self.answer_habit(&answer, habit);
+        }
         let id = answer
             .card_id
             .parse()
@@ -225,6 +264,78 @@ impl Agents {
             return Err("an answer needs a choice or some text".into());
         }
         self.inbox.answer(id, answer).await;
+        Ok(())
+    }
+
+    fn take_habit(&self, card_id: &str) -> Option<(InboxCard, HabitRequest)> {
+        self.habit_cards
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(card_id)
+    }
+
+    /// A Habit card's answer (§34.7): 1 yes, 2 no, 3 never ask, by key or by the option's own words.
+    fn answer_habit(
+        &self,
+        answer: &InboxAnswer,
+        (card, habit): (InboxCard, HabitRequest),
+    ) -> Result<(), String> {
+        let said = answer.text.as_deref().map(|t| t.trim().to_lowercase());
+        let choice = answer.choice.or_else(|| {
+            habit
+                .options
+                .iter()
+                .position(|o| Some(o.as_str()) == said.as_deref())
+        });
+        match choice {
+            Some(0) => {
+                self.router
+                    .habits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .accept(&habit);
+                match &self.rules_file {
+                    Some(path) => match crate::rules_file::add_habit(
+                        path,
+                        &habit,
+                        &crate::rules_file::today_utc(),
+                    ) {
+                        Ok(true) => self.log.info(&format!(
+                            "habit written to rules.toml: {}",
+                            habit.command_norm
+                        )),
+                        Ok(false) => self.log.info(&format!(
+                            "habit already in rules.toml: {}",
+                            habit.command_norm
+                        )),
+                        // The habit still holds until the core stops; the user's file is left as it was.
+                        Err(e) => self.log.warn(&format!("habit not written: {e}")),
+                    },
+                    None => self
+                        .log
+                        .info("habit kept until the core stops (no rules.toml given)"),
+                }
+            }
+            Some(1) => {}
+            Some(2) => self
+                .router
+                .habits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .mute(&habit),
+            _ => {
+                let card_id = answer.card_id.clone();
+                self.habit_cards
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(card_id, (card, habit));
+                return Err("a Habit card is answered with yes, no or never ask".into());
+            }
+        }
+        self.publisher.send(&InboxRelease {
+            card_id: answer.card_id.clone(),
+            savepoint_id: None,
+        });
         Ok(())
     }
 
@@ -250,6 +361,13 @@ impl Agents {
             .cards
             .iter()
             .map(|card| card.to_proto(APP_GRACE))
+            .chain(
+                self.habit_cards
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .values()
+                    .map(|(card, _)| card.clone()),
+            )
             .collect()
     }
 
@@ -282,6 +400,35 @@ impl Agents {
     }
 }
 
+/// The §34.7 card: "Always allow `npm test` in shop?" with yes, no and never ask. It is kept until answered;
+/// "yes" writes the rule (`Agents::answer_habit`).
+fn habit_card(habit_cards: &HabitCards, habit: HabitRequest) -> InboxCard {
+    let id = ulid::Ulid::new().to_string();
+    let verb = if habit.answer.allows() {
+        "allow"
+    } else {
+        "deny"
+    };
+    let card = InboxCard {
+        id: id.clone(),
+        kind: "habit".into(),
+        agent_id: habit.agent_kind.clone(),
+        title: habit.text.clone(),
+        body: format!(
+            "You gave this answer 3 times. Yes adds it to [{verb}] in rules.toml,\nwhich applies in every project after a restart."
+        ),
+        options: habit.options.to_vec(),
+        risk: 0,
+        thumb: None,
+        grace_ms: APP_GRACE.as_millis() as u64,
+    };
+    habit_cards
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id, (card.clone(), habit));
+    card
+}
+
 /// Which of Mewndo's own commands (§23.3, §24) the words name; the app confirms it before anything runs.
 fn command_in(text: &str) -> &'static str {
     let said = text.to_lowercase();
@@ -295,7 +442,12 @@ fn command_in(text: &str) -> &'static str {
 }
 
 /// The Inbox's events, as §38.5 messages for the apps.
-async fn forward(mut rx: broadcast::Receiver<Event>, publisher: Publisher, log: Arc<Log>) {
+async fn forward(
+    mut rx: broadcast::Receiver<Event>,
+    publisher: Publisher,
+    log: Arc<Log>,
+    habit_cards: HabitCards,
+) {
     loop {
         match rx.recv().await {
             Ok(Event::Card(mut card)) => {
@@ -306,10 +458,7 @@ async fn forward(mut rx: broadcast::Receiver<Event>, publisher: Publisher, log: 
             Ok(Event::Undo(undo)) => publisher.send(&undo),
             Ok(Event::Expired(card_id)) => publisher.send(&InboxExpired { card_id }),
             Ok(Event::Reopened(_)) => {} // Esc is handled in the app, which holds the grace
-            Ok(Event::Habit(habit)) => log.info(&format!(
-                "habit offered but not shown yet (the dock has no Habit card): {}",
-                habit.text
-            )),
+            Ok(Event::Habit(habit)) => publisher.send(&habit_card(&habit_cards, habit)),
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 log.warn(&format!("desk: {n} Inbox events were dropped"))
             }
@@ -336,7 +485,10 @@ mod tests {
         let log = Arc::new(Log::new(&d.join("logs")));
         let writer = Arc::new(crate::writer::start(&d.join("desk.db"), log.clone()));
         let (tx, rx) = broadcast::channel(64);
-        (Agents::start(d.join("v0"), writer, Publisher(tx), log), rx)
+        (
+            Agents::start(d.join("v0"), None, writer, Publisher(tx), log),
+            rx,
+        )
     }
 
     async fn next<B: Body>(rx: &mut broadcast::Receiver<Arc<Vec<u8>>>) -> B {
@@ -418,6 +570,89 @@ mod tests {
         assert_eq!(release.card_id, card.id);
     }
 
+    /// One Claude permission request for `command`, answered with the card's first option (allow).
+    async fn allow_once(
+        agents: &Arc<Agents>,
+        rx: &mut broadcast::Receiver<Arc<Vec<u8>>>,
+        command: &str,
+    ) {
+        let waiting = tokio::spawn({
+            let agents = agents.clone();
+            let request = hook("claude", "permission", permission(command));
+            async move { agents.hook(&request).await }
+        });
+        let card: InboxCard = next(rx).await;
+        assert_eq!(card.kind, "permission", "{card:?}");
+        agents
+            .answer(InboxAnswer {
+                card_id: card.id,
+                choice: Some(0),
+                text: None,
+                via: Via::Key,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn three_identical_answers_offer_a_habit_and_yes_writes_rules_toml() {
+        let d = temp("habit");
+        let rules = d.join("roaming").join("Mewndo").join("rules.toml");
+        std::fs::create_dir_all(rules.parent().unwrap()).unwrap();
+        std::fs::write(&rules, "# mine\n[allow]\ncommands = [\"cargo check\"]\n").unwrap();
+        let log = Arc::new(Log::new(&d.join("logs")));
+        let writer = Arc::new(crate::writer::start(&d.join("desk.db"), log.clone()));
+        let (tx, mut rx) = broadcast::channel(256);
+        let agents = Arc::new(Agents::start(
+            d.join("v0"),
+            Some(rules.clone()),
+            writer,
+            Publisher(tx),
+            log,
+        ));
+        for _ in 0..3 {
+            allow_once(&agents, &mut rx, "npm publish").await;
+        }
+        let card: InboxCard = next(&mut rx).await;
+        assert_eq!(card.kind, "habit", "{card:?}");
+        assert_eq!(card.options, ["yes", "no", "never ask"]);
+        assert!(card.title.contains("npm publish"), "{card:?}");
+        assert!(
+            agents.open_cards().await.iter().any(|c| c.id == card.id),
+            "a reconnecting app is sent the Habit card too"
+        );
+
+        // A choice the card does not have is refused, and the card stays answerable.
+        let answer = |choice, text: Option<&str>| InboxAnswer {
+            card_id: card.id.clone(),
+            choice,
+            text: text.map(str::to_string),
+            via: Via::Key,
+        };
+        assert!(agents.answer(answer(Some(7), None)).await.is_err());
+        agents.answer(answer(None, Some("Yes"))).await.unwrap();
+        let release: InboxRelease = next(&mut rx).await;
+        assert_eq!(release.card_id, card.id);
+        assert!(agents.open_cards().await.iter().all(|c| c.id != card.id));
+
+        let written = std::fs::read_to_string(&rules).unwrap();
+        assert!(
+            written.starts_with("# mine\n[allow]\ncommands = [\"cargo check\",\n  # habit "),
+            "{written}"
+        );
+        assert!(written.contains("\"npm publish\""), "{written}");
+        assert_eq!(
+            crate::rules_file::load(&rules)
+                .unwrap()
+                .allow_hit("npm publish"),
+            Some("npm publish")
+        );
+    }
+
     #[tokio::test]
     async fn bad_answers_are_refused_and_unknown_agents_get_silence() {
         let (agents, _rx) = start("bad");
@@ -479,7 +714,7 @@ mod tests {
             Box::new(BudgetOut),
             Box::new(mewndo_router::facts::NoFacts),
         ));
-        let agents = Agents::start_with(router, d.join("v0"), writer, Publisher(tx), log);
+        let agents = Agents::start_with(router, d.join("v0"), None, writer, Publisher(tx), log);
         assert!(!agents.budget_state().rules_only);
         let pre = json!({
             "session_id": "s1", "cwd": "/work/shop", "hook_event_name": "PreToolUse",

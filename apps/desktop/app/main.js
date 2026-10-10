@@ -191,10 +191,15 @@ const deskDir = () => (process.platform === 'win32' && process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, 'Mewndo')
   : path.join(app.getPath('userData'), 'desk'));
 
+// The user's rules.toml (spec §34.9 R1): the core reads it at start and writes accepted Habit cards into it (§34.7).
+const rulesFile = () => (process.platform === 'win32' && process.env.APPDATA
+  ? path.join(process.env.APPDATA, 'Mewndo', 'rules.toml')
+  : path.join(app.getPath('userData'), 'rules.toml'));
+
 function startCore() {
   core = createCore({
     binary: coreBinary(), runDir: app.getPath('userData'), logDir: path.dirname(log.file), log, onChange: stateChanged,
-    args: ['--desk', deskDir(), '--data', dataDir()],
+    args: ['--desk', deskDir(), '--data', dataDir(), '--rules', rulesFile()],
   });
   core.start();
 }

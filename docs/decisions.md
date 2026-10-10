@@ -379,3 +379,24 @@ goes through `mewndo_router::clef::read_reply`, so `rules_only` reaches `Router:
   a wrong token answered 401 and turned into a fallback. **The stub's output is not clef-flash's real output**,
   which stays unverified until one real call after deploy.
 
+## The Habit card and rules.toml (10 Oct 2026)
+
+`Event::Habit` from the Inbox now reaches the apps as an `inbox.card` with `kind: "habit"`, options
+`["yes", "no", "never ask"]`, `agent_id` set to the agent *kind* (a habit belongs to an agent kind and a project, not
+to one running agent), and no agent waiting on it. The core keeps the card until it is answered (and re-sends it to an
+app that reconnects). The answer comes back as an ordinary `inbox.answer` (a choice index, or the option's words as
+text, for voice); the core handles it itself, not through the Inbox, and sends `inbox.release` so the app drops it.
+No new message type, so mewndo-proto is unchanged.
+
+- **yes**: `Habits::accept` (that project, from now on) and `rules_file::add_habit`: `toml_edit` keeps the user's
+  formatting and comments, appends to `[allow]` or `[deny]` `commands` under `# habit <YYYY-MM-DD>` (UTC), checks the
+  result still loads with `CompiledRules::load`, then writes a temp file and renames it into place (plot.md rule 4).
+  A file that does not parse, or whose `[allow]`/`commands` is not a table/list, is left untouched and the habit stays
+  in memory only (logged as `habit not written`).
+- **no**: nothing. **never ask**: `Habits::mute`, in memory.
+- **Where rules.toml lives**: the app passes `--rules` (`%APPDATA%\Mewndo\rules.toml` on Windows, the app's userData
+  folder elsewhere) and the core reads it once at start, on top of the built-in rules. Without `--rules` (the tests,
+  and any core started by hand) the core reads no user file and writes none, so no test touches the real one.
+- **Not per project.** rules.toml (§34.9 R1) has no project field, so a written habit is a global phrase after a
+  restart. Adding one is a spec change, so it is recorded here and in docs/what-mewndo-can-and-cant-undo.md instead.
+

@@ -142,6 +142,16 @@ Claude Code or Codex session has driven it yet. Not built at all: guarded comput
 one of these owns the matching change to this page: spec §31.7 makes keeping it level with §28.10 part of the
 work, and nothing may be claimed here that isn't measured.
 
+**Habit cards** (spec §34.7): after the same answer three times to the same action in the same project, the Inbox
+offers "Always allow `npm test` in shop?" with yes, no and never ask. Yes stops asking for that action in that
+project at once, and adds the command to `[allow]` (or `[deny]`) in `%APPDATA%\Mewndo\rules.toml` under a
+`# habit <date>` comment, keeping the rest of the file as it was. What it can't do: rules.toml has no per-project
+section, so after the next restart that line applies in **every** project, and as a phrase it also matches longer
+commands that contain it. A rules.toml that doesn't parse is never rewritten; the habit then lasts until the core
+stops. "Never ask" and the counts are kept in memory only, so they reset when the core restarts. Undoing a habit means
+deleting its line from rules.toml; there is no Settings → Habits page yet. Tested in the core and the app's card
+logic on Linux; not yet seen in the real app on Windows.
+
 Partly built: the **Flight Recorder**. The core keeps a local append-only log of guard decisions, heals, holds,
 approvals, save points and restores, hash-chained and signed with a device key, so rewriting or dropping an event
 is detectable. A standalone verifier now exists (`tools/ledger-verify`, 11 tests) that recomputes the

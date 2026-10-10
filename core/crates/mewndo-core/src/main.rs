@@ -25,6 +25,7 @@ mod policy;
 mod process;
 mod protocol;
 mod restore;
+mod rules_file;
 mod scanner;
 mod screen;
 mod store;
@@ -43,10 +44,12 @@ struct Args {
     log_dir: PathBuf,
     desk: Option<PathBuf>,
     data: Option<PathBuf>,
+    /// The user's rules.toml (§34.9 R1): read at start, and where an accepted Habit card is written.
+    rules: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let (mut socket, mut log_dir, mut desk, mut data) = (None, None, None, None);
+    let (mut socket, mut log_dir, mut desk, mut data, mut rules) = (None, None, None, None, None);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -54,6 +57,7 @@ fn parse_args() -> Result<Args, String> {
             "--log-dir" => log_dir = args.next().map(PathBuf::from),
             "--desk" => desk = args.next().map(PathBuf::from),
             "--data" => data = args.next().map(PathBuf::from),
+            "--rules" => rules = args.next().map(PathBuf::from),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -63,9 +67,10 @@ fn parse_args() -> Result<Args, String> {
             log_dir,
             desk,
             data,
+            rules,
         }),
         _ => Err(
-            "usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder> [--desk <folder>] [--data <v0 data folder>]"
+            "usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder> [--desk <folder>] [--data <v0 data folder>] [--rules <rules.toml>]"
                 .into(),
         ),
     }
@@ -166,7 +171,7 @@ fn main() -> ExitCode {
         .build()
         .expect("tokio runtime");
     let data = args.data.unwrap_or_else(default_data_dir);
-    match runtime.block_on(serve(&args.socket, desk, data, log.clone())) {
+    match runtime.block_on(serve(&args.socket, desk, data, args.rules, log.clone())) {
         Ok(()) => {
             log.info("mewndo-core stopped");
             ExitCode::SUCCESS
@@ -183,6 +188,7 @@ async fn serve(
     address: &str,
     desk: Option<desk::Instance>,
     data: PathBuf,
+    rules: Option<PathBuf>,
     log: Arc<Log>,
 ) -> std::io::Result<()> {
     let info = Arc::new(Info::new());
@@ -195,7 +201,8 @@ async fn serve(
         let _ = parent_gone.send(true);
     });
 
-    let desk = desk.map(|d| tokio::spawn(desk::serve(d, data, log.clone(), stopped.clone())));
+    let desk =
+        desk.map(|d| tokio::spawn(desk::serve(d, data, rules, log.clone(), stopped.clone())));
     let result = listen(address, &log, info, stop.clone(), stopped).await;
     let _ = stop.send(true);
     if let Some(desk) = desk {

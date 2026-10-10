@@ -24,8 +24,8 @@ function at(start = 1_000) {
   return { now: () => (t += 1_000) };
 }
 
-test('the five kinds of §33.2, and the longer names from the spec table', () => {
-  assert.deepStrictEqual(Object.keys(KEYS), ['permission', 'question', 'done', 'drift', 'receipt']);
+test('the five kinds of §33.2, the Habit card of §34.7, and the longer names from the spec table', () => {
+  assert.deepStrictEqual(Object.keys(KEYS), ['permission', 'question', 'done', 'drift', 'receipt', 'habit']);
   // The core sends the short names (mewndo-inbox CardKind::as_str); the aliases keep the spec's own wording working.
   for (const [sent, want] of [
     ['permission', 'permission'], ['needs-permission', 'permission'], ['needs_permission', 'permission'],
@@ -33,6 +33,7 @@ test('the five kinds of §33.2, and the longer names from the spec table', () =>
     ['done', 'done'], ['stop', 'done'],
     ['drift', 'drift'], ['hold', 'drift'], ['drift-hold', 'drift'],
     ['receipt', 'receipt'], ['receipt-warning', 'receipt'], ['receipt_warning', 'receipt'],
+    ['habit', 'habit'],
     ['PERMISSION', 'permission'],
   ]) {
     assert.strictEqual(normaliseKind(sent), want, sent);
@@ -280,4 +281,23 @@ test('E dismisses a card locally without answering the agent', () => {
   assert.strictEqual(cards.count(), 0);
   assert.strictEqual(cards.get('c1'), null);
   assert.strictEqual(cards.release('c1'), null, 'nothing is sent for a dismissed card');
+});
+
+test('a Habit card: 1 yes, 2 no, 3 never ask, and it leaves the stack once the core has the answer', () => {
+  const cards = createCards(at());
+  cards.apply(cardEvent({
+    id: 'h1', kind: 'habit', agent_id: 'claude', title: 'Always allow `npm test` in shop?',
+    body: 'You gave this answer 3 times.\nwhich applies in every project after a restart.',
+    options: ['yes', 'no', 'never ask'],
+  }));
+  const card = cards.get('h1');
+  assert.strictEqual(card.kind, 'habit');
+  assert.deepStrictEqual(describe(card).hints, ['1 yes', '2 no', '3 never ask']);
+  assert.deepStrictEqual(keyAction(card, '1'), { action: 'answer', choice: 0, label: 'Yes' });
+  assert.deepStrictEqual(keyAction(card, '3'), { action: 'answer', choice: 2, label: 'Never ask' });
+  assert.strictEqual(keyAction(card, 'u'), null, 'nothing to undo on a Habit card');
+  cards.startAnswer('h1', { choice: 0 });
+  assert.deepStrictEqual(cards.release('h1'), { card_id: 'h1', choice: 0, text: null, via: 'key' });
+  cards.apply(releaseEvent({ card_id: 'h1' }));
+  assert.strictEqual(cards.get('h1'), null);
 });

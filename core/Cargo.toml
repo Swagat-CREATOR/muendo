@@ -35,6 +35,8 @@ blake3 = { version = "1.8.7", default-features = false, features = ["pure"] }  #
 regex = "1.13.1"
 shell-words = "1.1.1"
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+# Writes accepted habits into the user's rules.toml keeping their formatting and comments (§34.9 R11).
+toml_edit = { version = "0.25.17", default-features = false, features = ["parse", "display"] }
 
 # --- used by one or two crates -----------------------------------------------------------------------------------
 sha2 = "0.10.9"
