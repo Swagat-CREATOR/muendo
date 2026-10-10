@@ -6,22 +6,23 @@
 // wrapper converted a field wrongly -- a heading, the seed, the target rectangle, seconds for milliseconds -- these
 // points would not match.
 //
-// Runs only with the `cua-motion` feature (Cargo.toml, `required-features`), because only that feature builds Cua.
+// It lives in core/cua-motion, outside the workspace, because only that package fetches Cua:
+// `cargo test --manifest-path core/cua-motion/Cargo.toml`.
 
+use mewndo_cua_motion::CuaPlanner;
 use mewndo_overlay::coords::Px;
-use mewndo_overlay::cua_motion::CuaPlanner;
 use mewndo_overlay::motion::{MotionPlanner, MoveRequest, duration, sample_at, wrap_angle};
 use serde_json::Value;
 
 /// The fixture is rounded to 1e-9; this leaves room for that and nothing a wrong conversion could hide in.
 const CLOSE: f64 = 1e-6;
-/// The commit the dependency is pinned to in core/Cargo.toml.
+/// The commit the dependency is pinned to in core/cua-motion/Cargo.toml.
 const PINNED: &str = "5a364bbe60e1f8a901ceacd889606b6367dc96ab";
 
 fn golden() -> Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../third_party/cua/cursor-motion-golden.json"
+        "/../../third_party/cua/cursor-motion-golden.json"
     );
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }

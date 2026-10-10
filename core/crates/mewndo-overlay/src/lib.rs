@@ -7,8 +7,8 @@
 //! chip alone, next to the driver's cursor.
 //!
 //! - `coords` turns a cua-driver point into a virtual-screen point (pure, tested).
-//! - `motion` plans the glide (`MotionPlanner`, a built-in planner; tested), and `cua_motion` puts Cua's own planner
-//!   behind the same trait with the non-default `cua-motion` feature.
+//! - `motion` plans the glide (`MotionPlanner`, a built-in planner; tested). Cua's own planner behind the same trait
+//!   is the separate package core/cua-motion, outside the workspace, so no build of the workspace fetches Cua.
 //! - `window` is the Windows part: the windows, the drawing, the animation. A no-op elsewhere.
 //!
 //! What it can't do (CLAUDE.md rule 5):
@@ -23,8 +23,6 @@
 //! - The window code is compile-checked for Windows only; it has not been run on Windows.
 
 pub mod coords;
-#[cfg(feature = "cua-motion")]
-pub mod cua_motion;
 pub mod motion;
 pub mod window;
 
@@ -52,8 +50,13 @@ impl Overlay {
     /// Starts the overlay's own thread and its windows, one per display. On Windows an error means no window could be
     /// made. Elsewhere there is nothing to draw on, and the handle it returns shows nothing.
     pub fn start() -> Result<Overlay, String> {
+        Overlay::start_with(motion::default_planner())
+    }
+
+    /// `start` with another planner, such as core/cua-motion's `CuaPlanner`.
+    pub fn start_with(planner: Box<dyn motion::MotionPlanner>) -> Result<Overlay, String> {
         let (tx, rx) = mpsc::channel();
-        let wake = window::spawn(rx, motion::default_planner())?;
+        let wake = window::spawn(rx, planner)?;
         Ok(Overlay { tx, wake })
     }
 

@@ -16,7 +16,7 @@ for both; neither file is this folder's to edit):
 | File | What it is |
 |---|---|
 | `LICENSE` | Cua's MIT licence, copied byte for byte from `libs/cua-driver/rust/crates/cua-cursor-motion/LICENSE`. |
-| `cursor-motion-golden.json` | A **subset** of Cua's own golden cursor trajectories, the fixture its TypeScript port is tested against. `core/crates/mewndo-overlay` tests Mewndo's `MotionPlanner` wrapper against it, which is the only way to know Mewndo's agent cursor moves like Cua's. Its `_provenance` block records the source commit, the full file's SHA-256, and exactly what was dropped. |
+| `cursor-motion-golden.json` | A **subset** of Cua's own golden cursor trajectories, the fixture its TypeScript port is tested against. `core/cua-motion` tests Mewndo's `MotionPlanner` wrapper against it, which is the only way to know Mewndo's agent cursor moves like Cua's. Its `_provenance` block records the source commit, the full file's SHA-256, and exactly what was dropped. |
 
 Nothing else is copied.
 
@@ -26,8 +26,9 @@ Nothing else is copied.
   `core/crates/mewndo-computer/src/vendor.rs`; the pinned version and checksums
   are in `docs/versions.md` and in that file.
 - **No cua-cursor-motion source.** It is a pinned git dependency of
-  `core/crates/mewndo-overlay` (it is not published on crates.io), named in
-  exactly one file, `src/cua_motion.rs`.
+  `core/cua-motion` (it is not published on crates.io), named in exactly one
+  file, `core/cua-motion/src/lib.rs`. That package is outside the Rust
+  workspace, so only building it fetches Cua.
 - **No Cua tests, scripts, installers or docs.** The research notes that came
   out of reading them are in `docs/decisions.md`, with a file and line for each
   fact, and the captured tool list is in `docs/samples/cua/tools.json`.

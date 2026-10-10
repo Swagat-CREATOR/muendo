@@ -6,6 +6,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Cua's cursor planner and its golden test, a package of its own with its own lock file, so that no build of this
+# workspace fetches Cua's git repository (cua-motion/Cargo.toml says why).
+exclude = ["cua-motion"]
 
 [workspace.package]
 version = "0.1.0"
@@ -60,7 +63,3 @@ portable-pty = "0.9.0"
 which = "8.0.0"
 # The desktop's link to the cloud hub (§37.6 K8). native-tls again, for the same reason as ureq above.
 tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "native-tls"] }
-# The agent cursor's motion (§36.6 U7), Cua's own planner (MIT). Not on crates.io, so a git dependency pinned to the
-# exact commit that was read (docs/decisions.md, "cua-driver" 5). Only mewndo-overlay's non-default `cua-motion`
-# feature compiles it.
-cua-cursor-motion = { git = "https://github.com/trycua/cua", rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab" }

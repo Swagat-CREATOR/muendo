@@ -1,19 +1,21 @@
 // §36.6 U7: Cua's cursor motion behind Mewndo's `MotionPlanner`, so the agent cursor Mewndo draws moves the way
 // cua-driver's own cursor would have (§36.6 U8 switches that one off).
 //
-// This is the only file that names `cua-cursor-motion`, a git dependency pinned in core/Cargo.toml to commit
-// 5a364bbe60e1f8a901ceacd889606b6367dc96ab of https://github.com/trycua/cua (MIT; credit and licence in
-// third_party/cua/). It is compiled only with the non-default `cua-motion` feature. Its API, read from that commit,
-// is written down in docs/decisions.md, "cua-driver" 5. No Cua source is copied here: this calls `plan_move` and
-// converts the types both ways.
+// This is the only file that names `cua-cursor-motion`, a git dependency pinned in core/cua-motion/Cargo.toml to
+// commit 5a364bbe60e1f8a901ceacd889606b6367dc96ab of https://github.com/trycua/cua (MIT; credit and licence in
+// third_party/cua/). This package is outside the Rust workspace, so no workspace build fetches Cua; the core starts
+// the overlay with the built-in glide, and `mewndo_overlay::Overlay::start_with` takes this planner instead. Its API,
+// read from that commit, is written down in docs/decisions.md, "cua-driver" 5. No Cua source is copied here: this
+// calls `plan_move` and converts the types both ways.
 //
-// What it can't do: the trail, glow, magnet and ripple effects Cua's planner also describes are not drawn (the
-// overlay draws an arrow and a label chip), and `MotionParams` beyond style and timing stay at Cua's defaults.
+// What it can't do: nothing in Mewndo's own build uses it, and CI does not build it. The trail, glow, magnet and
+// ripple effects Cua's planner also describes are not drawn (the overlay draws an arrow and a label chip), and
+// `MotionParams` beyond style and timing stay at Cua's defaults.
 //
 // tests/golden_paths.rs checks this wrapper against Cua's own golden trajectories.
 
-use crate::motion::{MotionPlanner, MoveRequest, Sample};
 use cua_cursor_motion as cua;
+use mewndo_overlay::motion::{MotionPlanner, MoveRequest, Sample};
 
 /// Cua's planner with one style and one timing, every other parameter at Cua Driver's defaults.
 pub struct CuaPlanner {
@@ -75,7 +77,7 @@ impl MotionPlanner for CuaPlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coords::Px;
+    use mewndo_overlay::coords::Px;
 
     #[test]
     fn names_round_trip_and_unknown_ones_are_refused() {

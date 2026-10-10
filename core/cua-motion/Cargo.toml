@@ -1,0 +1,29 @@
+# Cua's cursor planner behind mewndo-overlay's `MotionPlanner` (spec §36.6 U7), and the test that checks it against
+# Cua's own golden trajectories.
+#
+# A package of its own, outside the Rust workspace (core/Cargo.toml lists it in `exclude`), with its own Cargo.lock.
+# It was an optional dependency of mewndo-overlay, but Cargo puts optional dependencies in the lock file, so every
+# build of the workspace, default features included, had to fetch Cua's git repository (about 370 MB) even though
+# no Cua code was compiled. Out here, only building this package fetches it. See docs/decisions.md, "The agent
+# cursor (U7)".
+#
+# Build and test it on demand, from the repository root:
+#
+#   cargo test --manifest-path core/cua-motion/Cargo.toml
+#
+# CI does not build it. Versions are pinned here and listed in docs/versions.md (§32.5 rule 4); shared ones match
+# core/Cargo.toml.
+[package]
+name = "mewndo-cua-motion"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+mewndo-overlay = { path = "../crates/mewndo-overlay" }
+# Cua's cursor motion (MIT, third_party/cua/README.md). Not on crates.io, so a git dependency pinned to the exact
+# commit that was read (docs/decisions.md, "cua-driver" 5). Named in exactly one source file, src/lib.rs.
+cua-cursor-motion = { git = "https://github.com/trycua/cua", rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab" }
+
+[dev-dependencies]
+serde_json = "1.0.145"                                  # reads third_party/cua/cursor-motion-golden.json

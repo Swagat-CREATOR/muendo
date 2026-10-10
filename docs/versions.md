@@ -42,11 +42,22 @@ caret range, so the exact build comes from `core/Cargo.lock`:
 | `ureq` (`default-features = false`, features: `native-tls`) | `2.12.1` | caret |
 | `native-tls` | `0.2.14` | caret |
 | `toml_edit` (`default-features = false`, features: `parse`, `display`) | `0.25.17` | caret |
-| `cua-cursor-motion` (optional; only `mewndo-overlay`'s `cua-motion` feature builds it) | `git = "https://github.com/trycua/cua"`, `rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab"` | **exact commit**; every build still fetches it (docs/decisions.md, "The agent cursor (U7)") |
 | `mewndo-proto` | `{ path = "crates/mewndo-proto" }` | local path, no version |
 
 Note on a caret in Cargo: `0.10.9` and `0.37.0` are pre-1.0, where a caret allows only patch updates
 (`0.10.x`, `0.37.x`), while `1.0.228` allows any `1.x`.
+
+Outside the workspace: `core/cua-motion`, Cua's cursor planner and its golden test, is a package of its own
+(listed in `exclude` in `core/Cargo.toml`), so no build of the workspace and no CI run fetches Cua's repository
+(docs/decisions.md, "The agent cursor (U7)"). It is built only by hand, with
+`cargo test --manifest-path core/cua-motion/Cargo.toml`.
+
+| What | Where | Value | Pinned |
+|---|---|---|---|
+| `cua-cursor-motion` | `core/cua-motion/Cargo.toml` `[dependencies]` | `git = "https://github.com/trycua/cua"`, `rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab"` | **exact commit** |
+| `mewndo-overlay` | `core/cua-motion/Cargo.toml` `[dependencies]` | `{ path = "../crates/mewndo-overlay" }` | local path, no version |
+| `serde_json` (dev) | `core/cua-motion/Cargo.toml` `[dev-dependencies]` | `1.0.145`, as in the workspace | caret |
+| Transitive versions | `core/cua-motion/Cargo.lock` | its own lock, seeded from `core/Cargo.lock` so the crates both use resolve the same; kept in step by hand | exact, via the lock |
 
 ## Node and Electron
 
@@ -100,6 +111,6 @@ There is no `.ipynb` and no `.py` in the repository's own files (outside install
 ## What is not pinned, in one list
 
 The Rust toolchain and target, the runner image, the two actions, Node (a floor in the app, a major in CI), and
-wrangler in five of the six Workers. The lock files (`core/Cargo.lock`, `package-lock.json`,
+wrangler in five of the six Workers. The lock files (`core/Cargo.lock`, `core/cua-motion/Cargo.lock`, `package-lock.json`,
 `cloud/gateway/package-lock.json`) make the dependency trees they cover reproducible; the toolchains around them
 are not reproducible today.

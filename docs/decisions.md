@@ -271,7 +271,7 @@ within `1e-9` (`tests/golden.rs:17`). `tests/common/golden_cases.rs:248-331` bui
 `[t, x, y, heading]` evenly spaced in time (`:17`, `:63-73`). A **subset** of that fixture — the six styles at
 default parameters, `native` and `fitts` timing, 48 cases — is vendored at
 `third_party/cua/cursor-motion-golden.json` with Cua's LICENSE beside it, and
-`mewndo-overlay`'s `golden_paths.rs` tests Mewndo's `MotionPlanner` wrapper against it. `tests/motion_parity.rs`
+`core/cua-motion`'s `golden_paths.rs` tests Mewndo's `MotionPlanner` wrapper against it. `tests/motion_parity.rs`
 additionally checks the crate against Cua's own motion lab to within 0.5 pt (`README.md:133-135`); that lab is
 JavaScript and is not vendored.
 
@@ -281,8 +281,9 @@ that was read, while the driver binary is pinned to release `cua-driver-rs-v0.34
 `raw.githubusercontent.com` would not serve the tag's tree, so **whether `golden.json` is byte-identical at the
 release tag is unverified**. The motion the overlay draws and the motion the driver would have drawn could differ
 by whatever changed in between; §36.6 U8 switches the driver's cursor off, so only one of them is ever on screen.
-Also unconfirmed: the golden test is behind the non-default `cua-motion` feature, because the git fetch needs
-network and CI must stay hermetic — see `core/crates/mewndo-overlay/Cargo.toml`.
+Also unconfirmed: the golden test is in `core/cua-motion`, a package outside the workspace that CI does not
+build, because the git fetch needs network and CI must stay hermetic — see `core/cua-motion/Cargo.toml` and "The
+agent cursor (U7)" below.
 
 ## Codex hook output schema (10 Oct 2026)
 
@@ -442,8 +443,8 @@ cannot push Inbox cards out of a slow app's queue. An app that falls behind on l
 ## The agent cursor (U7) (10 Oct 2026)
 
 - **Shape.** `core/crates/mewndo-overlay`: `coords.rs` (driver point → virtual screen, pure), `motion.rs` (the
-  `MotionPlanner` trait and a built-in planner), `cua_motion.rs` (Cua's planner behind the trait, feature
-  `cua-motion`), `window.rs` (the windows; a no-op off Windows). The core's `ComputerGate` starts it when computer
+  `MotionPlanner` trait and a built-in planner), `window.rs` (the windows; a no-op off Windows). Cua's planner
+  behind the trait is `core/cua-motion`, a separate package (below). The core's `ComputerGate` starts it when computer
   use is switched on, and only then; an allowed act that has a point and a target it can place moves it, labelled
   "Claude · clicking" (`show_cursor` and `doing` in `computer.rs`). Reads, denied acts and acts without a point
   move nothing.
@@ -460,21 +461,34 @@ cannot push Inbox cards out of a slow app's queue. An app that falls behind on l
   window owned by the act's `pid`; otherwise no cursor. A desktop target is the primary display. A capped desktop
   capture (`max_image_dimension`) is placed as full size, because the core does not know the cap: wrong by the
   cap's factor. No target, or another display: no cursor.
-- **Motion.** A default build uses the built-in glide: straight, smoothstep-eased, `0.1 + 0.1·log2(D/W + 1)` s
-  clamped to 0.2–0.8 s. `--features cua-motion` uses Cua's `plan_move` at Cua Driver's defaults (signature arc,
-  native timing). Plans are in physical pixels while Cua's constants are points, so on a scaled display a move is
+- **Motion.** The core starts the overlay with the built-in glide: straight, smoothstep-eased,
+  `0.1 + 0.1·log2(D/W + 1)` s clamped to 0.2–0.8 s. `core/cua-motion`'s `CuaPlanner` is Cua's `plan_move` at Cua
+  Driver's defaults (signature arc, native timing), and `Overlay::start_with` takes it; nothing in the workspace
+  does that, since the workspace cannot depend on that package without fetching Cua again. Plans are in physical pixels while Cua's constants are points, so on a scaled display a move is
   a little slower than Cua's own cursor. Cua's trail, glow and magnet effects are not drawn.
-- **The git dependency resolves.** `cua-cursor-motion` is in `[workspace.dependencies]` pinned to
-  `rev = 5a364bbe60e1f8a901ceacd889606b6367dc96ab`, optional in `mewndo-overlay`, named in `cua_motion.rs` only;
-  the subcrate has no `build.rs`, so building it runs no Cua code. `golden_paths` passes all 48 cases of
-  `third_party/cua/cursor-motion-golden.json` to 1e-6 (`cargo test -p mewndo-overlay --features cua-motion`).
-- **What the feature does not do: keep builds off the network.** Cargo locks optional dependencies too, so every
-  build of the workspace, default included, needs the Cua repository's source. Checked: `cargo check --offline`
-  with a cargo home holding the crates.io registry but no git checkout fails with "can't checkout from
-  'https://github.com/trycua/cua': you are in the offline mode". The fetch was a 367 MB git database here, once
-  per cargo home; CI keeps no cargo cache, so it fetches on every run. What the feature does keep: no Cua code is
-  compiled or run by a default build or by CI's tests. A network-free default build would need the wrapper moved
-  to its own package outside the workspace, with its own lock file, losing the feature switch; not done.
+- **The git dependency resolves.** `cua-cursor-motion` is pinned to `rev = 5a364bbe60e1f8a901ceacd889606b6367dc96ab`
+  and named in one source file, `core/cua-motion/src/lib.rs`; the subcrate has no `build.rs`, so building it runs
+  no Cua code. `golden_paths` passes all 48 cases of `third_party/cua/cursor-motion-golden.json` to 1e-6
+  (`cargo test --manifest-path core/cua-motion/Cargo.toml`).
+- **Why it is a package outside the workspace (changed 10 Oct 2026).** At first it was an optional dependency of
+  `mewndo-overlay` behind a non-default `cua-motion` feature. That kept Cua code out of default builds but not the
+  fetch: Cargo locks optional dependencies too, so every build of the workspace needed the Cua repository's
+  source. Checked: `cargo check --offline -p mewndo-overlay` with a cargo home holding the crates.io registry but
+  no git checkout failed with "can't checkout from 'https://github.com/trycua/cua': you are in the offline mode".
+  The fetch was a 367 MB git database, once per cargo home, and CI keeps no cargo cache, so every run fetched it.
+  Now the planner (`src/lib.rs`, the old `cua_motion.rs`) and `golden_paths` are `core/cua-motion`, with its own
+  `Cargo.toml` and `Cargo.lock`, depending on `mewndo-overlay` by path and listed in `exclude` in `core/Cargo.toml`.
+  The workspace no longer names Cua anywhere, and the same offline check of the whole workspace passes with a
+  cargo home that has no git checkout at all. Rejected: keeping the feature and caching `CARGO_HOME/git` in CI. A
+  cache still downloads the repository on every miss and every key change, CI would restore a few hundred MB on
+  every run, and any build outside CI (a dev box, an offline machine, a fresh cargo home) would still fetch it or
+  fail.
+- **What the split costs.** No feature switch: no build of the app can use Cua's planner, so the agent cursor
+  always moves with the built-in glide (it already did in every build anyone made, since the feature was off by
+  default). CI does not build `core/cua-motion`, so its golden test, `cargo fmt` and clippy run only when someone
+  runs them by hand (`--manifest-path core/cua-motion/Cargo.toml`; `cargo fmt --all` and `--workspace` in `core/`
+  do not reach it), and it needs network the first time. Its lock file was seeded from `core/Cargo.lock` so shared
+  crates resolve the same, and it must be kept in step by hand.
 - **Timing.** The cursor starts moving when the core allows the act, and the proxy forwards the act at once, so
   the click can land before the glide arrives. Holding the verdict until arrival, as Cua clicks at `arrival_t`, is
   not built.
