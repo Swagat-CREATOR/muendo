@@ -11,6 +11,9 @@
 // what is under the pointer, because the UI Automation lookup of §36.6 U5.3 is not built. A rule can still deny
 // outright, and a habit (three identical "allow"s, §34.7) is offered like any other.
 //
+// An allowed act at a point also moves Mewndo's agent cursor there (U7, mewndo-overlay), labelled with who is acting
+// and how ("Claude · clicking"). The overlay starts with computer use and only then.
+//
 // What it can't do (CLAUDE.md rule 5): no screenshot crop on the card (U5.5) and no element name, so the card
 // says "click at 412, 230", not "click Send in Outlook"; and typed text is shown as its length only (redact.rs
 // in mewndo-computer), because nothing here can tell a password field from any other.
@@ -23,8 +26,8 @@ use mewndo_proto::{ComputerAction, ComputerPause, ComputerResume, ComputerVerdic
 use mewndo_router::{GuardInput, Mode, Router};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// How long a computer-use card waits for the user. The proxy waits a little longer (link.rs, 290 s), so it is the
@@ -42,6 +45,8 @@ pub struct ComputerGate {
     wait: Duration,
     takeover: Arc<Takeover>,
     publisher: Publisher,
+    /// The agent cursor (U7). Set when computer use is switched on.
+    overlay: OnceLock<mewndo_overlay::Overlay>,
 }
 
 fn allow() -> ComputerVerdict {
@@ -73,6 +78,7 @@ impl ComputerGate {
             wait: CARD_WAIT,
             takeover: Arc::default(),
             publisher,
+            overlay: OnceLock::new(),
         }
     }
 
@@ -103,7 +109,8 @@ impl ComputerGate {
     }
 
     /// `--computer-use`: the app passes it only when the user has switched computer use on. Off by default.
-    /// Also installs the takeover hooks (U6); `gate` is this gate, shared with the hook thread.
+    /// Also installs the takeover hooks (U6), `gate` being this gate shared with the hook thread, and starts the
+    /// agent cursor (U7).
     pub fn enable(gate: &Arc<ComputerGate>) {
         gate.enabled.store(true, Ordering::SeqCst);
         gate.log.info("computer use is on");
@@ -118,7 +125,28 @@ impl ComputerGate {
             gate.log.warn(&format!(
                 "computer use stays off: the takeover hooks did not start: {e}"
             ));
+            return;
         }
+        match mewndo_overlay::Overlay::start() {
+            Ok(overlay) => {
+                let _ = gate.overlay.set(overlay);
+            }
+            // The driver's own cursor is switched off (U8), so without this one the user could not see where the
+            // agent acts. Computer use stays off rather than run unseen.
+            Err(e) => {
+                gate.enabled.store(false, Ordering::SeqCst);
+                gate.log.warn(&format!(
+                    "computer use stays off: the agent cursor did not start: {e}"
+                ));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_overlay(&self) -> std::sync::mpsc::Receiver<mewndo_overlay::Show> {
+        let (overlay, shown) = mewndo_overlay::Overlay::channel();
+        let _ = self.overlay.set(overlay);
+        shown
     }
 
     #[cfg(test)]
@@ -142,6 +170,9 @@ impl ComputerGate {
             Class::Hidden => deny(format!("{} is Mewndo's own setting", action.tool)),
             Class::Act => self.act(action).await,
         };
+        if verdict.verdict == Verdict::Allow && classify(&action.tool) == Class::Act {
+            self.show_cursor(action);
+        }
         // What the agent did, never what it typed: args_redacted is already redacted by the proxy.
         self.log.info(&format!(
             "computer: {} {} -> {:?}{}",
@@ -205,6 +236,44 @@ impl ComputerGate {
             Ok(Err(_)) | Err(_) => deny("nobody answered in time"),
         }
     }
+}
+
+impl ComputerGate {
+    /// U7: an allowed act at a point moves the agent cursor there. An act with no point, or a target the overlay
+    /// cannot place (mewndo-overlay coords.rs), moves nothing.
+    fn show_cursor(&self, action: &ComputerAction) {
+        let (Some(overlay), Some(p)) = (self.overlay.get(), action.point) else {
+            return;
+        };
+        let Some(target) = mewndo_overlay::coords::Target::from_args(&action.args_redacted) else {
+            return;
+        };
+        overlay.show(mewndo_overlay::Show {
+            at: mewndo_overlay::coords::Px::new(p.x as f64, p.y as f64),
+            target,
+            label: doing(action),
+            arrow: true,
+        });
+    }
+}
+
+/// The agent cursor's label: "Claude · clicking".
+fn doing(action: &ComputerAction) -> String {
+    let args = &action.args_redacted;
+    let verb = match action.tool.as_str() {
+        "click" => match (
+            args.get("button").and_then(Value::as_str),
+            args.get("count").and_then(Value::as_u64),
+        ) {
+            (Some("right"), _) => "right-clicking".to_string(),
+            (_, Some(2)) => "double-clicking".to_string(),
+            _ => "clicking".to_string(),
+        },
+        "scroll" => "scrolling".to_string(),
+        "move_cursor" => "moving the pointer".to_string(),
+        other => other.replace('_', " "),
+    };
+    format!("{} · {verb}", title_case(&agent_name(action)))
 }
 
 fn verdict_of(options: &[Opt], answer: &Answer) -> Option<mewndo_router::Verdict> {
@@ -456,6 +525,107 @@ mod tests {
         );
         gate.resume();
         assert_eq!(gate.decide(&read).await, allow());
+    }
+
+    /// Puts `action` to the gate and answers its card with `choice`.
+    async fn answered(
+        gate: &Arc<ComputerGate>,
+        inbox: &Inbox,
+        action: ComputerAction,
+        choice: usize,
+    ) -> ComputerVerdict {
+        let mut events = inbox.subscribe();
+        let waiting = tokio::spawn({
+            let g = gate.clone();
+            async move { g.decide(&action).await }
+        });
+        let card = loop {
+            if let Event::Card(card) = events.recv().await.unwrap() {
+                break card;
+            }
+        };
+        inbox
+            .answer(
+                card.id.parse().unwrap(),
+                Answer {
+                    card_id: card.id.clone(),
+                    choice: Some(choice),
+                    text: None,
+                    via: mewndo_proto::Via::Key,
+                },
+            )
+            .await;
+        waiting.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_allowed_act_at_a_point_moves_the_agent_cursor_and_nothing_else_does() {
+        let (gate, inbox) = gate("cursor");
+        gate.enable_without_hooks();
+        let shown = gate.with_overlay();
+        let gate = Arc::new(gate);
+        let window = json!({"kind": "window", "pid": 6004, "window_id": 131_844});
+        let at = Some(Point { x: 412, y: 230 });
+
+        let click = act("click", json!({"x": 412, "y": 230, "target": window}), at);
+        assert_eq!(answered(&gate, &inbox, click, 0).await, allow());
+        assert_eq!(
+            shown.try_recv().unwrap(),
+            mewndo_overlay::Show {
+                at: mewndo_overlay::coords::Px::new(412.0, 230.0),
+                target: mewndo_overlay::coords::Target::Window {
+                    pid: 6004,
+                    window_id: 131_844
+                },
+                label: "Claude · clicking".into(),
+                arrow: true,
+            }
+        );
+
+        // Denied: the cursor stays where it was.
+        let right = act(
+            "click",
+            json!({"x": 1, "y": 2, "button": "right", "target": window}),
+            Some(Point { x: 1, y: 2 }),
+        );
+        assert_eq!(
+            answered(&gate, &inbox, right, 2).await.verdict,
+            Verdict::Deny
+        );
+        // Allowed, but no point (typing), or no target to place the point by.
+        let typing = act("type_text", json!({"text": "<5 characters>"}), None);
+        assert_eq!(answered(&gate, &inbox, typing, 0).await, allow());
+        let untargeted = act("click", json!({"x": 1, "y": 2}), Some(Point { x: 1, y: 2 }));
+        assert_eq!(answered(&gate, &inbox, untargeted, 0).await, allow());
+        // A read never moves it, even with a point.
+        let read = act(
+            "get_window_state",
+            json!({"x": 1, "y": 2, "target": window}),
+            Some(Point { x: 1, y: 2 }),
+        );
+        assert_eq!(gate.decide(&read).await, allow());
+        assert!(
+            shown.try_recv().is_err(),
+            "only the allowed, placed act moved it"
+        );
+    }
+
+    #[test]
+    fn the_cursors_words() {
+        let p = Some(Point { x: 1, y: 2 });
+        assert_eq!(doing(&act("click", json!({}), p)), "Claude · clicking");
+        assert_eq!(
+            doing(&act("click", json!({"button": "right"}), p)),
+            "Claude · right-clicking"
+        );
+        assert_eq!(
+            doing(&act("click", json!({"count": 2}), p)),
+            "Claude · double-clicking"
+        );
+        assert_eq!(doing(&act("scroll", json!({}), p)), "Claude · scrolling");
+        let mut nameless = act("move_cursor", json!({}), p);
+        nameless.agent = " ".into();
+        assert_eq!(doing(&nameless), "An agent · moving the pointer");
     }
 
     #[test]

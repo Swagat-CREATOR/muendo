@@ -7,3 +7,31 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde_json.workspace = true                             # reads `target` out of a computer.action's arguments
+# Cua's cursor motion (MIT, third_party/cua/README.md). Not on crates.io, so a git dependency pinned to one commit
+# in core/Cargo.toml, and optional: only the `cua-motion` feature compiles it. Named in exactly one source file,
+# src/cua_motion.rs. See docs/decisions.md, "The agent cursor (U7) and the driver's cursor (U8)", for what the
+# feature does and does not keep off the network.
+cua-cursor-motion = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[features]
+default = []
+# Plan the cursor's path with Cua's own planner (src/cua_motion.rs) instead of the built-in glide (src/motion.rs).
+# Off by default: a default build never compiles Cua code.
+cua-motion = ["dep:cua-cursor-motion"]
+
+# Checks the Cua wrapper against Cua's own golden trajectories (third_party/cua/cursor-motion-golden.json), so it
+# exists only with the feature: `cargo test -p mewndo-overlay --features cua-motion`.
+[[test]]
+name = "golden_paths"
+required-features = ["cua-motion"]

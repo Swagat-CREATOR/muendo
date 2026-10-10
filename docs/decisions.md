@@ -436,9 +436,50 @@ cannot push Inbox cards out of a slow app's queue. An app that falls behind on l
   nothing can tell a password field from another. The card says "type 12 characters".
 - **Takeover (U6).** Low-level keyboard and mouse hooks read only the injected flag. Human input within 30 s of an
   allowed act pauses every call until `computer.resume`. If the hooks cannot be installed, computer use stays off.
-- **Not built: U7 and U8.** No overlay window and no `MotionPlanner`; the driver's own cursor is left on, because
-  turning it off (U8) without Mewndo's cursor (U7) would hide the agent's pointer from the user. Also not built:
-  the UIA element lookup (U5.3) and the screenshot crop on the card (U5.5).
+- **U7 is built and U8 is not** (see the next entry). Also not built: the UIA element lookup (U5.3) and the
+  screenshot crop on the card (U5.5).
+
+## The agent cursor (U7) (10 Oct 2026)
+
+- **Shape.** `core/crates/mewndo-overlay`: `coords.rs` (driver point → virtual screen, pure), `motion.rs` (the
+  `MotionPlanner` trait and a built-in planner), `cua_motion.rs` (Cua's planner behind the trait, feature
+  `cua-motion`), `window.rs` (the windows; a no-op off Windows). The core's `ComputerGate` starts it when computer
+  use is switched on, and only then; an allowed act that has a point and a target it can place moves it, labelled
+  "Claude · clicking" (`show_cursor` and `doing` in `computer.rs`). Reads, denied acts and acts without a point
+  move nothing.
+- **Windows.** One `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` popup
+  per display, on the overlay's own thread, which alone is made per-monitor-v2 DPI aware
+  (`SetThreadDpiAwarenessContext`) so it works in cua-driver's physical pixels without changing the rest of the
+  core. Transparency is a colour key and drawing is GDI into only the rectangle that changed, rather than
+  `UpdateLayeredWindow` of a whole display every frame. `WDA_EXCLUDEFROMCAPTURE` keeps it out of screenshots,
+  so the agent never sees Mewndo's cursor in its own captures (Windows 10 2004 and later; earlier, it shows).
+  Hidden 5 s after it arrives; windows rebuilt on `WM_DISPLAYCHANGE` and `WM_DPICHANGED`; "Show animations in
+  Windows" off means it jumps instead of gliding.
+- **Coordinates.** A window target is placed at `ClientToScreen` of its `window_id`, but **that `window_id` is
+  the HWND is unconfirmed** (no live capture, decisions "cua-driver" 3), so it is used only when it is a live
+  window owned by the act's `pid`; otherwise no cursor. A desktop target is the primary display. A capped desktop
+  capture (`max_image_dimension`) is placed as full size, because the core does not know the cap: wrong by the
+  cap's factor. No target, or another display: no cursor.
+- **Motion.** A default build uses the built-in glide: straight, smoothstep-eased, `0.1 + 0.1·log2(D/W + 1)` s
+  clamped to 0.2–0.8 s. `--features cua-motion` uses Cua's `plan_move` at Cua Driver's defaults (signature arc,
+  native timing). Plans are in physical pixels while Cua's constants are points, so on a scaled display a move is
+  a little slower than Cua's own cursor. Cua's trail, glow and magnet effects are not drawn.
+- **The git dependency resolves.** `cua-cursor-motion` is in `[workspace.dependencies]` pinned to
+  `rev = 5a364bbe60e1f8a901ceacd889606b6367dc96ab`, optional in `mewndo-overlay`, named in `cua_motion.rs` only;
+  the subcrate has no `build.rs`, so building it runs no Cua code. `golden_paths` passes all 48 cases of
+  `third_party/cua/cursor-motion-golden.json` to 1e-6 (`cargo test -p mewndo-overlay --features cua-motion`).
+- **What the feature does not do: keep builds off the network.** Cargo locks optional dependencies too, so every
+  build of the workspace, default included, needs the Cua repository's source. Checked: `cargo check --offline`
+  with a cargo home holding the crates.io registry but no git checkout fails with "can't checkout from
+  'https://github.com/trycua/cua': you are in the offline mode". The fetch was a 367 MB git database here, once
+  per cargo home; CI keeps no cargo cache, so it fetches on every run. What the feature does keep: no Cua code is
+  compiled or run by a default build or by CI's tests. A network-free default build would need the wrapper moved
+  to its own package outside the workspace, with its own lock file, losing the feature switch; not done.
+- **Timing.** The cursor starts moving when the core allows the act, and the proxy forwards the act at once, so
+  the click can land before the glide arrives. Holding the verdict until arrival, as Cua clicks at `arrival_t`, is
+  not built.
+- **Not proved:** any of it on Windows. The window code compiles and is clippy-clean for `x86_64-pc-windows-gnu`;
+  it has never been run. The cursor state, the geometry, the coordinates and the planners are tested on Linux.
 
 ## Cloud speech to text (10 Oct 2026)
 

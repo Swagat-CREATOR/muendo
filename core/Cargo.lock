@@ -217,6 +217,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "cua-cursor-motion"
+version = "0.34.0"
+source = "git+https://github.com/trycua/cua?rev=5a364bbe60e1f8a901ceacd889606b6367dc96ab#5a364bbe60e1f8a901ceacd889606b6367dc96ab"
+
+[[package]]
 name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -823,6 +828,11 @@ dependencies = [
 [[package]]
 name = "mewndo-overlay"
 version = "0.1.0"
+dependencies = [
+ "cua-cursor-motion",
+ "serde_json",
+ "windows-sys",
+]
 
 [[package]]
 name = "mewndo-proto"
