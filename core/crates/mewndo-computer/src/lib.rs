@@ -42,7 +42,9 @@
 //     act flow is tested against a fake core.
 //   - **No screenshot and no crop.** U5.5's 400x240 WebP crop is the core's (`xcap` + `image`), for the same
 //     reason. This crate asks for a card; it never captures a pixel.
-//   - **No cursor drawing.** U5.6's `cursor.move` is a message to the core; the overlay is `mewndo-overlay`.
+//   - **No cursor drawing.** The core's overlay (`mewndo-overlay`) draws the agent cursor. This crate only switches
+//     cua-driver's own cursor off at start (U8, `proxy::hide_driver_cursor`) and, if that fails, tells the core
+//     with every action (`driver_cursor`) so the overlay labels the driver's cursor instead of adding a second.
 //   - **No Show Me.** §36.6 U9 is not built. See the note at the end of `hooks.rs` for what it would need.
 //   - **No driver download.** `vendor.rs` holds the pinned version, the real SHA-256s and the verify-then-rename
 //     logic; the `download` feature is off by default, so a plain build has no HTTP client (plot.md rule 7).
@@ -82,12 +84,24 @@ pub async fn run(
     }
     let id = ulid::Ulid::new().to_string().to_lowercase();
     let session = format!("mewndo-{agent}-{}", &id[id.len() - 8..]);
+    let driver = driver::McpDriver::start(&driver_exe).await?;
+    // U8: only Mewndo's cursor on screen. If the driver will not switch its own off, it stays, and the core's
+    // overlay draws the label chip beside it instead of a second arrow.
+    let driver_cursor = match proxy::hide_driver_cursor(&driver, &session).await {
+        Ok(()) => false,
+        Err(e) => {
+            eprintln!(
+                "mewndo-computer: cua-driver's own cursor stays on ({e}); Mewndo labels it instead of drawing its own"
+            );
+            true
+        }
+    };
     let gate = link::CoreGate {
         desk_dir,
         agent,
         wait: link::ANSWER_WAIT,
+        driver_cursor,
     };
-    let driver = driver::McpDriver::start(&driver_exe).await?;
     let proxy = proxy::Proxy::new(driver, gate, session);
     proxy
         .serve(rmcp::transport::stdio())

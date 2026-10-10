@@ -985,6 +985,7 @@ mod tests {
             args_redacted: serde_json::json!({}),
             point: None,
             agent: "claude".into(),
+            driver_cursor: false,
         };
         let mut c = connect(&d, Role::Computer).await;
         send(&mut c, "a", &action).await;

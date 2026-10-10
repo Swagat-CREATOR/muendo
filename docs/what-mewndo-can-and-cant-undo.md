@@ -167,12 +167,14 @@ you choose Resume. What it can't do: **nothing a click does can be undone by Mew
 protection. The card cannot show what is under the pointer (no element name, no screenshot yet), and it shows
 typed text only as its length. Never run against the real cua-driver; tested with a fake driver on Linux.
 
-**The agent cursor** (spec §36.6 U7): when you allow an act at a point, a second cursor -- Mewndo's, with a label
-such as "Claude · clicking" -- glides there, so you can tell the agent's pointer from yours. What it can't do: it
-only shows, it never stops anything (the card does that). It can't place an act that names no window or display,
-or a window it can't confirm belongs to that app, and then shows nothing rather than a wrong place; it places a
-point from a shrunken desktop screenshot as if the screenshot were full size. The click can land before the cursor
-arrives. The window code has only been compiled for Windows, never run there, so nobody has yet seen it on screen.
+**The agent cursor** (spec §36.6 U7, U8): when you allow an act at a point, a second cursor -- Mewndo's, with a
+label such as "Claude · clicking" -- glides there, so you can tell the agent's pointer from yours. Mewndo asks
+cua-driver to hide its own cursor so there is only one; if the driver won't, its cursor stays and Mewndo adds just
+the label beside it. What it can't do: it only shows, it never stops anything (the card does that). It can't place
+an act that names no window or display, or a window it can't confirm belongs to that app, and then shows nothing
+rather than a wrong place; it places a point from a shrunken desktop screenshot as if the screenshot were full
+size. The click can land before the cursor arrives. The window code has only been compiled for Windows, never run
+there, and the driver's cursor switch has never been tried on the real driver, so nobody has yet seen either.
 
 **Cloud speech** (voice commands): when a gateway is set up, what you say is sent to Mewndo's Cloudflare Worker and
 Whisper (base) for that one transcription, then dropped; nothing stores it. Without a network, a token, or today's

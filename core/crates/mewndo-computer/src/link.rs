@@ -35,11 +35,14 @@ pub struct CoreGate {
     pub desk_dir: Option<PathBuf>,
     pub agent: String,
     pub wait: Duration,
+    /// cua-driver's own cursor is still showing, because switching it off failed (§36.6 U8, lib.rs `run`).
+    pub driver_cursor: bool,
 }
 
-impl Gate for CoreGate {
-    async fn check(&self, tool: &str, _class: Class, args: &JsonObject) -> Result<(), String> {
-        let action = ComputerAction {
+impl CoreGate {
+    /// What the core is asked about one call: redacted, with the point it aims at.
+    pub fn action(&self, tool: &str, args: &JsonObject) -> ComputerAction {
+        ComputerAction {
             session: args
                 .get("session")
                 .and_then(|s| s.as_str())
@@ -49,7 +52,14 @@ impl Gate for CoreGate {
             args_redacted: redact(args),
             point: point(args),
             agent: self.agent.clone(),
-        };
+            driver_cursor: self.driver_cursor,
+        }
+    }
+}
+
+impl Gate for CoreGate {
+    async fn check(&self, tool: &str, _class: Class, args: &JsonObject) -> Result<(), String> {
+        let action = self.action(tool, args);
         let dir = self.desk_dir.clone();
         let ask = tokio::task::spawn_blocking(move || {
             let dir = dir.ok_or("Mewndo is not running")?;
@@ -171,6 +181,8 @@ mod tests {
             args_redacted: serde_json::json!({"text": "<5 characters>"}),
             point: None,
             agent: "claude".into(),
+            // Travels over the pipe like every other field (hello_then_the_action_then_the_verdict).
+            driver_cursor: true,
         }
     }
 
@@ -214,6 +226,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_action_says_whether_the_drivers_cursor_is_still_showing() {
+        let args: JsonObject = serde_json::from_value(serde_json::json!(
+            {"x": 412.4, "y": 230, "session": "mewndo-claude-1", "target": {"kind": "desktop", "display_id": "primary"}}
+        ))
+        .unwrap();
+        for driver_cursor in [false, true] {
+            let gate = CoreGate {
+                desk_dir: None,
+                agent: "claude".into(),
+                wait: Duration::from_secs(5),
+                driver_cursor,
+            };
+            let action = gate.action("click", &args);
+            assert_eq!(action.driver_cursor, driver_cursor);
+            assert_eq!(action.session, "mewndo-claude-1");
+            assert_eq!(action.point, Some(mewndo_proto::Point { x: 412, y: 230 }));
+            assert_eq!(action.args_redacted["target"]["kind"], "desktop");
+        }
+    }
+
     #[tokio::test]
     async fn no_core_means_no_act() {
         let dir =
@@ -223,6 +256,7 @@ mod tests {
             desk_dir: Some(dir.clone()),
             agent: "claude".into(),
             wait: Duration::from_secs(5),
+            driver_cursor: false,
         };
         assert_eq!(
             gate.check("click", Class::Act, &JsonObject::new()).await,
@@ -232,6 +266,7 @@ mod tests {
             desk_dir: None,
             agent: "claude".into(),
             wait: Duration::from_secs(5),
+            driver_cursor: false,
         };
         assert!(
             none.check("get_screen_size", Class::Read, &JsonObject::new())

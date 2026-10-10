@@ -240,7 +240,8 @@ impl ComputerGate {
 
 impl ComputerGate {
     /// U7: an allowed act at a point moves the agent cursor there. An act with no point, or a target the overlay
-    /// cannot place (mewndo-overlay coords.rs), moves nothing.
+    /// cannot place (mewndo-overlay coords.rs), moves nothing. When the proxy could not switch cua-driver's own
+    /// cursor off (U8), only the label chip is drawn, beside it.
     fn show_cursor(&self, action: &ComputerAction) {
         let (Some(overlay), Some(p)) = (self.overlay.get(), action.point) else {
             return;
@@ -252,7 +253,7 @@ impl ComputerGate {
             at: mewndo_overlay::coords::Px::new(p.x as f64, p.y as f64),
             target,
             label: doing(action),
-            arrow: true,
+            arrow: !action.driver_cursor,
         });
     }
 }
@@ -402,6 +403,7 @@ mod tests {
             args_redacted: args,
             point,
             agent: "claude".into(),
+            driver_cursor: false,
         }
     }
 
@@ -580,6 +582,20 @@ mod tests {
                 label: "Claude · clicking".into(),
                 arrow: true,
             }
+        );
+
+        // The proxy could not switch cua-driver's cursor off (U8): the label chip only, beside the driver's.
+        let mut beside = act(
+            "scroll",
+            json!({"x": 9, "y": 8, "target": window}),
+            Some(Point { x: 9, y: 8 }),
+        );
+        beside.driver_cursor = true;
+        assert_eq!(answered(&gate, &inbox, beside, 0).await, allow());
+        let chip = shown.try_recv().unwrap();
+        assert_eq!(
+            (chip.label.as_str(), chip.arrow),
+            ("Claude · scrolling", false)
         );
 
         // Denied: the cursor stays where it was.

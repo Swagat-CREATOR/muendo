@@ -120,6 +120,38 @@ impl<D: Driver, G: Gate> Proxy<D, G> {
     }
 }
 
+/// cua-driver's tool that shows or hides its own agent cursor for one session (docs/decisions.md, "cua-driver" 4).
+pub const CURSOR_TOOL: &str = "set_agent_cursor_enabled";
+
+/// How long the driver has to answer the cursor switch before Mewndo gives up and leaves its cursor on.
+pub const CURSOR_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// §36.6 U8: switches cua-driver's own cursor off for `session`, so the only agent cursor on screen is Mewndo's
+/// (mewndo-overlay). This is Mewndo's own call, straight to the driver: it does not go through the gate, and the
+/// agent cannot make it, because the tool is hidden from the agent (classify.rs). `Err` says why the driver's
+/// cursor is still on: no such tool, a refusal, or no answer within `CURSOR_WAIT`.
+pub async fn hide_driver_cursor<D: Driver>(driver: &D, session: &str) -> Result<(), String> {
+    let mut args = JsonObject::new();
+    args.insert("session".into(), Value::String(session.to_string()));
+    args.insert("enabled".into(), Value::Bool(false));
+    match tokio::time::timeout(CURSOR_WAIT, driver.call(CURSOR_TOOL, args)).await {
+        Err(_) => Err(format!(
+            "{CURSOR_TOOL} did not answer in {} s",
+            CURSOR_WAIT.as_secs()
+        )),
+        Ok(Err(e)) => Err(format!("{CURSOR_TOOL} failed: {e}")),
+        Ok(Ok(result)) if result.is_error == Some(true) => {
+            let why: String = result
+                .content
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                .collect();
+            Err(format!("{CURSOR_TOOL} was refused: {why}"))
+        }
+        Ok(Ok(_)) => Ok(()),
+    }
+}
+
 /// The guarded copy of one driver tool, or None for a hidden one.
 pub fn guarded(tool: &Tool) -> Option<Tool> {
     if classify(&tool.name) == Class::Hidden {
@@ -189,6 +221,10 @@ pub(crate) mod tests {
     #[derive(Default)]
     pub struct FakeDriver {
         pub calls: Mutex<Vec<(String, JsonObject)>>,
+        /// Tools this driver does not have: left out of its list, and a call to one fails as unknown.
+        pub without: Vec<&'static str>,
+        /// Tools that answer with an error result.
+        pub refusing: Vec<&'static str>,
     }
 
     impl Driver for FakeDriver {
@@ -200,6 +236,7 @@ pub(crate) mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
+                .filter(|t| !self.without.contains(&t["name"].as_str().unwrap()))
                 .map(|t| {
                     Tool::new(
                         t["name"].as_str().unwrap().to_string(),
@@ -212,6 +249,14 @@ pub(crate) mod tests {
 
         async fn call(&self, name: &str, args: JsonObject) -> Result<CallToolResult, String> {
             self.calls.lock().unwrap().push((name.to_string(), args));
+            if self.without.contains(&name) {
+                return Err(format!("unknown tool: {name}"));
+            }
+            if self.refusing.contains(&name) {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "no overlay in this session",
+                )]));
+            }
             Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "did {name}"
             ))]))
@@ -321,6 +366,53 @@ pub(crate) mod tests {
         assert!(
             proxy.driver().calls.lock().unwrap().is_empty(),
             "the driver saw nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn mewndo_switches_the_drivers_cursor_off_for_its_session_itself() {
+        let driver = FakeDriver::default();
+        assert_eq!(
+            hide_driver_cursor(&driver, "mewndo-claude-1a2b").await,
+            Ok(())
+        );
+        let calls = driver.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "one call, straight to the driver");
+        assert_eq!(calls[0].0, CURSOR_TOOL);
+        assert_eq!(
+            Value::Object(calls[0].1.clone()),
+            serde_json::json!({"session": "mewndo-claude-1a2b", "enabled": false})
+        );
+
+        // The agent still cannot reach the switch, to turn the driver's cursor back on or anything else.
+        let proxy = Proxy::new(driver, Closed("not asked".into()), "mewndo-claude-1a2b");
+        let result = proxy.call("computer_set_agent_cursor_enabled", None).await;
+        assert!(text(&result).ends_with("is not a Mewndo computer tool"));
+        assert_eq!(proxy.driver().calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_refusing_cursor_switch_leaves_the_drivers_cursor_on_and_says_why() {
+        let missing = FakeDriver {
+            without: vec![CURSOR_TOOL],
+            ..FakeDriver::default()
+        };
+        let why = hide_driver_cursor(&missing, "s").await.unwrap_err();
+        assert_eq!(
+            why,
+            "set_agent_cursor_enabled failed: unknown tool: set_agent_cursor_enabled"
+        );
+        // A driver without the tool is still a driver: the agent gets every other tool.
+        let proxy = Proxy::new(missing, Open::default(), "s");
+        assert_eq!(proxy.tools().await.unwrap().len(), 26);
+
+        let refusing = FakeDriver {
+            refusing: vec![CURSOR_TOOL],
+            ..FakeDriver::default()
+        };
+        assert_eq!(
+            hide_driver_cursor(&refusing, "s").await,
+            Err("set_agent_cursor_enabled was refused: no overlay in this session".into())
         );
     }
 

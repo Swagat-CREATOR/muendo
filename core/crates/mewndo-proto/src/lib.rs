@@ -357,6 +357,10 @@ pub struct ComputerAction {
     /// Which agent the proxy was started for (`mewndo-core mcp-computer --agent <name>`), for the card's title.
     #[serde(default)]
     pub agent: String,
+    /// cua-driver's own agent cursor is still on screen: the proxy could not switch it off (§36.6 U8), so the core's
+    /// overlay draws its label chip beside it and no second arrow. False (the default) when Mewndo's is the only one.
+    #[serde(default)]
+    pub driver_cursor: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -623,13 +627,15 @@ mod tests {
             args_redacted: json!({"x": 1}),
             point: Some(p),
             agent: "claude".into(),
+            driver_cursor: true,
         });
-        // A proxy from before `agent` existed still parses.
+        // A proxy from before `agent` and `driver_cursor` existed still parses.
         let old: ComputerAction = serde_json::from_value(
             json!({"session": "s", "tool": "click", "args_redacted": {}, "point": null}),
         )
         .unwrap();
         assert_eq!(old.agent, "");
+        assert!(!old.driver_cursor);
         check(ComputerVerdict {
             verdict: Verdict::Deny,
             reason: Some("private window".into()),

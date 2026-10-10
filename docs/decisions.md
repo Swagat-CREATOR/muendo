@@ -436,8 +436,8 @@ cannot push Inbox cards out of a slow app's queue. An app that falls behind on l
   nothing can tell a password field from another. The card says "type 12 characters".
 - **Takeover (U6).** Low-level keyboard and mouse hooks read only the injected flag. Human input within 30 s of an
   allowed act pauses every call until `computer.resume`. If the hooks cannot be installed, computer use stays off.
-- **U7 is built and U8 is not** (see the next entry). Also not built: the UIA element lookup (U5.3) and the
-  screenshot crop on the card (U5.5).
+- **U7 and U8 are built** (the next two entries). Not built: the UIA element lookup (U5.3) and the screenshot
+  crop on the card (U5.5).
 
 ## The agent cursor (U7) (10 Oct 2026)
 
@@ -480,6 +480,24 @@ cannot push Inbox cards out of a slow app's queue. An app that falls behind on l
   not built.
 - **Not proved:** any of it on Windows. The window code compiles and is clippy-clean for `x86_64-pc-windows-gnu`;
   it has never been run. The cursor state, the geometry, the coordinates and the planners are tested on Linux.
+
+## The driver's own cursor switched off (U8) (10 Oct 2026)
+
+- **How.** `mewndo-computer`'s `run()` starts the driver, then calls `set_agent_cursor_enabled {session, enabled:
+  false}` for its own session label (`proxy::hide_driver_cursor`), straight to the driver: Mewndo's own call, not
+  the agent's, so it does not go through the gate, and the agent still cannot reach the tool (hidden, U3). The
+  call has 5 s; that is the only route of the three in decisions "cua-driver" 4 that works on a driver Mewndo
+  starts per agent.
+- **Fallback.** No such tool, an error, an `isError` result or no answer in 5 s: the driver's cursor stays on, the
+  reason goes to stderr, and every `computer.action` then carries `driver_cursor: true` (`mewndo-proto`,
+  `#[serde(default)]`, so an older proxy reads as false). The core's overlay then draws the label chip only,
+  beside the driver's cursor, instead of a second arrow.
+- **Unconfirmed:** that the driver accepts the call before the session has done anything else. The contract
+  makes `session` a free label (decisions "cua-driver" 4), but no live capture shows the call working on a session
+  that has not acted yet; if it refuses, the fallback above is what the user sees.
+- **Tested** with the fake driver: the exact call and arguments, the agent still refused the tool, a driver without
+  the tool, a driver that refuses it; the flag travelling in `computer.action` and the core drawing the chip only.
+  Not run against the real cua-driver.
 
 ## Cloud speech to text (10 Oct 2026)
 
