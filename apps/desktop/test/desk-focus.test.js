@@ -183,9 +183,14 @@ test('a handle of 0 (no foreground window at all) is not restored to', () => {
 });
 
 test('the real loader is require("koffi"), and asking for it does not throw here', () => {
-  // The default load() is a plain require, so this test also records the dependency: koffi is not installed, so
-  // on this machine the module degrades, which is exactly what the previous test describes.
+  // The default load() is a plain require, so this test also records the dependency: koffi is installed. On Windows
+  // it reaches user32; anywhere else there is no user32.dll to load, and that is said, not thrown.
+  assert.doesNotThrow(() => require('koffi'), 'koffi is a dependency of apps/desktop');
   const focus = createFocus({ platform: 'win32', log: quietLog() });
-  assert.strictEqual(focus.available(), false, 'koffi is not a dependency of apps/desktop yet');
-  assert.match(focus.reason(), /^focus not restored: /);
+  if (process.platform === 'win32') {
+    assert.strictEqual(focus.available(), true, focus.reason());
+  } else {
+    assert.strictEqual(focus.available(), false);
+    assert.match(focus.reason(), /^focus not restored: /);
+  }
 });

@@ -72,7 +72,9 @@ jobs:
         shell: bash
         run: |
           # node's own summary of failures (with each error), then cargo's and the reliability script's.
-          lines=$( (sed -n '/failing tests:/,$p' ci.log; grep -E -A25 'panicked|^error|^ *FAIL' ci.log) | head -300)
+          lines=$( (sed -n '/failing tests:/,$p' ci.log; grep -E -A25 'panicked|^error|^ *FAIL|^not ok|✖' ci.log) | head -300 || true)
+          # Nothing matched (a crash, a hang, a message in another form): the end of the log says what happened.
+          [ -n "$lines" ] || lines=$(tail -n 80 ci.log || echo "ci.log is empty")
           lines=${lines//'%'/%25}
           lines=${lines//$'\r'/}
           echo "::error title=What failed::${lines//$'\n'/%0A}"
