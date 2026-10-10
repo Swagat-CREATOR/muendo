@@ -1723,8 +1723,9 @@ model = \"gpt-5-codex\"
         assert_eq!(hooks["PermissionRequest"][0]["hooks"][0]["timeout"], 300);
 
         // The snippet on disk is this file's own output too.
-        let snippet =
-            std::fs::read_to_string(integrations_dir().join("config.snippet.toml")).unwrap();
+        let snippet = std::fs::read_to_string(integrations_dir().join("config.snippet.toml"))
+            .unwrap()
+            .replace("\r\n", "\n"); // a Windows checkout (CI) may turn LF into CRLF
         assert_eq!(snippet, config_snippet(Path::new(EXE_PLACEHOLDER)));
         assert!(
             snippet.contains(&toml_string(EXE_PLACEHOLDER)),
