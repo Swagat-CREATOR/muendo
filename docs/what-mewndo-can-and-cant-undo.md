@@ -160,6 +160,13 @@ typed while the agent is mid-answer is typed then, exactly as if you had pressed
 Mewndo: quitting Mewndo stops every agent running in a lane. The replay buffer is memory only. The lanes window
 still shows a placeholder, so none of this can be used from the app yet.
 
+**Guarded computer use** (spec §36): built in the core and the proxy, off by default, and nothing in the app
+can switch it on yet. When on, every action an agent takes on the desktop through cua-driver is shown on a card
+first and happens only if you allow it; touching the mouse or keyboard while an agent is acting pauses it until
+you choose Resume. What it can't do: **nothing a click does can be undone by Mewndo**, so the card is the only
+protection. The card cannot show what is under the pointer (no element name, no screenshot yet), and it shows
+typed text only as its length. Never run against the real cua-driver; tested with a fake driver on Linux.
+
 **Uninstalling** asks whether to delete Mewndo's saved history; the default is No. Yes permanently deletes every
 save point, Mewndo's trash, the Agent Inbox's card history and rules.toml (`%APPDATA%\mewndo` and
 `%LOCALAPPDATA%\Mewndo`), and that cannot be undone. Either way Mewndo's hooks are taken out of Claude Code's

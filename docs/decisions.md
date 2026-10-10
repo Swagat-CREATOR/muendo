@@ -421,3 +421,22 @@ Lane output has its own broadcast channel (256 frames), separate from the desk's
 cannot push Inbox cards out of a slow app's queue. An app that falls behind on lane output loses terminal bytes
 (logged) and should `lane.attach` again. The core kills every lane when it stops.
 
+## Guarded computer use: U3, U5 and U6 (10 Oct 2026)
+
+- **Shape.** `mewndo-core mcp-computer --agent <name>` is the MCP server an agent is given. It runs the pinned
+  `cua-driver mcp` (vendor.rs) as a child and offers its tools as `computer_<name>`, schema unchanged, description
+  prefixed "[Guarded by Mewndo] ". The three agent-cursor settings are hidden; everything else is offered.
+- **The core is the gate.** Every call, reads included, is a `computer.action` on the desk pipe (`hello {role:
+  computer}`), answered by `computer.verdict`. Off unless the app starts the core with `--computer-use`, which
+  nothing does yet (UI request). Reads are allowed without a card; acts always get an Inbox permission card,
+  because the Router cannot see what is under the pointer (no UIA lookup, U5.3) and so never allows one alone.
+- **Fails closed.** No core, no answer in 290 s, or anything but a verdict refuses the call. The hooks fail open
+  because files can be restored; a click cannot.
+- **Redaction.** Typed text, clipboard text and single-character keys travel as "<N characters>", always, because
+  nothing can tell a password field from another. The card says "type 12 characters".
+- **Takeover (U6).** Low-level keyboard and mouse hooks read only the injected flag. Human input within 30 s of an
+  allowed act pauses every call until `computer.resume`. If the hooks cannot be installed, computer use stays off.
+- **Not built: U7 and U8.** No overlay window and no `MotionPlanner`; the driver's own cursor is left on, because
+  turning it off (U8) without Mewndo's cursor (U7) would hide the agent's pointer from the user. Also not built:
+  the UIA element lookup (U5.3) and the screenshot crop on the card (U5.5).
+

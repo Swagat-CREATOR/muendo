@@ -47,3 +47,15 @@ exposes `action` and `onOpen`, so it needs:
   - `('close', laneId)`: ends the agent and removes the lane. It cannot be undone, so it wants a confirmation;
     closing the *window* must not send it (the lane keeps running, §33.7).
 - **States per lane**: running, ended (with exit code, output still readable), and gone (removed from the list).
+
+## Computer use (spec §36)
+
+- **A setting**, off by default: "Let agents use the computer (guarded)". When on, `startCore()` in main.js must add
+  `--computer-use` to the core's arguments (a shared-file edit; ask the core session or do it in its own function).
+  Say beside it what it can't do: Mewndo cannot undo a click; each action is shown to you first.
+- **Cards**: computer actions arrive as ordinary permission cards (`inbox.card`, kind `permission`), `agent_id`
+  `computer:<session>`, title like "Claude wants to click at 412, 230". No new kind.
+- **Paused**: `computer.pause {sessions: []}` arrives when the user took over the mouse or keyboard while an agent
+  was acting. Show a clear "Agents paused — Resume" control (dock), and send `computer.resume {sessions: []}`
+  through the core client when pressed; the core echoes `computer.resume` to every app, which clears the state.
+
