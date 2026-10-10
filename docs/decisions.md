@@ -467,3 +467,18 @@ which finishes setup.
 **What it can't do yet:** there is no invite code field (the app has no way to reach the gateway yet); shortcut
 conflicts with Wispr Flow are found by Settings' Test, not flagged here; the card sits inside the normal window
 instead of a 720 x 520 window of its own; and it hasn't been walked through on a fresh Windows profile.
+
+## Timeline with Undo to here (design D7, 10 Oct 2026)
+
+Timeline lists every save point in every protected folder, newest first, under "Today", "Yesterday" and dated
+headings, with search and agent and folder filters. Each row shows the time, who (the agent's initial, or the cat
+for Mewndo's own save points), the label, and the folder, agent and trigger. Hover or focus shows **Undo to here**
+and **See changes**. Undo to here always shows the restore plan first (the engine's own plan text: what is put back,
+what is replaced, what goes to the trash, and that a save point is made first), then restores the whole folder in
+place and shows a toast with the reaching cat ("Restored 2 files in … Verified."), or the pounce cat if verification
+failed. Toasts are now the §11.6 float style with an optional cat.
+
+Checked in the real app on a throwaway folder in %TEMP%: an edited file came back and a new file went to the trash.
+
+**What it can't do yet:** rows are save points, not agent turns with their Receipt; there are no change counts per
+row (that needs a diff per row); no Copy summary or Flag; at most 500 rows are drawn (filters narrow it).

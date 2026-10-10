@@ -67,7 +67,7 @@ body { background: var(--sidebar); color: var(--ink); font: var(--t-body); }
 .greeting { font: 500 26px/36px var(--font-ui); margin: 0 0 24px; }
 .greeting .keycap { font-size: 20px; padding: 2px 10px; margin: 0 2px; vertical-align: 2px;
   background: var(--needs-soft, #FBEBD0); border-color: var(--needs); color: var(--ink); }
-.banner { position: relative; display: flex; align-items: center; min-height: 180px; padding: 28px 32px; border-radius: 16px; overflow: hidden;
+.banner { position: relative; margin: 0; border: 0; display: flex; align-items: center; min-height: 180px; padding: 28px 32px; border-radius: 16px; overflow: hidden;
   color: #EEF1EC; background: radial-gradient(ellipse 34% 90% at 80% 55%, rgba(242, 176, 74, 0.42), rgba(242, 176, 74, 0) 70%),
     radial-gradient(ellipse 22% 60% at 92% 30%, rgba(52, 214, 182, 0.18), rgba(52, 214, 182, 0) 70%), linear-gradient(90deg, #0B0C0D 45%, #1A1511); }
 .banner-text { position: relative; z-index: 1; max-width: 58%; }
@@ -106,3 +106,32 @@ body { background: var(--sidebar); color: var(--ink); font: var(--t-body); }
 .fr-foot { display: flex; gap: 8px; align-items: center; padding-top: 16px; border-top: 1px solid var(--border); }
 .fr-gap { flex: 1; }
 .small { font: var(--t-small); }
+
+/* Timeline (design spec §8.4), like Wispr's history: day headings, rows with the time on the left, actions on hover. */
+.tl-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.tl-head .display { flex: 1; margin: 0; }
+.tl-head input, .tl-head select { min-width: 0; height: 34px; box-sizing: border-box; padding: 0 10px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink); font: var(--t-small); }
+.tl-head input { width: 200px; }
+.tl-day { font: var(--t-h2); margin: 24px 0 8px; }
+.tl-list { border-radius: 14px; }
+.tl-row { display: grid; grid-template-columns: 72px 28px 1fr auto; align-items: center; gap: 12px; min-height: 56px; padding: 8px 12px;
+  border-radius: 12px; }
+.tl-row:hover, .tl-row:focus-within { background: var(--surface); }
+.tl-time { font: var(--t-small); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.tl-avatar { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--working-soft);
+  color: var(--ink); font: 600 11px/1 var(--font-ui); }
+.tl-avatar.mewndo { background: var(--ink); -webkit-mask: url(../assets/cat/cat-face-small.svg) center / contain no-repeat;
+  mask: url(../assets/cat/cat-face-small.svg) center / contain no-repeat; border-radius: 0; }
+.tl-title { font: var(--t-body); }
+.tl-sub { font: var(--t-small); color: var(--ink-2); }
+.tl-actions { display: flex; gap: 6px; opacity: 0; transition: opacity var(--m-quick); }
+.tl-row:hover .tl-actions, .tl-row:focus-within .tl-actions { opacity: 1; }
+.tl-actions button { padding: 4px 12px; font: var(--t-small); }
+.tl-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 64px 0; color: var(--ink-2); }
+.tl-cat { --cat-size: 96px; }
+
+/* The restore plan sheet (the confirm dialog), on the tokens. */
+dialog { padding: 24px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18); }
+dialog h2 { font: 400 22px/30px var(--font-display); font-variation-settings: var(--display-axes); margin: 0 0 8px; }
+dialog::backdrop { background: rgba(21, 23, 26, 0.28); }

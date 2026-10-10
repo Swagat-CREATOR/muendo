@@ -53,8 +53,11 @@ tbody tr:hover, tbody tr.selected { background: #1f6b9c22; }
 dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); }
 dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 16px 0 0; }
 #confirm-list { max-height: 160px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
-#toast { position: fixed; bottom: 16px; right: 16px; max-width: 420px; padding: 10px 14px; border-radius: 4px;
-  background: #333; color: #fff; }
+/* Toasts (design spec §11.6): bottom right, 320 px, float set, an optional cat at 48 px. */
+#toast { position: fixed; bottom: 16px; right: 16px; width: 320px; box-sizing: border-box; padding: 12px 14px; border-radius: 14px;
+  display: flex; gap: 12px; align-items: center; background: var(--float-highlight), var(--float-bg); color: var(--float-ink);
+  border: 1px solid var(--float-border); box-shadow: var(--float-shadow); z-index: 10; }
+#toast .cat { --cat-size: 48px; --cat: var(--float-ink); flex: none; }
 
 .banner { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); }
 #alerts { padding: 8px 16px; }

@@ -17,6 +17,7 @@ const stubs = {
   mewndo: {
     ...Object.fromEntries(['state',  'chooseFolders',  'protect',  'unprotect',  'finishSetup',  'setOpenAtLogin',  'togglePause',  'savePoints',  'createSavePoint',  'diff',  'plan',  'restore',  'restores',  'undoRestore',  'openPath',  'ping',  'claudeHooksPlan',  'claudeHooksInstall',  'agentHooksPlan',  'agentHooksInstall',  'safetyRules',  'openSettings',  'openLimits',  'dismissAlert',  'setSafetyRules'].map((n) => [n, async () => []])),
     state: () => (last ? Promise.resolve(last) : new Promise((resolve) => ipcRenderer.once('mewndo:state', (_e, s) => { last = s; resolve(s); }))),
+    savePoints: async (root) => last?.savePointsByRoot?.[root] ?? [], // shots of the Timeline
     on: () => noop,
   },
 };

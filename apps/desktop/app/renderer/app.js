@@ -45,9 +45,12 @@ let busy = false;
 const progress = new Map();
 
 let toastTimer;
-function toast(message) {
+// cat: a pose from assets/cat for the design spec's toasts (§11.6), e.g. 'reach' after a restore.
+function toast(message, { cat = null } = {}) {
   const t = $('toast');
-  t.textContent = message;
+  $('toast-text').textContent = message;
+  $('toast-cat').hidden = !cat;
+  if (cat) $('toast-cat').style.setProperty('--pose', `url("${new URL(`../assets/cat/cat-${cat}.svg`, document.baseURI).href}")`);
   t.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.hidden = true; }, 7000);
@@ -567,6 +570,7 @@ function go(name) {
   if (!SCREENS.includes(name)) return;
   screen = name;
   for (const s of document.querySelectorAll('.screen')) s.hidden = s.dataset.screen !== name;
+  if (name === 'timeline') setTimeout(loadTimeline); // after the script has run: loadTimeline is defined below
   for (const b of document.querySelectorAll('#nav .nav-item')) {
     if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
@@ -661,6 +665,91 @@ function renderHome() {
   $('banner-cat').style.setProperty('--pose', `url("${new URL(`../assets/cat/cat-${b.cat}.svg`, document.baseURI).href}")`); // absolute: no doubt what it's relative to
 }
 
+// --- Timeline (design spec §8.4): every save point in every protected folder, newest first, by day -------------
+// What it can't do yet: rows show the save point, not the agent's turn summary or Receipt, and there are no change
+// counts per row (that needs a diff per row); See changes opens the folder's comparison instead. No Copy summary or
+// Flag yet.
+
+let timeline = []; // [{ sp, folder }]
+const loadTimeline = guard(async () => {
+  if (!state?.folders) return;
+  const lists = await Promise.all(state.folders.map(async (f) => (await api.savePoints(f.root)).map((sp) => ({ sp, folder: f }))));
+  timeline = lists.flat().sort((a, b) => new Date(b.sp.createdAt) - new Date(a.sp.createdAt));
+  const agents = [...new Set(timeline.map((t) => t.sp.agent).filter(Boolean))].sort();
+  const keep = (sel, values, all) => {
+    const now = sel.value;
+    fill(sel, h('option', { value: '' }, all), ...values.map(([v, label]) => h('option', { value: v }, label)));
+    sel.value = values.some(([v]) => v === now) ? now : '';
+  };
+  keep($('tl-agent'), agents.map((a) => [a, a]), 'All agents');
+  keep($('tl-folder'), state.folders.map((f) => [f.root, f.name]), 'All folders');
+  renderTimeline();
+});
+
+function dayHeading(d) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const day = new Date(d); day.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((today - day) / 86_400_000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return day.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+}
+const clock = (d) => new Date(d).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
+function renderTimeline() {
+  const q = $('tl-search').value.trim().toLowerCase();
+  const rows = timeline.filter(({ sp, folder }) => (!$('tl-agent').value || sp.agent === $('tl-agent').value)
+    && (!$('tl-folder').value || folder.root === $('tl-folder').value)
+    && (!q || [sp.label, sp.agent, folder.name, TRIGGERS[sp.trigger]].some((x) => x?.toLowerCase().includes(q))));
+  $('tl-empty').hidden = timeline.length > 0;
+  document.querySelector('.tl-cat').style.setProperty('--pose', `url("${new URL('../assets/cat/cat-sit.svg', document.baseURI).href}")`);
+  const out = [];
+  let last = null;
+  for (const { sp, folder } of rows.slice(0, 500)) {
+    const heading = dayHeading(sp.createdAt);
+    if (heading !== last) { out.push(h('h2', { class: 'tl-day' }, heading)); last = heading; }
+    const who = sp.agent ?? 'Mewndo';
+    const title = sp.label || (sp.trigger === 'before-undo' ? 'Save point before an undo' : `${TRIGGERS[sp.trigger] ?? 'Save point'} save point`);
+    out.push(h('div', { class: 'tl-row', tabindex: 0 },
+      h('span', { class: 'tl-time' }, clock(sp.createdAt)),
+      h('span', { class: `tl-avatar${sp.agent ? '' : ' mewndo'}`, title: who }, sp.agent ? who[0].toUpperCase() : ''),
+      h('div', { class: 'tl-what' },
+        h('div', { class: 'tl-title' }, title),
+        h('div', { class: 'tl-sub' }, [folder.name, agentText(sp) || 'Mewndo', TRIGGERS[sp.trigger]].filter(Boolean).join(' · '))),
+      h('div', { class: 'tl-actions' },
+        h('button', { class: 'primary', onclick: guard(() => undoToHere(sp, folder)) }, 'Undo to here'),
+        h('button', { onclick: guard(() => seeChanges(sp, folder)) }, 'See changes'))));
+  }
+  if (rows.length > 500) out.push(h('p', { class: 'muted' }, `…and ${rows.length - 500} older. Pick a folder or search to narrow it down.`));
+  if (timeline.length && !rows.length) out.push(h('p', { class: 'muted' }, 'Nothing matches.'));
+  fill($('tl-list'), ...out);
+}
+for (const id of ['tl-search', 'tl-agent', 'tl-folder']) $(id).addEventListener('input', renderTimeline);
+
+// Undo to here: the plan first, then confirm (spec: plan, then confirm); the whole folder goes back to this point.
+async function undoToHere(sp, folder) {
+  if (busy) return;
+  const plan = await api.plan(folder.root, sp.id, null);
+  if (!(await confirmPlan(`Undo ${folder.name} to ${clock(sp.createdAt)}?`, 'Undo to here', plan))) return;
+  busy = true;
+  try {
+    const r = await api.restore(folder.root, sp.id, null, 'in-place');
+    if (!r) return;
+    const n = r.counts.written + r.counts.trashed;
+    toast(r.verified ? `Restored ${plural(n, 'file')} in ${folder.name}. Verified.` : `Restored ${folder.name}, but some files don't match. See Protected folders.`,
+      { cat: r.verified ? 'reach' : 'pounce' });
+  } finally {
+    busy = false;
+    await Promise.all([loadTimeline(), refresh()]);
+  }
+}
+
+async function seeChanges(sp, folder) {
+  go('folders');
+  await selectFolder(folder.root);
+  await showDiff(sp);
+}
+
 // --- Keeping up to date ----------------------------------------------------------------------------------------
 
 let hookStatusLoaded = false;
@@ -693,7 +782,10 @@ api.on('progress', (p) => {
   if (state?.setupDone) renderFolders();
   if (p.phase === 'done') guard(refresh)();
 });
-api.on('savepoints-changed', (root) => { if (root === selected && !busy) loadSavePoints(); });
+api.on('savepoints-changed', (root) => {
+  if (root === selected && !busy) loadSavePoints();
+  if (screen === 'timeline') loadTimeline();
+});
 api.on('restores-changed', (root) => { if (root === selected) loadRestores(); });
 api.on('toast', toast);
 // The bar's change ticker: show what changed in that folder since its newest save point.

@@ -121,8 +121,17 @@
       </div>
     </section>
     <section class="screen" data-screen="timeline" hidden>
-      <h1 class="display">Timeline</h1>
-      <p class="lead">Every turn and save point by day is coming here. For now, pick a folder in <a href="#" data-go="folders">Protected folders</a> to see its save points.</p>
+      <div class="tl-head">
+        <h1 class="display">Timeline</h1>
+        <input id="tl-search" type="search" placeholder="Search" aria-label="Search the timeline">
+        <select id="tl-agent" aria-label="Agent"><option value="">All agents</option></select>
+        <select id="tl-folder" aria-label="Folder"><option value="">All folders</option></select>
+      </div>
+      <div id="tl-list" class="tl-list"></div>
+      <div id="tl-empty" class="tl-empty" hidden>
+        <span class="cat tl-cat" aria-hidden="true"><i></i></span>
+        <p>Your timeline starts when an agent changes something in a protected folder.</p>
+      </div>
     </section>
     <section class="screen" data-screen="connections" hidden>
       <h1 class="display">Connections</h1>
@@ -265,7 +274,7 @@
     </form>
   </dialog>
 
-  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <div id="toast" role="status" aria-live="polite" hidden><span id="toast-cat" class="cat" aria-hidden="true" hidden><i></i></span><span id="toast-text"></span></div>
   <script src="app.js"></script>
 </body>
 </html>
