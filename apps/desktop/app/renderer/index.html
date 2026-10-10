@@ -89,7 +89,9 @@
     </aside>
     <div class="content">
     <section class="screen" data-screen="home" hidden>
-      <h1 id="greeting" class="greeting">Undo anything an agent did with <span class="keycap">Alt</span> + <span class="keycap">Shift</span> + <span class="keycap">Z</span></h1>
+      <h1 id="hello" class="hello display"></h1>
+      <p id="greeting" class="greeting">Undo anything with <span class="keycap">Alt</span> + <span class="keycap">Shift</span> + <span class="keycap">Z</span></p>
+      <div class="home-top">
       <div id="banner" class="banner">
         <div class="banner-text">
           <h2 id="banner-title" class="banner-title"></h2>
@@ -98,7 +100,15 @@
         </div>
         <span id="banner-cat" class="cat banner-cat" aria-hidden="true"><i></i></span>
       </div>
-      <p class="lead">Your agents, today's numbers and recent changes will live here. For now, <a href="#" data-go="folders">Protected folders</a> has your save points and restores.</p>
+      <section class="today" aria-labelledby="today-title">
+        <h2 id="today-title">Today</h2>
+        <dl id="today"></dl>
+      </section>
+      </div>
+      <h2 class="home-h">Right now</h2>
+      <div id="now-list" class="now-list"></div>
+      <div class="home-h-row"><h2 class="home-h">Recent</h2><a href="#" data-go="timeline">See all in Timeline</a></div>
+      <div id="recent" class="tl-list"></div>
     </section>
     <section class="screen" data-screen="inbox" hidden>
       <div class="tl-head"><h1 class="display">Inbox</h1><span class="muted small">J / K to move · 1–9 to answer · Space to reply · E to clear · Esc to take back</span></div>

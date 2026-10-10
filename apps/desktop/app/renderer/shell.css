@@ -64,8 +64,9 @@ body { background: var(--sidebar); color: var(--ink); font: var(--t-body); }
 .agents-setup button { margin: 4px 8px 4px 0; }
 
 /* Home: the greeting with the undo keys, then a banner for the next step (like Wispr's "Make Flow sound like you"). */
-.greeting { font: 500 26px/36px var(--font-ui); margin: 0 0 24px; }
-.greeting .keycap { font-size: 20px; padding: 2px 10px; margin: 0 2px; vertical-align: 2px;
+.hello { margin: 0 0 6px; }
+.greeting { font: 500 16px/24px var(--font-ui); color: var(--ink-2); margin: 0 0 24px; }
+.greeting .keycap { font-size: 13px; padding: 2px 8px; margin: 0 2px; vertical-align: 1px;
   background: var(--needs-soft, #FBEBD0); border-color: var(--needs); color: var(--ink); }
 .banner { position: relative; margin: 0; border: 0; display: flex; align-items: center; min-height: 180px; padding: 28px 32px; border-radius: 16px; overflow: hidden;
   color: #EEF1EC; background: radial-gradient(ellipse 34% 90% at 80% 55%, rgba(242, 176, 74, 0.42), rgba(242, 176, 74, 0) 70%),
@@ -210,3 +211,26 @@ dialog::backdrop { background: rgba(21, 23, 26, 0.28); }
   .progress i, .storage-bar i { background: Highlight; }
   .cat > i, .tl-avatar.mewndo { background: CanvasText; }
 }
+
+/* Home (design spec §8.1): spotlight 2/3 and Today 1/3, then Right now and Recent. */
+.home-top { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 16px; align-items: stretch; }
+.home-top .banner { min-height: 220px; }
+.today { padding: 20px 24px; border-radius: 16px; border: 1px solid var(--border); background: var(--surface); }
+.today h2 { font: var(--t-h2); margin: 0 0 12px; }
+.today dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: baseline; margin: 0; }
+.today dt a { color: var(--ink) !important; text-decoration: none; font: var(--t-number); font-variation-settings: var(--display-axes); }
+.today dt a:hover { color: var(--focus) !important; }
+.today dd { margin: 0; font: var(--t-small); color: var(--ink-2); }
+.home-h { font: var(--t-h2); margin: 28px 0 8px; }
+.home-h-row { display: flex; align-items: baseline; justify-content: space-between; }
+.home-h-row a { font: var(--t-small); }
+.now-list { border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+.now-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.now-row:first-child { border-top: 0; }
+.now-logo { position: relative; width: 32px; height: 32px; display: grid; place-items: center; }
+.now-logo .ring { position: absolute; inset: 0; --ring-size: 32px; }
+.now-logo .ring::after { display: none; }
+.now-what { flex: 1; min-width: 0; }
+.now-name { font-weight: 600; }
+.now-empty { display: flex; align-items: center; gap: 16px; padding: 16px; color: var(--ink-2); }
+.now-cat { --cat-size: 96px; }

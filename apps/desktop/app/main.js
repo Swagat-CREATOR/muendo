@@ -5,6 +5,7 @@
 const path = require('node:path');
 const fsp = require('node:fs/promises');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard, screen,
   nativeTheme,
@@ -436,6 +437,7 @@ async function state() {
     budgetBytes: report?.budgetBytes ?? null,
     checklist: checklist(folders, guarded),
     shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
+    userName: (() => { try { return os.userInfo().username; } catch { return ''; } })(), // Home's greeting
   };
 }
 

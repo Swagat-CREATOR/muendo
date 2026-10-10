@@ -579,10 +579,11 @@ function go(name) {
   if (!SCREENS.includes(name)) return;
   screen = name;
   for (const s of document.querySelectorAll('.screen')) s.hidden = s.dataset.screen !== name;
-  if (name === 'timeline') setTimeout(loadTimeline); // after the script has run: loadTimeline is defined below
-  if (name === 'agents') setTimeout(loadAgents);
-  if (name === 'inbox') setTimeout(loadInbox);
-  if (name === 'connections') setTimeout(renderConnections);
+  if (name === 'timeline') setTimeout(() => loadTimeline()); // after the script has run: loadTimeline is defined below
+  if (name === 'agents') setTimeout(() => loadAgents());
+  if (name === 'inbox') setTimeout(() => loadInbox());
+  if (name === 'home') setTimeout(() => loadHome());
+  if (name === 'connections') setTimeout(() => renderConnections());
   for (const b of document.querySelectorAll('#nav .nav-item')) {
     if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
@@ -664,7 +665,14 @@ const BANNERS = {
 let bannerKey = null;
 function renderHome() {
   const keys = (state.shortcuts?.undo ?? 'Alt+Shift+Z').split('+');
-  $('greeting').replaceChildren('Undo anything an agent did with ', ...keys.flatMap((k, i) => [i ? ' + ' : '', h('span', { class: 'keycap' }, k)]));
+  $('greeting').replaceChildren('Undo anything with ', ...keys.flatMap((k, i) => [i ? ' + ' : '', h('span', { class: 'keycap' }, k)]));
+  // The first line follows the state (§8.1): cards waiting, something stopped, or all good.
+  const name = (state.userName ?? '').split(/[\s._-]/)[0];
+  const hey = name ? `Hey ${name[0].toUpperCase()}${name.slice(1)}, ` : '';
+  const waiting = inbox.filter((c) => c.state === 'open').length;
+  const stopped = homeAgents.some((a) => a.status === 'Braked');
+  $('hello').textContent = waiting ? `${hey}${waiting === 1 ? 'an agent needs' : `${waiting} cards need`} you.`
+    : stopped ? `${hey}Mewndo stopped something.` : `${hey}your work is safe.`;
   const items = state.checklist?.items ?? {};
   const key = ['folder', 'agent', 'undo', 'shortcuts'].find((k) => !items[k]) ?? 'done';
   if (key === bannerKey) return;
@@ -720,9 +728,18 @@ function renderTimeline() {
   for (const { sp, folder } of rows.slice(0, 500)) {
     const heading = dayHeading(sp.createdAt);
     if (heading !== last) { out.push(h('h2', { class: 'tl-day' }, heading)); last = heading; }
+    out.push(timelineRow(sp, folder));
+  }
+  if (rows.length > 500) out.push(h('p', { class: 'muted' }, `…and ${rows.length - 500} older. Pick a folder or search to narrow it down.`));
+  if (timeline.length && !rows.length) out.push(h('p', { class: 'muted' }, 'Nothing matches.'));
+  fill($('tl-list'), ...out);
+}
+// One Timeline row (§8.4), also used by Home's Recent.
+function timelineRow(sp, folder) {
+  {
     const who = sp.agent ?? 'Mewndo';
     const title = sp.label || (sp.trigger === 'before-undo' ? 'Save point before an undo' : `${TRIGGERS[sp.trigger] ?? 'Save point'} save point`);
-    out.push(h('div', { class: 'tl-row', tabindex: 0 },
+    return (h('div', { class: 'tl-row', tabindex: 0 },
       h('span', { class: 'tl-time' }, clock(sp.createdAt)),
       sp.agent ? h('span', { class: 'tl-avatar', title: who }, MewLogos.img(sp.agent, 20)) : h('span', { class: 'tl-avatar mewndo', title: who }),
       h('div', { class: 'tl-what' },
@@ -732,9 +749,6 @@ function renderTimeline() {
         h('button', { class: 'primary', onclick: guard(() => undoToHere(sp, folder)) }, 'Undo to here'),
         h('button', { onclick: guard(() => seeChanges(sp, folder)) }, 'See changes'))));
   }
-  if (rows.length > 500) out.push(h('p', { class: 'muted' }, `…and ${rows.length - 500} older. Pick a folder or search to narrow it down.`));
-  if (timeline.length && !rows.length) out.push(h('p', { class: 'muted' }, 'Nothing matches.'));
-  fill($('tl-list'), ...out);
 }
 for (const id of ['tl-search', 'tl-agent', 'tl-folder']) $(id).addEventListener('input', renderTimeline);
 
@@ -862,7 +876,7 @@ function renderInbox(connected = true) {
 }
 api.on('inbox-changed', () => loadInbox());
 api.on('go', (name) => go(name)); // the dock's Inbox and Agents capsules
-setTimeout(loadInbox); // for the sidebar count
+setTimeout(() => loadInbox()); // for the sidebar count
 // The same keys as the floating cards (§33.2), while the Inbox screen is showing and you're not typing.
 document.addEventListener('keydown', (e) => {
   if (screen !== 'inbox' || e.ctrlKey || e.altKey || e.metaKey || e.target.closest('input, textarea, select, dialog')) return;
@@ -894,6 +908,44 @@ function renderConnections() {
     h('p', {}, what))));
 }
 
+// Home's live parts (§8.1): Today's numbers, Right now and Recent, from real data only. Loaded when Home shows and
+// every 30 s while it does, not on every 3 s refresh (the save point lists can be long).
+// What it can't do yet: "actions held" (Guard's refusals aren't counted per day yet) and the numbers don't filter
+// the Timeline when clicked; they open it.
+let homeAgents = [];
+let homeLoaded = false;
+const sameDay = (iso) => new Date(iso).toDateString() === new Date().toDateString();
+const loadHome = guard(async () => {
+  if (!state?.folders) return;
+  const [agents, restoreLists] = await Promise.all([api.agentsView(), Promise.all(state.folders.map((f) => api.restores(f.root))),
+    loadTimeline(), loadInbox()]);
+  homeAgents = agents;
+  const files = state.folders.reduce((n, f) => n + (f.files ?? 0), 0);
+  const savePointsToday = timeline.filter((t) => sameDay(t.sp.createdAt)).length;
+  const restoresToday = restoreLists.flat().filter((r) => sameDay(r.startedAt)).length;
+  const braked = agents.filter((a) => a.status === 'Braked').length;
+  const num = (n, label, to) => [h('dt', {}, h('a', { href: '#', 'data-go': to, class: 'number' }, n.toLocaleString())), h('dd', {}, label)];
+  fill($('today'), ...num(files, 'files protected', 'folders'), ...num(savePointsToday, savePointsToday === 1 ? 'save point' : 'save points', 'timeline'),
+    ...num(restoresToday, restoresToday === 1 ? 'restore' : 'restores', 'timeline'), ...num(braked, braked === 1 ? 'agent braked' : 'agents braked', 'agents'));
+  // Right now: one row per agent Mewndo can see, with the one action that's needed, or how it's watched.
+  const live = agents.filter((a) => a.status !== 'Not connected');
+  const cardsFor = (name) => inbox.filter((c) => c.agent === name && c.state === 'open').length;
+  const ring = { Working: 'working', Braked: 'stopped', Idle: 'done' };
+  fill($('now-list'), ...(live.length ? live.map((a) => h('div', { class: 'now-row' },
+    h('span', { class: 'now-logo' }, MewLogos.img(a.name, 24), h('span', { class: `ring ${cardsFor(a.name) ? 'needs' : ring[a.status] ?? ''}` })),
+    h('div', { class: 'now-what' }, h('div', { class: 'now-name' }, a.name), h('div', { class: 'tl-sub' }, cardsFor(a.name) ? 'Needs you' : [a.status, a.now].filter(Boolean).join(' · '))),
+    cardsFor(a.name) ? h('button', { class: 'primary', 'data-go': 'inbox' }, 'Answer')
+      : a.status === 'Braked' ? h('button', { onclick: guard(async () => { await api.resumeAgent(a.name); await loadHome(); }) }, 'Resume')
+        : h('span', { class: `chip${a.monitoring === 'Guarded' ? ' on' : ''}` }, a.monitoring ?? 'Watched')))
+    : [h('div', { class: 'now-empty' }, h('span', { class: 'cat now-cat', 'aria-hidden': 'true' }, h('i')),
+      h('p', {}, 'No agents running. Start one from Talk, or open Claude Code as usual.'))]));
+  document.querySelector('.now-cat')?.style.setProperty('--pose', `url("${new URL('../assets/cat/cat-loaf.svg', document.baseURI).href}")`);
+  fill($('recent'), ...(timeline.length ? timeline.slice(0, 5).map(({ sp, folder }) => timelineRow(sp, folder))
+    : [h('p', { class: 'muted' }, 'Nothing yet. Save points show up here as your agents work.')]));
+  renderHome();
+});
+setInterval(() => { if (screen === 'home' && !document.hidden) loadHome(); }, 30_000);
+
 // --- Keeping up to date ----------------------------------------------------------------------------------------
 
 let hookStatusLoaded = false;
@@ -906,6 +958,7 @@ async function refresh() {
   renderHeader();
   renderChecklist();
   renderHome();
+  if (screen === 'home' && !homeLoaded) { homeLoaded = true; loadHome(); } // the first time state is here
   if (selected && !state.folders.some((f) => f.root === selected)) {
     selected = null;
     $('folder-view').hidden = true;

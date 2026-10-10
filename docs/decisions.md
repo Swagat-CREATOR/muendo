@@ -568,3 +568,15 @@ Hover hints are the system tooltips for now.
 
 **What it can't do yet:** keyboard moves in the agent list (the dock never takes focus), a Talk box aimed at one
 agent, cloud agents, the dark hint chip with a 400 ms delay, and a Show Me record button in the Talk capsule.
+
+## Home: greeting, Today, Right now, Recent (design D5, 10 Oct 2026)
+
+Home follows §8.1. The first line follows the state, with the Windows user name: "Hey Smruti, your work is safe.",
+"… 3 cards need you." or "… Mewndo stopped something."; the second teaches the undo shortcut from settings. Beside
+the spotlight banner, **Today** shows real counts only: files protected, today's save points and restores, and
+agents braked; each number opens the matching screen. **Right now** lists every agent Mewndo can see with a status
+ring around its logo and the one action needed (Answer, Resume) or how it's watched; the loaf cat when none are
+running. **Recent** is the last five Timeline rows. Home's data loads when Home shows and every 30 s while it does.
+
+**What it can't do yet:** "actions held" (Guard's refusals aren't counted per day yet); clicking a number opens the
+screen but doesn't filter it; right after start, agents appear once Mewndo has seen them (up to 30 s).
