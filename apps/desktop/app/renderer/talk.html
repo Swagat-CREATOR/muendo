@@ -2,23 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'">
 <title>Mewndo: Talk</title>
-<style>
-  :root { color-scheme: dark; }
-  html, body { margin: 0; background: transparent; font: 14px "Segoe UI", system-ui, sans-serif; color: #e8eaf2; }
-  .box { margin: 6px; background: rgba(22, 24, 32, 0.97); border: 1px solid #7aa2ff; border-radius: 10px; padding: 6px 10px; }
-  input { width: 100%; box-sizing: border-box; font: inherit; color: inherit; background: transparent; border: 0; outline: 0; }
-  #chips { display: flex; gap: 6px; margin-top: 4px; }
-  #chips:empty { display: none; }
-  button { font: 12px "Segoe UI", system-ui, sans-serif; color: inherit; background: #262a38; border: 1px solid #2c3040;
-    border-radius: 6px; padding: 2px 8px; cursor: pointer; }
-</style>
+<link rel="stylesheet" href="design/tokens.css">
+<link rel="stylesheet" href="design/base.css">
+<link rel="stylesheet" href="talk.css">
 </head>
-<body>
+<body class="float">
 <div class="box">
-  <input id="text" placeholder="Tell an agent… (hold your Wispr Flow key and speak, or type)" aria-label="Talk to agents">
-  <div id="chips"></div>
+  <input id="text" placeholder="Hold your Wispr Flow key and speak, or type" aria-label="Talk to your agents">
+  <div id="target" class="target" hidden></div>
 </div>
 <script src="talk.js"></script>
 </body>

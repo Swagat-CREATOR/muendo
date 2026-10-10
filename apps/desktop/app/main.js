@@ -16,6 +16,7 @@ const { createDeskWindows } = require('./desk/windows');
 const { createFocus } = require('./desk/focus');
 const { createDesk } = require('./desk/desk');
 const { createBar } = require('./bar');
+const { place, beside } = require('./dock-place');
 const { DEFAULTS: SHORTCUT_DEFAULTS, pickShortcut } = require('./shortcuts');
 const { createSpeech } = require('./speech');
 const { parseIntent, describe: describeIntent } = require('../engine/voice'); // plain text only, no engine work
@@ -207,12 +208,15 @@ let desk = null;
 let deskWindows = null;
 let rulesOnly = false; // the gateway says today's model budget is out (budget.state)
 
+// The cards and the Talk box open beside the dock, toward the middle of the screen (design spec §11.8 step 5).
+let dockAt = null; // the bar's last onPlaced
+const CARDS_SIZE = { width: 452, height: 600 }; // 420 px cards plus the shadow's room
+const TALK_SIZE = { width: 496, height: 96 }; // the 480 px box, two lines and the route chips
 function placeDeskWindows() {
-  const { workArea } = screen.getPrimaryDisplay();
-  deskWindows.place('cards', { x: workArea.x + workArea.width - 360 - 56, y: workArea.y + 80, width: 360, height: 420 });
-  deskWindows.place('talk', {
-    x: workArea.x + Math.round((workArea.width - 380) / 2), y: workArea.y + workArea.height - 56 - 96, width: 380, height: 56,
-  });
+  if (!deskWindows) return;
+  const at = dockAt ?? { ...place(screen.getPrimaryDisplay(), undefined), workArea: screen.getPrimaryDisplay().workArea };
+  deskWindows.place('cards', beside(at.bounds, at.edge, at.anchor, at.workArea, CARDS_SIZE));
+  deskWindows.place('talk', beside(at.bounds, at.edge, at.anchor, at.workArea, TALK_SIZE, 4));
 }
 
 // Undo on an Inbox card: put the folder back to the save point written when the answer was released (§33.4),
@@ -461,6 +465,10 @@ function startBar() {
     },
     async fullScreen() {
       return process.platform === 'win32' && core?.status().state === 'running' && (await core.request('screen_state')).full_screen === true;
+    },
+    onPlaced(at) {
+      dockAt = at;
+      placeDeskWindows();
     },
     log,
   });

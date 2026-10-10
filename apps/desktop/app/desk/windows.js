@@ -40,10 +40,11 @@ function createDeskWindows({ log, on = {} }) {
     return w;
   }
 
-  // The card stack: 360 px wide, left of the dock. Focusable, but focused only in answer mode.
-  make('cards', { preload: 'cards-preload.js', html: 'cards.html', focusable: true, title: 'Mewndo: Agent Inbox', bounds: { width: 360, height: 420, x: 0, y: 0 } });
-  // The Talk box: one line, above the dock.
-  make('talk', { preload: 'talk-preload.js', html: 'talk.html', focusable: true, title: 'Mewndo: Talk', bounds: { width: 380, height: 56, x: 0, y: 0 } });
+  // The card stack: 420 px cards beside the dock, toward the middle of the screen (main.js placeDeskWindows).
+  // Focusable, but focused only in answer mode.
+  make('cards', { preload: 'cards-preload.js', html: 'cards.html', focusable: true, title: 'Mewndo: Agent Inbox', bounds: { width: 452, height: 600, x: 0, y: 0 } });
+  // The Talk box: a 480 px pill beside the dock, toward the middle of the screen.
+  make('talk', { preload: 'talk-preload.js', html: 'talk.html', focusable: true, title: 'Mewndo: Talk', bounds: { width: 496, height: 96, x: 0, y: 0 } });
   // Lanes: the list of lanes and one terminal view. A normal window, so it can be resized and moved.
   const lanes = new BrowserWindow({
     show: false, width: 900, height: 600, minWidth: 520, minHeight: 320, title: 'Mewndo: lanes', skipTaskbar: false,

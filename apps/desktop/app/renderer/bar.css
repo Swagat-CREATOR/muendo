@@ -1,11 +1,14 @@
-/* The Mewndo bar, styled like the Wispr Flow bar: solid black pills and cards with a hairline edge, white text,
-   round icon buttons, a status dot on the corner of the up-arrow. It sits at the bottom of its transparent window on
-   the docked side; hint, holds, cards and the panel stack above it. Only .hit elements take the mouse. */
-:root { --bg: #000; --edge: rgba(255, 255, 255, .14); --text: #fff; --muted: #b8b8b8; --soft: rgba(255, 255, 255, .1);
-  --green: #3ccf6e; --amber: #f5b83d; --red: #ef4b4b; --grey: #8a8a8a; }
+/* The Mewndo bar (design spec §11.1): the float set whatever the app theme, near-black capsules with a hairline edge
+   and a soft top highlight, milk text, round icon buttons, the living face on the left. It sits on its edge of a
+   transparent window; hint, holds, cards and the panel open toward the middle. Only .hit elements take the mouse. */
+:root { --bg: var(--float-bg); --edge: var(--float-border); --text: var(--float-ink); --muted: var(--float-ink-2);
+  --soft: var(--float-raised); --green: var(--float-done); --amber: var(--float-needs); --red: var(--float-stopped);
+  --grey: #8a8a8a; --lift: var(--float-highlight); }
+/* A transparent window: a dark color-scheme would paint the canvas behind it. */
+:root { color-scheme: normal !important; } /* beats the tokens' system-dark rule */
 html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
 body {
-  position: relative; box-sizing: border-box; font: 14px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  position: relative; box-sizing: border-box; font: 400 14px/1.35 var(--font-ui);
   color: var(--text); transition: opacity 90ms linear;
 }
 
@@ -42,14 +45,14 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 
 /* Resting pill: the face, agent dots, mic, up-arrow. */
 .pill {
-  display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 3px 0 6px; border-radius: 20px;
-  background: var(--bg); border: 1px solid var(--edge); box-shadow: 0 2px 10px rgba(0, 0, 0, .45); cursor: grab;
+  display: flex; align-items: center; gap: 6px; height: 40px; box-sizing: border-box; padding: 0 6px 0 8px; border-radius: 20px;
+  background: var(--lift), var(--bg); border: 1px solid var(--edge); box-shadow: var(--float-shadow); cursor: grab;
 }
 .pill.dragging { cursor: grabbing; }
-.round { width: 34px; height: 34px; border-radius: 50%; color: var(--text); }
-.round:hover:not(:disabled) { background: var(--soft); }
+.round { width: 28px; height: 28px; border-radius: 50%; color: var(--text); background: var(--soft); }
+.round:hover:not(:disabled) { background: #24282C; }
 .round:disabled { color: #666; cursor: default; }
-.round svg { width: 17px; height: 17px; }
+.round svg { width: 15px; height: 15px; }
 /* The living face (design spec §11.9, §11.2): milk cat, dark eyes, the protection status as a 6 px dot at its lower
    right. It is the drag handle, and double-clicking it sends the dock back to bottom right. */
 .face { position: relative; width: 24px; height: 24px; flex: none; color: #EEF1EC; --mew-eye: #121416; }
@@ -67,44 +70,55 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 @media (prefers-reduced-motion: reduce) { .peek .face { animation: none; } }
 .agents { display: flex; gap: 4px; padding: 0 2px; }
 .agents:empty { display: none; }
-.agent { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.agent { width: 8px; height: 8px; border-radius: 50%; background: var(--float-working); }
 .agent.drift { background: var(--amber); }
 .agent.braked { background: var(--red); }
-.pill.open .agent { width: 10px; height: 10px; }
-.text, .ticker { padding: 5px 11px; border-radius: 14px; background: var(--soft); white-space: nowrap; font-size: 13px; }
-.text:hover, .ticker:hover { background: rgba(255, 255, 255, .2); }
-.text.primary { background: #fff; color: #000; font-weight: 600; }
-.text.primary:hover { background: #e6e6e6; }
+.text, .ticker { height: 28px; padding: 0 11px; box-sizing: border-box; border-radius: 10px; background: var(--soft); white-space: nowrap;
+  font: 500 12.5px/26px var(--font-ui); border: 1px solid var(--float-border); }
+.text:hover, .ticker:hover { background: #24282C; }
+.text.primary { background: var(--float-ink); color: #121416; font-weight: 600; }
+.text.primary:hover { background: #fff; }
+#brake { color: var(--red); }
 .ticker { display: flex; gap: 6px; font-variant-numeric: tabular-nums; font-weight: 600; }
-.ticker .del { color: #ff8a8a; } .ticker .mod { color: #f7cf7a; } .ticker .add { color: #7fe0a0; }
-/* Idle: just the face in a small round tab. */
-.pill.dot { width: 32px; height: 32px; padding: 0; gap: 0; justify-content: center; }
-.edge-left .pill.dot, .edge-right .pill.dot { width: 32px; height: 32px; padding: 0; }
-.pill.dot > :not(.protection) { display: none; }
+.ticker .del { color: var(--float-stopped); } .ticker .mod { color: var(--float-ink-2); } .ticker .add { color: var(--float-done); }
+/* Idle: the edge tab (§11.8 "Two resting looks"). Flush against the edge, 20 px thick, no radius on the edge side, one
+   8 px dot per agent; with no agents, one dot in the protection colour. ponytail: no concave SVG fillets yet. */
+.pill.dot { gap: 4px; padding: 0 10px; height: 20px; border-radius: 10px 10px 0 0; border-bottom: 0; box-shadow: none; }
+.pill.dot > :not(.agents) { display: none; }
+.pill.dot .agents { display: flex; padding: 0; }
+.pill.dot:has(.agents:empty)::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--grey); }
+.pill.dot.protected:has(.agents:empty)::before { background: var(--green); }
+.pill.dot.drift:has(.agents:empty)::before { background: var(--amber); }
+.pill.dot.braked:has(.agents:empty)::before { background: var(--red); }
+.edge-bottom .pill.dot { bottom: 0; }
+.edge-top .pill.dot { top: 0; border-radius: 0 0 10px 10px; border-bottom: 1px solid var(--edge); border-top: 0; }
+.edge-left .pill.dot, .edge-right .pill.dot { width: 20px; height: auto; padding: 10px 0; }
+.edge-left .pill.dot { left: 0; border-radius: 0 10px 10px 0; border-bottom: 1px solid var(--edge); border-left: 0; }
+.edge-right .pill.dot { right: 0; border-radius: 10px 0 0 10px; border-bottom: 1px solid var(--edge); border-right: 0; }
 
 /* Hover hint, like Wispr Flow's "Dictate Ctrl + Alt →", with the change ticker and quick actions under it. */
 .hint { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 12px 10px; border-radius: 20px;
-  background: var(--bg); border: 1px solid var(--edge); box-shadow: 0 2px 10px rgba(0, 0, 0, .45); white-space: nowrap; }
+  background: var(--lift), var(--bg); border: 1px solid var(--edge); box-shadow: var(--float-shadow); white-space: nowrap; }
 .hint .actions { display: flex; gap: 6px; }
-.hint b { font-weight: 700; }
+.hint .keycap { margin: 0 2px; }
 .hint .sep { color: #666; margin: 0 8px; }
 
 /* Listening: a waveform replaces the dots while the mic is held. */
 .wave { display: none; gap: 2px; align-items: center; height: 16px; padding: 0 4px; }
-.wave i { width: 3px; height: 6px; border-radius: 2px; background: #fff; animation: wave .6s infinite ease-in-out alternate; }
+.wave i { width: 3px; height: 6px; border-radius: 2px; background: var(--float-done); animation: wave .6s infinite ease-in-out alternate; }
 .wave i:nth-child(2) { animation-delay: .15s; } .wave i:nth-child(3) { animation-delay: .3s; } .wave i:nth-child(4) { animation-delay: .45s; }
 @keyframes wave { to { height: 16px; } }
 .pill.listening .wave { display: flex; }
 .pill.listening .agents { display: none; }
-.pill.listening #mic { background: var(--red); }
+.pill.listening #mic { background: var(--float-done); color: #121416; } /* mint, not red: red means stopped */
 
 /* Messages (drift card, voice questions), like Wispr Flow's: icon, bold title, body, round close button. */
-.card { width: 360px; box-sizing: border-box; padding: 14px 14px 14px 18px; border-radius: 20px; background: var(--bg);
-  border: 1px solid var(--edge); box-shadow: 0 4px 18px rgba(0, 0, 0, .5); }
+.card { width: 360px; box-sizing: border-box; padding: 16px; border-radius: var(--r-card); background: var(--lift), var(--bg);
+  border: 1px solid var(--edge); box-shadow: var(--float-shadow); }
 .card .head { display: flex; align-items: center; gap: 10px; }
 .card .icon { width: 19px; height: 19px; flex: none; }
 .card .icon.warn { color: var(--amber); }
-.card .title { flex: 1; margin: 0; font-weight: 700; }
+.card .title { flex: 1; margin: 0; font: 600 15px/21px var(--font-ui); font-variation-settings: normal; }
 .card .body { margin: 8px 0 0; color: var(--muted); }
 .card .close { flex: none; width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .35); }
 .card .close:hover { background: var(--soft); }
@@ -116,19 +130,19 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 
 /* Hold chips: "Delete 3 files · Codex  0:42  ✓ ✕". */
 .chips { display: flex; flex-direction: column; gap: 6px; align-items: inherit; }
-.chip { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 14px; border-radius: 18px; background: var(--bg);
-  border: 1px solid var(--edge); white-space: nowrap; }
+.chip { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 14px; border-radius: 18px; background: var(--lift), var(--bg);
+  border: 1px solid var(--edge); box-shadow: var(--float-shadow); white-space: nowrap; }
 .chip .time { font-variant-numeric: tabular-nums; color: var(--amber); font-weight: 600; }
 .chip button { width: 28px; height: 28px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .3); }
 .chip .ok:hover { background: #1f7a3f; } .chip .no:hover { background: #a33; }
 
 /* The up-arrow panel (spec §23.8): about 360 x 420, slides up in 150 ms. */
 .box { width: 360px; height: 400px; box-sizing: border-box; display: flex; flex-direction: column; padding: 10px; border-radius: 20px;
-  background: var(--bg); border: 1px solid var(--edge); box-shadow: 0 4px 18px rgba(0, 0, 0, .5); animation: up .15s ease-out; }
+  background: var(--lift), var(--bg); border: 1px solid var(--edge); box-shadow: var(--float-shadow); animation: up .15s ease-out; }
 @keyframes up { from { transform: translateY(12px); opacity: 0; } }
 .tabs { display: flex; gap: 4px; margin-bottom: 8px; padding: 3px; border-radius: 14px; background: #111; align-self: flex-start; }
 .tabs button { padding: 5px 12px; border-radius: 11px; color: var(--muted); font-size: 13px; }
-.tabs button[aria-selected="true"] { background: #fff; color: #000; font-weight: 600; }
+.tabs button[aria-selected="true"] { background: var(--float-raised); color: var(--float-ink); font-weight: 600; }
 .list { flex: 1; overflow-y: auto; }
 .row-item { display: grid; grid-template-columns: 30px 1fr auto; gap: 2px 10px; align-items: center; width: 100%; box-sizing: border-box;
   padding: 7px 8px; border-radius: 12px; }
@@ -152,4 +166,4 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 
 /* The gateway's day budget is out: rules only until midnight UTC (§37.2). Small, not an alarm. */
 .rules-only { font-size: 11px; line-height: 1; padding: 3px 6px; margin: 0 4px; border-radius: 999px;
-  color: #f5b14c; border: 1px solid rgba(245, 177, 76, 0.45); white-space: nowrap; }
+  color: var(--float-needs); border: 1px solid rgba(242, 176, 74, 0.45); white-space: nowrap; }

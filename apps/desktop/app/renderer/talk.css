@@ -1,0 +1,17 @@
+/* The Talk box (design spec §11.4): a black pill, only the text and one small target line. */
+/* A transparent window: a dark color-scheme would paint the canvas behind it. */
+:root { color-scheme: normal !important; } /* beats the tokens' system-dark rule */
+html, body { margin: 0; background: transparent; overflow: hidden; color: var(--float-ink); font: var(--t-body); }
+.box {
+  margin: 8px; box-sizing: border-box; width: 480px; min-height: 48px; padding: 12px 20px; border-radius: 24px;
+  background: var(--float-highlight), var(--float-bg); border: 1px solid var(--float-border); box-shadow: var(--float-shadow);
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+}
+input { font: inherit; color: inherit; background: transparent; border: 0; outline: 0; padding: 0; }
+input::placeholder { color: var(--float-ink-2); }
+.target { display: flex; align-items: center; gap: 6px; font: var(--t-small); color: var(--float-ink-2); }
+.target button { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px;
+  border-radius: 8px; background: var(--float-raised); color: var(--float-ink); }
+.target button:hover { background: #24282C; }
+.target button:focus-visible { outline: 2px solid var(--float-done); }
+.keycap { min-width: 16px; padding: 1px 5px; font-size: 11px; }

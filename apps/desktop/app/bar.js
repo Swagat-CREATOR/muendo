@@ -30,7 +30,8 @@ const FACE = path.join(__dirname, 'assets', 'cat', 'cat-face-live.svg');
 
 // positions: what savePositions last stored; the dock's own spot is positions.dock = { displayId, edge, fraction }.
 // onAction(name, arg?) for the bar's buttons · onVoice(wav Buffer) for the mic · fullScreen() -> Promise<boolean>.
-function createBar({ positions = {}, savePositions, onAction, onVoice, fullScreen, log }) {
+// onPlaced({ bounds, edge, anchor, workArea }) whenever the dock lands somewhere, so the cards and Talk box follow it.
+function createBar({ positions = {}, savePositions, onAction, onVoice, fullScreen, onPlaced = () => {}, log }) {
   let win = null;
   let layout = null; // dock-place.js place(): { bounds, edge, orientation, anchor, saved }
   let state = {};
@@ -86,6 +87,10 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
     near = now;
   }
 
+  function placed() {
+    onPlaced({ ...layout, workArea: screen.getDisplayMatching(layout.bounds).workArea });
+  }
+
   function keepOnTop() {
     if (!alive() || Date.now() - toppedAt < TOP_EVERY_MS) return;
     toppedAt = Date.now();
@@ -121,6 +126,7 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
     });
     win.on('blur', keepOnTop);
     if (!cursorTimer) watchCursor();
+    placed();
   }
 
   // Display added, removed or rescaled, or the taskbar moved: put the dock back where it belongs (§11.8 Memory).
@@ -130,6 +136,7 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
     win.setBounds(layout.bounds);
     applyMouse();
     send();
+    placed();
     toppedAt = 0;
     keepOnTop();
   }
@@ -152,6 +159,7 @@ function createBar({ positions = {}, savePositions, onAction, onVoice, fullScree
         snapping = null;
         if (alive()) win.setBounds(next.bounds); // exact, in case the display moved under the glide
         applyMouse();
+        placed();
         toppedAt = 0;
         keepOnTop();
         return;

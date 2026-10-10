@@ -402,3 +402,24 @@ the pill is a dot pops the face out (scale 0.6 to 1, 180 ms).
 
 **What it can't do:** with reduced motion the cursor isn't fed and the eyes don't move or blink; only the moods change
 their shape. The peek has no "Claude needs you" chip yet. Idle CPU with the eyes following hasn't been measured.
+
+## Floating surfaces restyled (design D3, 10 Oct 2026)
+
+The bar, the Agent Inbox cards and the Talk box use the float set (`design/tokens.css`, `design/base.css`): near-black
+capsules with a hairline edge and a soft top highlight, Figtree, float keycaps, status colours only in rings, words
+and dots. Cards follow §11.3: header with who, position dots, J/K and Esc chips; a status ring with the state in words
+and how long ago; the agent's lines as a bubble; numbered 36 px options; a 40 px reply row (Space, V, Enter); and
+the answered look (chosen option in mint soft with a check, the rest at 40 %, "Answer sent · Esc to take back", a
+2 px mint grace bar). `describe()` now carries `chosen` and `at`, and the view adds the agent's name.
+
+The cards and the Talk box now open beside the dock, toward the middle of the screen, and follow it when it moves
+(`beside()` in `dock-place.js`, `onPlaced` from the bar); before, they were pinned to the primary display's right
+side and bottom centre. When idle the pill becomes the edge tab: flush to the edge, 20 px thick, one dot per agent.
+
+Floating windows set `color-scheme: normal !important`: with Windows in dark mode the tokens' dark scheme applied,
+which can paint the canvas behind a transparent window.
+
+**What it can't do yet:** the capsule stack (Inbox, Agents, Talk and More as separate capsules) and the tab's concave
+fillets; your own last message on a card (the core sends no snippet); a Brake key on cards (the dock's Brake works);
+the Receipt's suggested replies on Done cards; a live target line in the Talk box (it shows only after Enter); the
+§11.6 floating toasts (there is no toast surface yet; Windows notifications are still used).

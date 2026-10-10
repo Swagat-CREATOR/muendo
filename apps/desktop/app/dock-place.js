@@ -88,6 +88,22 @@ function surfaceCentre(bounds, edge, anchor) {
   }[edge];
 }
 
+// Where a window that opens from the dock goes (§11.8 step 5): beside the surface, toward the middle of the screen,
+// `gap` px clear of it, centred on it along the edge and kept inside the work area.
+function beside(bounds, edge, anchor, wa, size, gap = 12) {
+  const c = surfaceCentre(bounds, edge, anchor);
+  const off = ACROSS + gap;
+  const clampX = (x) => Math.round(clamp(x, wa.x + 8, wa.x + wa.width - size.width - 8));
+  const clampY = (y) => Math.round(clamp(y, wa.y + 8, wa.y + wa.height - size.height - 8));
+  const p = {
+    right: { x: c.x - off - size.width, y: c.y - size.height / 2 },
+    left: { x: c.x + off, y: c.y - size.height / 2 },
+    bottom: { x: c.x - size.width / 2, y: c.y - off - size.height },
+    top: { x: c.x - size.width / 2, y: c.y + off },
+  }[edge];
+  return { x: clampX(p.x), y: clampY(p.y), width: size.width, height: size.height };
+}
+
 // After a drop: the edge and position the pointer was released nearest to, on the display under it.
 function drop(display, pointer) {
   const edge = nearestEdge(display.workArea, pointer);
@@ -110,4 +126,4 @@ function snapPath(from, to, { ms = 180, step = 8 } = {}) {
   return out;
 }
 
-module.exports = { CANVAS, CORNER, DEFAULT, EDGES, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath, surfaceCentre };
+module.exports = { CANVAS, CORNER, DEFAULT, EDGES, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath, surfaceCentre, beside };

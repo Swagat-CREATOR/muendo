@@ -69,7 +69,7 @@ function render() {
   $('mic').disabled = !state.voice;
   $('mic').setAttribute('aria-label', state.voice ? 'Hold to talk' : 'Voice commands need Windows');
   if (state.shortcuts) {
-    const keys = (k) => el('b', {}, k.replace(/\+/g, ' + '));
+    const keys = (k) => el('span', {}, ...k.split('+').map((part) => el('span', { className: 'keycap' }, part)));
     $('keys').replaceChildren('Undo ', keys(state.shortcuts.undo), ' →', el('span', { className: 'sep' }, '·'), 'Brief ', keys(state.shortcuts.brief), ' →');
   }
   wake();

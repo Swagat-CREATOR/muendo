@@ -281,3 +281,16 @@ test('E dismisses a card locally without answering the agent', () => {
   assert.strictEqual(cards.get('c1'), null);
   assert.strictEqual(cards.release('c1'), null, 'nothing is sent for a dismissed card');
 });
+
+test('an answered card remembers the option chosen, and taking it back forgets it', () => {
+  const cards = createCards();
+  cards.apply(cardEvent({ id: 'q', kind: 'question', options: ['a', 'b', 'c'] }));
+  cards.startAnswer('q', { choice: 1 });
+  assert.strictEqual(describe(cards.get('q')).chosen, 1);
+  cards.release('q');
+  assert.strictEqual(describe(cards.get('q')).chosen, 1, 'still shown as chosen after it was sent');
+  cards.apply(cardEvent({ id: 'r', kind: 'question', options: ['a'] }));
+  cards.startAnswer('r', { choice: 0 });
+  cards.takeBack('r');
+  assert.strictEqual(describe(cards.get('r')).chosen, null);
+});

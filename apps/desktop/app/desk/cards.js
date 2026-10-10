@@ -104,6 +104,8 @@ function describe(card) {
     thumb: card.thumb ?? null,
     graceMs: card.graceMs,
     state: card.state,
+    chosen: card.chosen ?? null, // the option answered with, for the answered look (design spec §11.3)
+    at: card.at,
     hints,
   };
 }
@@ -155,7 +157,7 @@ function createCards({ now = Date.now } = {}) {
         const card = fromMessage(event.body, existing?.at ?? now());
         // A card the core sends again while its answer waits keeps that answer: the core is the one authority on
         // what the card says, but a re-send must not silently throw away what the user just pressed.
-        if (existing?.state === 'answering') Object.assign(card, { state: 'answering', pending: existing.pending });
+        if (existing?.state === 'answering') Object.assign(card, { state: 'answering', pending: existing.pending, chosen: existing.chosen });
         cards.set(card.id, card);
         keepSelected();
         return card;
@@ -211,6 +213,7 @@ function createCards({ now = Date.now } = {}) {
       if (!card || card.state !== 'open') return null;
       card.state = 'answering';
       card.pending = { card_id: card.id, choice, text, via };
+      card.chosen = choice;
       return { card, graceMs: card.graceMs };
     },
     // Esc during the grace: nothing was sent, so the card simply reopens.
@@ -219,6 +222,7 @@ function createCards({ now = Date.now } = {}) {
       if (!card || card.state !== 'answering') return null;
       card.state = 'open';
       card.pending = null;
+      card.chosen = null;
       return card;
     },
     // The grace bar's animation ended: the answer to send to the core, as an `inbox.answer` body.

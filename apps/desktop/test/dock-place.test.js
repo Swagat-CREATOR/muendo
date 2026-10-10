@@ -1,7 +1,7 @@
 // Where the dock sits (app/dock-place.js, design spec §11.8): any edge, any display, whole pixels, a smooth snap.
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { CANVAS, CORNER, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath, surfaceCentre } = require('../app/dock-place');
+const { CANVAS, CORNER, orientationOf, nearestEdge, fractionAlong, displayFor, place, drop, snapPath, surfaceCentre, beside } = require('../app/dock-place');
 
 // 1920 x 1080 at 100 %, taskbar 48 px at the bottom.
 const D1 = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1032 } };
@@ -93,4 +93,19 @@ test('the surface middle, which the eyes measure "near" from, sits against the e
     assert.strictEqual(gap, 28, edge);
     assert.strictEqual(['left', 'right'].includes(edge) ? c.y : c.x, ['left', 'right'].includes(edge) ? 516 : 960, edge);
   }
+});
+
+test('cards and the Talk box open beside the dock, toward the middle, and stay on screen', () => {
+  const size = { width: 452, height: 600 };
+  const wa = D1.workArea;
+  for (const edge of ['left', 'right', 'top', 'bottom']) {
+    const p = place(D1, { edge, fraction: 0.5 });
+    const b = beside(p.bounds, edge, p.anchor, wa, size);
+    const c = surfaceCentre(p.bounds, edge, p.anchor);
+    assert.ok(inside(b, wa), `${edge}: ${JSON.stringify(b)}`);
+    const towardMiddle = { right: b.x + b.width < c.x, left: b.x > c.x, bottom: b.y + b.height < c.y, top: b.y > c.y }[edge];
+    assert.ok(towardMiddle, `${edge} opens toward the middle`);
+  }
+  const corner = place(D1, { edge: 'right', fraction: 0 });
+  assert.strictEqual(beside(corner.bounds, 'right', corner.anchor, wa, size).y, 8, 'pushed down from the top corner');
 });

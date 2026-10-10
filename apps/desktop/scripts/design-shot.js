@@ -1,7 +1,7 @@
 // Screenshots for the design QA checklist (design spec §0 step 5, §16): renders a page at a given scale and
 // theme and saves a PNG. Run with Electron, not node:
 //   electron scripts/design-shot.js <page.html> <out.png> [scale=1] [theme=light|dark] [width=1180] [height=760]
-//     [--stub=bar|desk|talk --state=<state.json> --channel=bar:state] [--bg=#d9dcd8] [--fixed]
+//     [--stub=bar|desk|talk --state=<state.json> --channel=bar:state] [--bg=#d9dcd8] [--fixed] [--wait=ms]
 // --stub gives the page the bridge it has in the app (design-shot-preload.js) and sends it the state; --fixed keeps
 // the window at exactly width x height (a floating surface's canvas) instead of growing to the page.
 // The scale is a device scale factor, the same thing Windows' 150 % display scaling gives a window.
@@ -36,7 +36,7 @@ app.whenReady().then(async () => {
     const height2 = await win.webContents.executeJavaScript('document.documentElement.scrollHeight');
     win.setContentSize(Number(width), Math.min(Math.max(Number(height), height2), 4000));
   }
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, Number(flag('wait') ?? 300)));
   const image = await win.webContents.capturePage();
   fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
   fs.writeFileSync(out, image.toPNG());

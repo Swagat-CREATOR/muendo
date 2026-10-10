@@ -37,7 +37,7 @@ function createDesk({
   function view() {
     const { cards: top, more } = cards.visible();
     return {
-      cards: top.map(describe),
+      cards: top.map((c) => ({ ...describe(c), agent: agents.get(c.agentId)?.name ?? null })),
       more,
       selectedId: cards.selected()?.id ?? null,
       answerMode,
