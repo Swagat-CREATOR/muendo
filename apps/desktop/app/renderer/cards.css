@@ -18,6 +18,8 @@ button:focus-visible { outline: 2px solid var(--float-done); outline-offset: 2px
 
 /* Header: who, which card of the stack, J/K, Esc. */
 .head { display: flex; align-items: center; gap: 8px; }
+.who .logo { display: inline-block; vertical-align: -3px; }
+.who .logo.initial { width: 18px; height: 18px; font-size: 10px; background: var(--float-raised); color: var(--float-ink); }
 .who { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dots { display: flex; gap: 4px; align-items: center; }
 .dots i { width: 6px; height: 6px; border-radius: 3px; background: rgba(238, 241, 236, 0.25); }
@@ -75,3 +77,4 @@ button:focus-visible { outline: 2px solid var(--float-done); outline-offset: 2px
 @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 
 .more { width: 420px; text-align: center; font: var(--t-small); color: var(--float-ink-2); }
+.who .logo[src$="/cursor.svg"], .who .logo[src$="/notion.svg"], .who .logo[src$="/github.svg"] { filter: invert(0.93); } /* ink logos on the dark float */

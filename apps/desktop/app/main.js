@@ -1051,6 +1051,17 @@ function strList(v, what) {
 
 const handlers = {
   state,
+  // The Agents screen (design spec §8.3): the same list the dock's panel shows, and Brake / Resume per agent.
+  async agentsView() {
+    const [folders, braked] = await Promise.all([call('folders'), call('braked').catch(() => [])]);
+    return (await panelData(folders, new Set((braked ?? []).map((x) => x.agent)))).agents;
+  },
+  async brakeAgent(name) {
+    await call('brake', str(name, 'agent'), { reason: 'you braked it from the Agents screen' });
+  },
+  async resumeAgent(name) {
+    await call('resumeAgent', str(name, 'agent'));
+  },
   async chooseFolders() {
     const r = await dialog.showOpenDialog(win, { title: 'Choose folders to protect', properties: ['openDirectory', 'multiSelections'] });
     return r.canceled ? [] : r.filePaths;

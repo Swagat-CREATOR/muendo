@@ -106,8 +106,13 @@
       <p class="muted">What it can't do yet: show every open card and the answered history in this window.</p>
     </section>
     <section class="screen" data-screen="agents" hidden>
-      <h1 class="display">Agents</h1>
-      <p class="lead">Connect your agents so Mewndo can make save points and check what they do.</p>
+      <div class="tl-head">
+        <h1 class="display">Agents</h1>
+        <a href="#connect" class="button-link" id="ag-connect">Connect agents</a>
+      </div>
+      <div id="ag-list" class="ag-list" role="list"></div>
+      <h2 id="connect" class="ag-section">Connect agents</h2>
+      <p class="lead">Mewndo makes a save point before each turn and checks every command, edit and read (Guard).</p>
       <div class="agents-setup">
         <h2>Claude Code</h2>
         <p class="muted">Exact save points when a session starts, and Guard: Claude Code asks Mewndo before every command, edit or read.</p>
@@ -135,7 +140,8 @@
     </section>
     <section class="screen" data-screen="connections" hidden>
       <h1 class="display">Connections</h1>
-      <p class="lead">Gmail, Drive and Notion accounts can't be connected yet.</p>
+      <p class="lead">Undo what agents do in your accounts, not just your folders.</p>
+      <div id="cx-grid" class="cx-grid"></div>
     </section>
     <section class="screen" data-screen="skills" hidden>
       <h1 class="display">Skills</h1>
@@ -275,6 +281,7 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite" hidden><span id="toast-cat" class="cat" aria-hidden="true" hidden><i></i></span><span id="toast-text"></span></div>
+  <script src="design/logos.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

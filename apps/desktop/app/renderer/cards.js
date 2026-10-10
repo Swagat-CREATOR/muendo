@@ -46,7 +46,7 @@ function cardView(card, index, s) {
   const total = s.cards.length + (s.more ?? 0);
   const dots = el('span', 'dots', ...Array.from({ length: Math.min(total, 6) }, (_, i) => el('i', i === index ? 'on' : '')));
   box.append(el('div', 'head',
-    el('span', 'who', card.agent ?? 'Agent'),
+    el('span', 'who', MewLogos.img(card.agent, 18), ' ', card.agent ?? 'Agent'),
     total > 1 ? dots : null,
     total > 1 ? el('span', 'nav', chip('‹', 'J', key('j')), chip('›', 'K', key('k'))) : null,
     chip('×', 'Esc', key('Escape'))));

@@ -482,3 +482,19 @@ Checked in the real app on a throwaway folder in %TEMP%: an edited file came bac
 
 **What it can't do yet:** rows are save points, not agent turns with their Receipt; there are no change counts per
 row (that needs a diff per row); no Copy summary or Flag; at most 500 rows are drawn (filters narrow it).
+
+## Agents and Connections screens, brand logos (design D8, 10 Oct 2026)
+
+Agents lists every agent Mewndo knows (the same data as the dock's panel): logo, name, what it's doing, a connection
+chip (Hooked, Detected, Not connected, with a tooltip saying what Mewndo can do), status ring and words, and Brake or
+Resume. A row opens to show what the connection means and the agent's latest save points with Undo to here. The hook
+setup is below, under "Connect agents".
+
+Brand logos (Claude, Codex, Cursor, Gemini, Gmail, Google Drive, Notion, GitHub) are bundled in
+`app/assets/logos` (Simple Icons, CC0; LobeHub Icons, MIT; see LICENSE.txt there), only to name what they stand for.
+They appear in Agents, Timeline rows, the Inbox cards' headers, the dock's panel and Connections. Agents without a
+logo get an initial badge. Connections shows Gmail, Google Drive, Notion and GitHub cards that say plainly they
+aren't available yet.
+
+**What it can't do yet:** no Learning / Active switch or agreement score (Guard has one mode); no lane in the agent
+detail (lanes aren't connected to the app yet); no account can be connected.

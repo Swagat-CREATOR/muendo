@@ -571,6 +571,8 @@ function go(name) {
   screen = name;
   for (const s of document.querySelectorAll('.screen')) s.hidden = s.dataset.screen !== name;
   if (name === 'timeline') setTimeout(loadTimeline); // after the script has run: loadTimeline is defined below
+  if (name === 'agents') setTimeout(loadAgents);
+  if (name === 'connections') setTimeout(renderConnections);
   for (const b of document.querySelectorAll('#nav .nav-item')) {
     if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
@@ -712,7 +714,7 @@ function renderTimeline() {
     const title = sp.label || (sp.trigger === 'before-undo' ? 'Save point before an undo' : `${TRIGGERS[sp.trigger] ?? 'Save point'} save point`);
     out.push(h('div', { class: 'tl-row', tabindex: 0 },
       h('span', { class: 'tl-time' }, clock(sp.createdAt)),
-      h('span', { class: `tl-avatar${sp.agent ? '' : ' mewndo'}`, title: who }, sp.agent ? who[0].toUpperCase() : ''),
+      sp.agent ? h('span', { class: 'tl-avatar', title: who }, MewLogos.img(sp.agent, 20)) : h('span', { class: 'tl-avatar mewndo', title: who }),
       h('div', { class: 'tl-what' },
         h('div', { class: 'tl-title' }, title),
         h('div', { class: 'tl-sub' }, [folder.name, agentText(sp) || 'Mewndo', TRIGGERS[sp.trigger]].filter(Boolean).join(' · '))),
@@ -748,6 +750,60 @@ async function seeChanges(sp, folder) {
   go('folders');
   await selectFolder(folder.root);
   await showDiff(sp);
+}
+
+// --- Agents (design spec §8.3): every agent Mewndo knows, how it's connected, what it's doing ------------------
+// What it can't do yet: no Learning / Active switch (Guard has one mode), no agreement score, no lane view here
+// (lanes aren't connected to the app yet); the detail shows this agent's latest save points instead.
+
+const CONNECTION_HELP = {
+  Hooks: 'Hooked: save points before each turn, and Guard checks every command, edit and read.',
+  Detected: 'Seen running, but not hooked: Mewndo keeps versions of your files, without Guard.',
+  'Not connected': 'Not connected. Use Connect agents below.',
+};
+const STATUS_RING = { Working: 'working', Braked: 'stopped', Idle: '', 'Not connected': '' };
+let agentOpen = null;
+const loadAgents = guard(async () => {
+  const [agents] = await Promise.all([api.agentsView(), timeline.length ? null : loadTimeline()]);
+  fill($('ag-list'), ...agents.map((a) => {
+    const open = agentOpen === a.name;
+    const row = h('div', { class: `ag-row${open ? ' open' : ''}`, role: 'listitem' },
+      h('button', { class: 'ag-main', 'aria-expanded': String(open), onclick: () => { agentOpen = open ? null : a.name; loadAgents(); } },
+        h('span', { class: 'ag-logo' }, MewLogos.img(a.name, 28)),
+        h('span', { class: 'ag-who' }, h('span', { class: 'ag-name' }, a.name), h('span', { class: 'ag-now' }, a.now || a.monitoring || '')),
+        h('span', { class: `chip ${a.connection === 'Hooks' ? 'on' : ''}`, title: CONNECTION_HELP[a.connection] ?? '' }, a.connection === 'Hooks' ? 'Hooked' : a.connection),
+        h('span', { class: 'ag-status' }, h('span', { class: `ring ${STATUS_RING[a.status] ?? ''}` }), a.status)),
+      h('span', { class: 'ag-actions' },
+        a.status === 'Braked'
+          ? h('button', { onclick: guard(async () => { await api.resumeAgent(a.name); await loadAgents(); }) }, 'Resume')
+          : a.status === 'Working' ? h('button', { class: 'brake', onclick: guard(async () => { await api.brakeAgent(a.name); await loadAgents(); }) }, 'Brake') : null));
+    if (!open) return row;
+    const recent = timeline.filter((t) => t.sp.agent === a.name).slice(0, 5);
+    return h('div', {}, row, h('div', { class: 'ag-detail' },
+      h('p', {}, CONNECTION_HELP[a.connection] ?? ''),
+      a.monitoring ? h('p', { class: 'muted' }, `Monitoring: ${a.monitoring}`) : null,
+      h('h3', {}, 'Latest save points'),
+      recent.length ? h('ul', { class: 'plain' }, ...recent.map(({ sp, folder }) => h('li', { class: 'ag-sp' },
+        h('span', { class: 'tl-time' }, `${dayHeading(sp.createdAt)}, ${clock(sp.createdAt)}`),
+        h('span', {}, sp.label || `${TRIGGERS[sp.trigger] ?? 'Save point'} save point`), h('span', { class: 'muted' }, folder.name),
+        h('button', { onclick: guard(() => undoToHere(sp, folder)) }, 'Undo to here'))))
+        : h('p', { class: 'muted' }, 'None yet.')));
+  }));
+});
+$('ag-connect').onclick = (e) => { e.preventDefault(); $('connect').scrollIntoView({ behavior: 'smooth' }); };
+
+// --- Connections (design spec §8.5) ----------------------------------------------------------------------------
+// What it can't do yet: no account can be connected; the cards say so instead of offering a button that does nothing.
+const ACCOUNTS = [
+  ['Gmail', 'Undo sends, deletes and label changes an agent makes in your mail.'],
+  ['Google Drive', 'Put back files an agent moved, renamed or deleted in Drive.'],
+  ['Notion', 'Undo page edits and deletes an agent makes in your workspace.'],
+  ['GitHub', 'See and undo pushes, branch deletes and issue changes an agent makes.'],
+];
+function renderConnections() {
+  fill($('cx-grid'), ...ACCOUNTS.map(([name, what]) => h('div', { class: 'cx-card' },
+    h('div', { class: 'cx-head' }, MewLogos.img(name, 32), h('span', { class: 'cx-name' }, name), h('span', { class: 'chip' }, 'Not available yet')),
+    h('p', {}, what))));
 }
 
 // --- Keeping up to date ----------------------------------------------------------------------------------------

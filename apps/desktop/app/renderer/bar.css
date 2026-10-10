@@ -167,3 +167,5 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 /* The gateway's day budget is out: rules only until midnight UTC (§37.2). Small, not an alarm. */
 .rules-only { font-size: 11px; line-height: 1; padding: 3px 6px; margin: 0 4px; border-radius: 999px;
   color: var(--float-needs); border: 1px solid rgba(242, 176, 74, 0.45); white-space: nowrap; }
+.badge .logo.initial { background: none; color: var(--text); font-size: 13px; }
+.badge .logo[src$="/cursor.svg"], .badge .logo[src$="/notion.svg"], .badge .logo[src$="/github.svg"] { filter: invert(0.93); }

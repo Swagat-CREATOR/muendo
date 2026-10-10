@@ -6,6 +6,9 @@ const EVENTS = new Set(['state-changed', 'progress', 'savepoints-changed', 'rest
 
 contextBridge.exposeInMainWorld('mewndo', {
   state: call('state'),
+  agentsView: call('agentsView'),
+  brakeAgent: call('brakeAgent'),
+  resumeAgent: call('resumeAgent'),
   chooseFolders: call('chooseFolders'),
   protect: call('protect'),
   unprotect: call('unprotect'),

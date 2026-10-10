@@ -158,7 +158,7 @@ function renderPanel() {
   if (!p) { $('list').replaceChildren(el('p', { className: 'empty' }, 'Loading…')); return; }
   const rows = tab === 'agents' ? p.agents.map((a) => {
     const row = el('button', { className: 'row-item', title: `${a.name} · ${a.connection}${a.monitoring ? ` · ${a.monitoring}` : ''}` },
-      el('span', { className: 'badge' }, initial(a.name)), el('span', {}, a.name), el('span', { className: `state ${a.status}` }, a.status),
+      el('span', { className: 'badge' }, MewLogos.img(a.name, 18)), el('span', {}, a.name), el('span', { className: `state ${a.status}` }, a.status),
       el('span', { className: 'sub' }, [a.connection, a.monitoring, a.now].filter(Boolean).join(' · ')));
     Object.assign(row.dataset, { action: 'lane', arg: a.name });
     return row;
