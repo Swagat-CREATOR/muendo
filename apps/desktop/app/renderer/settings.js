@@ -197,3 +197,15 @@ $('reset').onclick = async () => {
 };
 
 api.get().then(render);
+
+// The section list (design spec §9): one page at a time, like Wispr's settings.
+function showPage(name) {
+  for (const p of document.querySelectorAll('.set-page')) p.hidden = p.dataset.page !== name;
+  for (const b of document.querySelectorAll('.set-nav-item')) {
+    if (b.dataset.page === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  }
+  document.querySelector('.set-main').scrollTop = 0;
+}
+for (const b of document.querySelectorAll('.set-nav-item')) b.addEventListener('click', () => showPage(b.dataset.page));
+showPage('general');
+api.version().then((v) => { $('version').textContent = `Mewndo ${v}`; }, () => {});

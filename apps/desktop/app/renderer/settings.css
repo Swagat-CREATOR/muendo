@@ -1,0 +1,25 @@
+/* The settings window (design spec §9): Wispr's layout. A section list on the frame grey, one page of cards on white. */
+html, body { height: 100%; }
+body.settings { margin: 0; padding: 0; background: var(--sidebar); color: var(--ink); font: var(--t-body); }
+.set-shell { display: grid; grid-template-columns: 200px 1fr; height: 100vh; }
+.set-side { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; overflow-y: auto; -webkit-app-region: drag; }
+.set-side button { -webkit-app-region: no-drag; }
+.set-head { font: 400 20px/28px var(--font-display); font-variation-settings: var(--display-axes); padding: 4px 12px 12px; }
+.set-nav-item { all: unset; box-sizing: border-box; padding: 7px 12px; border-radius: 10px; border: 1px solid transparent; color: var(--ink-2);
+  font: 500 14px/20px var(--font-ui); cursor: pointer; }
+.set-nav-item:hover { background: var(--surface-2); color: var(--ink); }
+.set-nav-item[aria-current="page"] { background: var(--surface); border-color: var(--border); color: var(--ink); }
+.set-nav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.set-gap { height: 12px; }
+.set-version { margin: auto 12px 0; font: var(--t-small); }
+.set-main { margin: 40px 8px 8px 0; padding: 24px 32px 32px; overflow-y: auto; background: #FFFFFF; border: 1px solid var(--border); border-radius: 16px; }
+.set-note { margin: 0 0 4px; font: var(--t-small); }
+.set-title { font: 400 28px/36px var(--font-display); font-variation-settings: var(--display-axes); margin: 0 0 16px; }
+.set-card { padding: 16px 20px; margin: 0 0 12px; border-radius: 14px; border: 1px solid var(--border); background: var(--surface); }
+.set-card h2 { font: 600 15px/22px var(--font-ui); margin: 0 0 6px; }
+.set-card h3 { font: 600 14px/20px var(--font-ui); margin: 0; }
+.set-card .muted { color: var(--ink-2); opacity: 1; font: var(--t-small); }
+.set-row p { margin: 2px 0 0; }
+.set-card table { font: var(--t-small); }
+.set-card input[type=number] { min-width: 0; width: 90px; }
+.set-card textarea { width: 100%; box-sizing: border-box; }

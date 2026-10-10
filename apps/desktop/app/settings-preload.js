@@ -5,6 +5,7 @@ const call = (name) => (...args) => ipcRenderer.invoke(`settings:${name}`, ...ar
 
 contextBridge.exposeInMainWorld('settings', {
   get: call('getSettings'),
+  version: call('version'),
   suspendShortcuts: call('suspendShortcuts'),
   resumeShortcuts: call('resumeShortcuts'),
   setShortcut: call('setShortcut'),

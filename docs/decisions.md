@@ -498,3 +498,16 @@ aren't available yet.
 
 **What it can't do yet:** no Learning / Active switch or agreement score (Guard has one mode); no lane in the agent
 detail (lanes aren't connected to the app yet); no account can be connected.
+
+## Settings window (design D9, 10 Oct 2026)
+
+Settings is Wispr's layout: 860 x 600 with the same title bar as the main window, a section list on the frame grey
+(General, Protection, Agents, Inbox and Talk, Safety check, Connections, Computer use, Habits, Notifications, then
+Account, Data and privacy, Advanced, Labs, and the version at the bottom) and one page of cards on white. Every control
+that was there before is still there, with the same ids and behaviour: shortcuts and Test and start at sign-in under
+General; protected folders, storage budget and burst alerts under Protection; the agent list and brief safety rules
+under Agents; "let it go ahead if Mewndo can't check in time" under Safety check; the data folder, log and the limits
+page under Data and privacy; the restore engine choice and Reset under Advanced.
+
+Sections for things that don't exist yet (Connections, Computer use, Habits, Notifications, Account, Labs, the Inbox
+keys and grace period, Clef) say so in one line instead of showing controls that do nothing.

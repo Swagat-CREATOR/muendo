@@ -1188,7 +1188,8 @@ let settingsWin = null;
 function openSettings() {
   if (!settingsWin || settingsWin.isDestroyed()) {
     settingsWin = new BrowserWindow({
-      width: 820, height: 860, minWidth: 600, minHeight: 500, show: false, title: 'Mewndo settings', icon: icon(),
+      width: 860, height: 600, minWidth: 720, minHeight: 480, show: false, title: 'Mewndo settings', icon: icon(),
+      titleBarStyle: 'hidden', titleBarOverlay: titleBarOverlay(), // like the main window (design spec §9)
       webPreferences: { preload: path.join(__dirname, 'settings-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     settingsWin.removeMenu();
@@ -1226,6 +1227,7 @@ async function allSettings() {
 
 const settingsHandlers = {
   getSettings: allSettings,
+  version: () => app.getVersion(),
 
   // Typing a new shortcut shouldn't fire the old ones; they come back when capture ends (or Settings closes).
   suspendShortcuts() { unregisterShortcuts(); },

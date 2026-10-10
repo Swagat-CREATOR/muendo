@@ -1,35 +1,61 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
   <title>Mewndo settings</title>
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="design/base.css">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="settings.css">
 </head>
 <body class="settings">
-  <h1>Settings</h1>
-  <p class="muted">Changes apply right away, no restart needed.</p>
-
-  <section>
-    <h2>Keyboard shortcuts</h2>
+  <div class="set-shell">
+    <aside class="set-side">
+      <div class="set-head">Settings</div>
+      <button class="set-nav-item" data-page="general">General</button>
+      <button class="set-nav-item" data-page="protection">Protection</button>
+      <button class="set-nav-item" data-page="agents">Agents</button>
+      <button class="set-nav-item" data-page="inbox">Inbox and Talk</button>
+      <button class="set-nav-item" data-page="safety">Safety check</button>
+      <button class="set-nav-item" data-page="connections">Connections</button>
+      <button class="set-nav-item" data-page="computer">Computer use</button>
+      <button class="set-nav-item" data-page="habits">Habits</button>
+      <button class="set-nav-item" data-page="notifications">Notifications</button>
+      <span class="set-gap"></span>
+      <button class="set-nav-item" data-page="account">Account</button>
+      <button class="set-nav-item" data-page="data">Data and privacy</button>
+      <button class="set-nav-item" data-page="advanced">Advanced</button>
+      <button class="set-nav-item" data-page="labs">Labs</button>
+      <span class="set-gap"></span>
+      <p class="set-version muted" id="version"></p>
+    </aside>
+    <main class="set-main">
+      <p class="muted set-note">Changes apply right away, no restart needed.</p>
+  <div class="set-page" data-page="general" hidden>
+    <h1 class="set-title">General</h1>
+    <section class="set-card">
+      <h2>Keyboard shortcuts</h2>
     <p class="muted">Click a box and press the keys you want. Test checks that the keys really reach Mewndo: another program can
       catch them first even when Windows says they're free.</p>
     <div id="shortcuts"></div>
-  </section>
-
-  <section>
-    <h2>Burst alerts</h2>
-    <p class="muted">Warn me when, within one minute, in one protected folder:</p>
-    <div class="row">
-      <label class="inline"><input id="max-deleted" type="number" min="1" step="1"> or more files are deleted</label>
-      <label class="inline"><input id="max-changed" type="number" min="1" step="1"> or more files change in any way</label>
-      <button id="save-burst">Save</button>
-    </div>
-    <p id="burst-status" role="status"></p>
-  </section>
-
-  <section>
-    <h2>Storage</h2>
+    </section>
+    <section class="set-card">
+      <h2>Start at sign-in</h2>
+    <label id="login-wrap"><input type="checkbox" id="login"> Start Mewndo when I sign in</label>
+    </section>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Theme</h3><p class="muted">Light. A dark main window comes back with a theme choice here later; the dock and cards are always dark.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="protection" hidden>
+    <h1 class="set-title">Protection</h1>
+    <section class="set-card">
+      <h2>Protected folders</h2>
+    <div id="folders"></div>
+    </section>
+    <section class="set-card">
+      <h2>Storage</h2>
     <p id="usage"></p>
     <div class="row">
       <label class="inline">Budget for history: <input id="budget" type="number" min="0.1" step="0.5"> GB</label>
@@ -38,15 +64,22 @@
     <p class="muted">When history passes the budget, the oldest automatic save points are removed first, at the daily cleanup.
       Manual, brief and before-undo save points are kept for each folder's whole retention period.</p>
     <p id="budget-status" role="status"></p>
-  </section>
-
-  <section>
-    <h2>Protected folders</h2>
-    <div id="folders"></div>
-  </section>
-
-  <section>
-    <h2>AI agents</h2>
+    </section>
+    <section class="set-card">
+      <h2>Burst alerts</h2>
+    <p class="muted">Warn me when, within one minute, in one protected folder:</p>
+    <div class="row">
+      <label class="inline"><input id="max-deleted" type="number" min="1" step="1"> or more files are deleted</label>
+      <label class="inline"><input id="max-changed" type="number" min="1" step="1"> or more files change in any way</label>
+      <button id="save-burst">Save</button>
+    </div>
+    <p id="burst-status" role="status"></p>
+    </section>
+  </div>
+  <div class="set-page" data-page="agents" hidden>
+    <h1 class="set-title">Agents</h1>
+    <section class="set-card">
+      <h2>AI agents</h2>
     <p class="muted">A running program counts as an agent when its file name is in "process names", or its path or command line
       contains a text in "command line contains", and nothing in "but not". Separate several with commas.</p>
     <table id="agents">
@@ -58,19 +91,88 @@
       <button id="save-agents" class="primary">Save agents</button>
     </div>
     <p id="agents-status" role="status"></p>
-  </section>
-
-  <section>
-    <h2>Brief safety rules</h2>
+    </section>
+    <section class="set-card">
+      <h2>Brief safety rules</h2>
     <p class="muted">These follow your task under "Safety rules from Mewndo:". <span class="mono">{folder}</span> becomes the folder's full path.</p>
     <textarea id="rules" rows="8"></textarea>
     <div class="row"><button id="save-rules">Save</button></div>
     <p id="rules-status" role="status"></p>
-  </section>
-
-  <section>
-    <h2>General</h2>
-    <label id="login-wrap"><input type="checkbox" id="login"> Start Mewndo when I sign in</label>
+    </section>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Connect Claude Code, Codex or Cursor</h3><p class="muted">Use Agents in the main window: it shows what will be added before anything changes.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="inbox" hidden>
+    <h1 class="set-title">Inbox and Talk</h1>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Grace period</h3><p class="muted">2 seconds: after you answer a card, Esc takes the answer back before it reaches the agent.</p></div></div>
+    </section>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Wispr Flow dictation key</h3><p class="muted">Mewndo only checks whether the key is held, to know you are talking to an agent. It never records audio.</p></div></div>
+    </section>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Keys</h3><p class="muted">Inbox: Ctrl+Shift+F11 · Talk: Ctrl+Shift+F12. They can't be changed yet.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="safety" hidden>
+    <h1 class="set-title">Safety check</h1>
+    <section class="set-card">
+      <h2>If Mewndo can't check in time</h2>
+    <label><input type="checkbox" id="guard-fail-open"> If Mewndo can't check an agent's action in time, let it go ahead
+      (otherwise deletes and other destructive actions are refused until Mewndo can check them)</label>
+    </section>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Clef</h3><p class="muted">Powered by Clef on Cloudflare Workers AI. When the daily limit is used, Mewndo uses its local rules. What it can't do yet: the app doesn't reach Clef yet, so its own rules decide everything for now.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="connections" hidden>
+    <h1 class="set-title">Connections</h1>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Gmail, Google Drive, Notion, GitHub</h3><p class="muted">Accounts can't be connected yet. See Connections in the main window.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="computer" hidden>
+    <h1 class="set-title">Computer use</h1>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Computer use and Show Me</h3><p class="muted">Off, and not available yet. When they come they stay off until you turn them on.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="habits" hidden>
+    <h1 class="set-title">Habits</h1>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Learned rules</h3><p class="muted">None yet. Rules Mewndo learns from your answers will be listed here, each with Remove.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="notifications" hidden>
+    <h1 class="set-title">Notifications</h1>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Sounds and Do not disturb</h3><p class="muted">Not available yet. Cards never make a sound and never take focus.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="account" hidden>
+    <h1 class="set-title">Account</h1>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Invite code and cloud</h3><p class="muted">Offline. The app doesn't connect to a Mewndo account yet; everything stays on this computer.</p></div></div>
+    </section>
+  </div>
+  <div class="set-page" data-page="data" hidden>
+    <h1 class="set-title">Data and privacy</h1>
+    <section class="set-card">
+      <h2>Where your data lives</h2>
+      <p class="muted">Every version of your files, save points and the log stay in Mewndo's data folder on this computer. Nothing is uploaded.</p>
+    <div class="row">
+      <button id="open-data">Open Mewndo's data folder</button>
+      <button id="open-log">Open the log</button>
+      <button id="open-limits">What Mewndo can and can't undo</button>
+      <span id="data-dir" class="muted mono"></span>
+    </div>
+    </section>
+  </div>
+  <div class="set-page" data-page="advanced" hidden>
+    <h1 class="set-title">Advanced</h1>
+    <section class="set-card">
+      <h2>Restore engine</h2>
     <label>Restore engine
       <select id="engine">
         <option value="rust">Rust core (fast; passes every v0 test)</option>
@@ -79,22 +181,22 @@
       </select>
     </label>
     <p class="muted">Changing it restarts protection. Scanning and watching still run in v0 either way.</p>
-    <label><input type="checkbox" id="guard-fail-open"> If Mewndo can't check an agent's action in time, let it go ahead
-      (otherwise deletes and other destructive actions are refused until Mewndo can check them)</label>
-    <div class="row">
-      <button id="open-data">Open Mewndo's data folder</button>
-      <button id="open-log">Open the log</button>
-      <button id="open-limits">What Mewndo can and can't undo</button>
-      <span id="data-dir" class="muted mono"></span>
-    </div>
-  </section>
-
-  <section>
-    <h2>Reset</h2>
+    </section>
+    <section class="set-card">
+      <h2>Reset</h2>
     <p class="muted">Puts every setting on this page back to how Mewndo comes. Your protected folders and their history stay.</p>
     <button id="reset" class="danger">Reset all settings to the defaults…</button>
     <p id="reset-status" role="status"></p>
-  </section>
+    </section>
+  </div>
+  <div class="set-page" data-page="labs" hidden>
+    <h1 class="set-title">Labs</h1>
+    <section class="set-card">
+      <div class="set-row"><div><h3>Nothing here yet</h3><p class="muted">Experiments will show up here, all off until you turn them on.</p></div></div>
+    </section>
+  </div>
+    </main>
+  </div>
 
   <dialog id="reset-dialog">
     <form method="dialog">
