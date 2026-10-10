@@ -52,4 +52,7 @@
 
 // The modules below arrive with U3 to U6 and U8; each is declared here when it exists, so the workspace keeps
 // building in between.
+pub mod classify;
+pub mod driver;
+pub mod proxy;
 pub mod vendor;
