@@ -10,6 +10,9 @@ publish.workspace = true
 [dependencies]
 # --- already in [workspace.dependencies] at these versions, so asked for by name ------------------------------
 mewndo-proto.workspace = true
+# The desk pipe's location and connect (core.json), shared with the hook forwarder rather than written twice.
+mewndo-hook.workspace = true
+ulid.workspace = true                                   # the proxy's cua-driver session label
 mewndo-router.workspace = true
 mewndo-inbox.workspace = true
 serde.workspace = true

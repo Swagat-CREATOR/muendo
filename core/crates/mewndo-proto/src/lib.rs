@@ -354,6 +354,9 @@ pub struct ComputerAction {
     pub tool: String,
     pub args_redacted: Value,
     pub point: Option<Point>,
+    /// Which agent the proxy was started for (`mewndo-core mcp-computer --agent <name>`), for the card's title.
+    #[serde(default)]
+    pub agent: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -619,7 +622,14 @@ mod tests {
             tool: "click".into(),
             args_redacted: json!({"x": 1}),
             point: Some(p),
+            agent: "claude".into(),
         });
+        // A proxy from before `agent` existed still parses.
+        let old: ComputerAction = serde_json::from_value(
+            json!({"session": "s", "tool": "click", "args_redacted": {}, "point": null}),
+        )
+        .unwrap();
+        assert_eq!(old.agent, "");
         check(ComputerVerdict {
             verdict: Verdict::Deny,
             reason: Some("private window".into()),

@@ -12,6 +12,7 @@
 mod agents;
 mod clef_gateway;
 mod cloud_link;
+mod computer;
 mod decide;
 mod desk;
 mod desk_agents;
@@ -47,10 +48,13 @@ struct Args {
     data: Option<PathBuf>,
     /// The user's rules.toml (§34.9 R1): read at start, and where an accepted Habit card is written.
     rules: Option<PathBuf>,
+    /// Guarded computer use (§36): off unless the app passes `--computer-use`.
+    computer_use: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let (mut socket, mut log_dir, mut desk, mut data, mut rules) = (None, None, None, None, None);
+    let mut computer_use = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -59,6 +63,7 @@ fn parse_args() -> Result<Args, String> {
             "--desk" => desk = args.next().map(PathBuf::from),
             "--data" => data = args.next().map(PathBuf::from),
             "--rules" => rules = args.next().map(PathBuf::from),
+            "--computer-use" => computer_use = true,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -69,9 +74,10 @@ fn parse_args() -> Result<Args, String> {
             desk,
             data,
             rules,
+            computer_use,
         }),
         _ => Err(
-            "usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder> [--desk <folder>] [--data <v0 data folder>] [--rules <rules.toml>]"
+            "usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder> [--desk <folder>] [--data <v0 data folder>] [--rules <rules.toml>] [--computer-use]"
                 .into(),
         ),
     }
@@ -129,9 +135,53 @@ fn run_mcp() -> ExitCode {
     }
 }
 
+// `mewndo-core mcp-computer [--agent <name>]`: guarded computer use for one agent (§36.2, mewndo-computer). The
+// agent starts it as an MCP server; every call it makes is checked by the running core, which refuses all of them
+// unless the app started it with --computer-use.
+fn run_mcp_computer() -> ExitCode {
+    let mut args = std::env::args().skip(2);
+    let mut agent = String::from("agent");
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--agent" => agent = args.next().unwrap_or(agent),
+            other => {
+                eprintln!("mewndo-core mcp-computer: unknown argument {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let driver =
+        mewndo_computer::vendor::vendor_dir().map(|d| mewndo_computer::vendor::driver_exe(&d));
+    let Some(driver) = driver else {
+        eprintln!("mewndo-core mcp-computer: no folder for cua-driver (LOCALAPPDATA is not set)");
+        return ExitCode::FAILURE;
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("mewndo-core mcp-computer: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let desk = mewndo_computer::link::desk_dir();
+    match runtime.block_on(mewndo_computer::run(driver, desk, agent)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("mewndo-core mcp-computer: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return run_mcp();
+    }
+    if std::env::args().nth(1).as_deref() == Some("mcp-computer") {
+        return run_mcp_computer();
     }
     let args = match parse_args() {
         Ok(args) => args,
@@ -172,7 +222,14 @@ fn main() -> ExitCode {
         .build()
         .expect("tokio runtime");
     let data = args.data.unwrap_or_else(default_data_dir);
-    match runtime.block_on(serve(&args.socket, desk, data, args.rules, log.clone())) {
+    match runtime.block_on(serve(
+        &args.socket,
+        desk,
+        data,
+        args.rules,
+        args.computer_use,
+        log.clone(),
+    )) {
         Ok(()) => {
             log.info("mewndo-core stopped");
             ExitCode::SUCCESS
@@ -190,6 +247,7 @@ async fn serve(
     desk: Option<desk::Instance>,
     data: PathBuf,
     rules: Option<PathBuf>,
+    computer_use: bool,
     log: Arc<Log>,
 ) -> std::io::Result<()> {
     let info = Arc::new(Info::new());
@@ -202,8 +260,16 @@ async fn serve(
         let _ = parent_gone.send(true);
     });
 
-    let desk =
-        desk.map(|d| tokio::spawn(desk::serve(d, data, rules, log.clone(), stopped.clone())));
+    let desk = desk.map(|d| {
+        tokio::spawn(desk::serve(
+            d,
+            data,
+            rules,
+            computer_use,
+            log.clone(),
+            stopped.clone(),
+        ))
+    });
     let result = listen(address, &log, info, stop.clone(), stopped).await;
     let _ = stop.send(true);
     if let Some(desk) = desk {

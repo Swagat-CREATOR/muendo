@@ -54,5 +54,46 @@
 // building in between.
 pub mod classify;
 pub mod driver;
+pub mod link;
 pub mod proxy;
+pub mod redact;
 pub mod vendor;
+
+use std::path::PathBuf;
+
+/// `mewndo-core mcp-computer --agent <name>`: the guarded proxy on stdio, for one agent, until it disconnects.
+///
+/// `driver_exe` is the pinned cua-driver (vendor.rs); `desk_dir` holds the running core's `core.json`. Whether
+/// computer use is switched on is the core's answer to every call, not this process's: with it off, or with no
+/// core, every call is refused (link.rs).
+pub async fn run(
+    driver_exe: PathBuf,
+    desk_dir: Option<PathBuf>,
+    agent: String,
+) -> Result<(), String> {
+    use rmcp::ServiceExt;
+    if !driver_exe.is_file() {
+        return Err(format!(
+            "cua-driver {} is not installed at {} (the installer puts the verified release there)",
+            vendor::VERSION,
+            driver_exe.display()
+        ));
+    }
+    let id = ulid::Ulid::new().to_string().to_lowercase();
+    let session = format!("mewndo-{agent}-{}", &id[id.len() - 8..]);
+    let gate = link::CoreGate {
+        desk_dir,
+        agent,
+        wait: link::ANSWER_WAIT,
+    };
+    let driver = driver::McpDriver::start(&driver_exe).await?;
+    let proxy = proxy::Proxy::new(driver, gate, session);
+    proxy
+        .serve(rmcp::transport::stdio())
+        .await
+        .map_err(|e| format!("the agent did not complete MCP initialize: {e}"))?
+        .waiting()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}

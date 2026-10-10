@@ -757,6 +757,7 @@ name = "mewndo-computer"
 version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
+ "mewndo-hook",
  "mewndo-inbox",
  "mewndo-proto",
  "mewndo-router",
@@ -765,6 +766,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "ulid",
  "ureq",
  "windows-sys",
 ]

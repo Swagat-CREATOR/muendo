@@ -12,9 +12,9 @@ use crate::desk_lanes::DeskLanes;
 use crate::log::Log;
 use crate::writer::{self, Writer};
 use mewndo_proto::{
-    self as proto, Body, Envelope, ErrorBody, Frame, HEADER, Hello, HookRequest, InboxAnswer,
-    InboxUndo, LaneAttach, LaneBrake, LaneClose, LaneOpen, LaneReply, LaneResize, Ping, Pong, Role,
-    RouteRequest, VERSION,
+    self as proto, Body, ComputerAction, Envelope, ErrorBody, Frame, HEADER, Hello, HookRequest,
+    InboxAnswer, InboxUndo, LaneAttach, LaneBrake, LaneClose, LaneOpen, LaneReply, LaneResize,
+    Ping, Pong, Role, RouteRequest, VERSION,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -137,10 +137,14 @@ pub async fn serve(
     instance: Instance,
     data_dir: PathBuf,
     rules_file: Option<PathBuf>,
+    computer_use: bool,
     log: Arc<Log>,
     stopped: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let desk = Arc::new(Desk::new(&instance.dir, data_dir, rules_file, log.clone()));
+    if computer_use {
+        desk.agents.computer().enable();
+    }
     // ponytail: 32 random bits from a ULID (rand's CSPRNG); the name only has to be unguessable before core.json
     // is written, and the pipe refuses everyone but this user anyway.
     let tag = format!("{:08x}", ulid::Ulid::new().random() as u32);
@@ -379,6 +383,14 @@ async fn respond(env: Envelope, role: Role, desk: Arc<Desk>) -> Option<Arc<Vec<u
         },
         (RouteRequest::TYPE, Role::App) => match env.open::<RouteRequest>() {
             Ok(req) => Some(reply(&env.id, &desk.agents.route(&req.text))),
+            Err(e) => refuse(e.to_string()),
+        },
+        // Guarded computer use (§36.6 U5): only a mewndo-computer proxy asks, and it always gets a verdict.
+        (ComputerAction::TYPE, Role::Computer) => match env.open::<ComputerAction>() {
+            Ok(action) => Some(reply(
+                &env.id,
+                &desk.agents.computer().decide(&action).await,
+            )),
             Err(e) => refuse(e.to_string()),
         },
         (LaneOpen::TYPE, Role::App) => match env.open::<LaneOpen>() {
@@ -958,6 +970,42 @@ mod tests {
         assert!(d.lanes.all().is_empty());
         send(&mut c, "c2", &LaneClose { lane_id: id }).await;
         let (_, _) = until(&mut c, |f, _| json(f, "error")).await;
+    }
+
+    #[tokio::test]
+    async fn a_computer_proxy_gets_a_verdict_and_computer_use_is_off_by_default() {
+        let d = desk("computer");
+        let action = mewndo_proto::ComputerAction {
+            session: "mewndo-claude-1".into(),
+            tool: "get_desktop_state".into(),
+            args_redacted: serde_json::json!({}),
+            point: None,
+            agent: "claude".into(),
+        };
+        let mut c = connect(&d, Role::Computer).await;
+        send(&mut c, "a", &action).await;
+        let back = recv(&mut c).await;
+        assert_eq!(
+            (back.id.as_str(), back.kind.as_str()),
+            ("a", "computer.verdict")
+        );
+        let verdict: mewndo_proto::ComputerVerdict = back.open().unwrap();
+        assert_eq!(verdict.verdict, mewndo_proto::Verdict::Deny);
+        assert_eq!(verdict.reason.as_deref(), Some(crate::computer::OFF));
+
+        d.agents.computer().enable();
+        send(&mut c, "b", &action).await;
+        let verdict: mewndo_proto::ComputerVerdict = recv(&mut c).await.open().unwrap();
+        assert_eq!(
+            verdict.verdict,
+            mewndo_proto::Verdict::Allow,
+            "a read, with computer use on"
+        );
+
+        // Only a computer connection may ask.
+        let mut app = connect(&d, Role::App).await;
+        send(&mut app, "x", &action).await;
+        assert_eq!(recv(&mut app).await.kind, "error");
     }
 
     #[tokio::test]

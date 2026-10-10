@@ -1,0 +1,404 @@
+// Guarded computer use, the core's half (spec §36.4, §36.6 U5): the answer to every `computer.action` a
+// mewndo-computer proxy sends before it lets cua-driver touch the desktop.
+//
+//   computer use off (the default)    -> deny "computer use is off"
+//   the user took over (U6)           -> deny until they choose Resume
+//   a read (classify.rs)              -> allow, no card
+//   an act                            -> the Router's rules (a private window, a "Send" button), then a card,
+//                                        and the user's answer is the verdict
+//
+// Every act asks the user. The Router alone never allows one: it sees the tool and its redacted arguments, not
+// what is under the pointer, because the UI Automation lookup of §36.6 U5.3 is not built. A rule can still deny
+// outright, and a habit (three identical "allow"s, §34.7) is offered like any other.
+//
+// What it can't do (CLAUDE.md rule 5): no screenshot crop on the card (U5.5) and no element name, so the card
+// says "click at 412, 230", not "click Send in Outlook"; and typed text is shown as its length only (redact.rs
+// in mewndo-computer), because nothing here can tell a password field from any other.
+use crate::log::Log;
+use mewndo_computer::classify::{Class, classify};
+use mewndo_inbox::{Answer, Card, Inbox, Opt, PermissionFacts};
+use mewndo_proto::{ComputerAction, ComputerVerdict, Verdict};
+use mewndo_router::{GuardInput, Mode, Router};
+use serde_json::{Value, json};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+/// How long a computer-use card waits for the user. The proxy waits a little longer (link.rs, 290 s), so it is the
+/// card that expires first and the user is never left answering a question nobody is waiting for.
+pub const CARD_WAIT: Duration = Duration::from_secs(280);
+
+pub const OFF: &str = "computer use is off. The user can switch it on in Mewndo's settings.";
+
+pub struct ComputerGate {
+    enabled: AtomicBool,
+    router: Arc<Router>,
+    inbox: Inbox,
+    log: Arc<Log>,
+    wait: Duration,
+}
+
+fn allow() -> ComputerVerdict {
+    ComputerVerdict {
+        verdict: Verdict::Allow,
+        reason: None,
+    }
+}
+
+fn deny(reason: impl Into<String>) -> ComputerVerdict {
+    ComputerVerdict {
+        verdict: Verdict::Deny,
+        reason: Some(reason.into()),
+    }
+}
+
+impl ComputerGate {
+    pub fn new(router: Arc<Router>, inbox: Inbox, log: Arc<Log>) -> ComputerGate {
+        ComputerGate {
+            enabled: AtomicBool::new(false),
+            router,
+            inbox,
+            log,
+            wait: CARD_WAIT,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn waiting(mut self, wait: Duration) -> ComputerGate {
+        self.wait = wait;
+        self
+    }
+
+    /// `--computer-use`: the app passes it only when the user has switched computer use on. Off by default.
+    pub fn enable(&self) {
+        self.enabled.store(true, Ordering::SeqCst);
+        self.log.info("computer use is on");
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+    }
+
+    pub async fn decide(&self, action: &ComputerAction) -> ComputerVerdict {
+        if !self.enabled() {
+            return deny(OFF);
+        }
+        let verdict = match classify(&action.tool) {
+            Class::Read => allow(),
+            Class::Hidden => deny(format!("{} is Mewndo's own setting", action.tool)),
+            Class::Act => self.act(action).await,
+        };
+        // What the agent did, never what it typed: args_redacted is already redacted by the proxy.
+        self.log.info(&format!(
+            "computer: {} {} -> {:?}{}",
+            agent_name(action),
+            what(action),
+            verdict.verdict,
+            verdict
+                .reason
+                .as_deref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        ));
+        verdict
+    }
+
+    async fn act(&self, action: &ComputerAction) -> ComputerVerdict {
+        let what = what(action);
+        let agent = agent_name(action);
+        let guarded = self.router.guard(&GuardInput {
+            agent_kind: agent.clone(),
+            tool: "computer".into(),
+            input: json!({ "action": action.tool, "name": what }),
+            cwd: PathBuf::new(),
+            brief: String::new(),
+            project: "desktop".into(),
+            recent: Vec::new(),
+            mode: Mode::Shadow,
+        });
+        if matches!(
+            guarded.decision.verdict,
+            mewndo_router::Verdict::Deny | mewndo_router::Verdict::Brake
+        ) {
+            return deny(guarded.decision.reason);
+        }
+        let mut card = Card::permission(
+            format!("computer:{}", action.session),
+            format!("{} wants to {what}", title_case(&agent)),
+            "Computer use. Mewndo can't see what is under the pointer yet,\nso look at the app before you allow it.",
+            crate::agents::risk_of(&guarded).max(3),
+            PermissionFacts {
+                agent_kind: agent,
+                project: "desktop".into(),
+                action_sig: guarded.sig,
+                command_norm: guarded.action.command_norm.clone(),
+            },
+        );
+        card.deadline = Some(self.wait);
+        let options = card.options.clone();
+        let (_, answer) = self.inbox.create(card).await;
+        match tokio::time::timeout(self.wait, answer).await {
+            Ok(Ok(answer)) => match verdict_of(&options, &answer) {
+                Some(v) if v.allows() => allow(),
+                Some(_) => deny(said_no(&answer)),
+                None => deny("the user did not allow it"),
+            },
+            Ok(Err(_)) | Err(_) => deny("nobody answered in time"),
+        }
+    }
+}
+
+fn verdict_of(options: &[Opt], answer: &Answer) -> Option<mewndo_router::Verdict> {
+    options.get(answer.choice?).and_then(|o| o.answer)
+}
+
+fn said_no(answer: &Answer) -> String {
+    match answer
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        Some(reason) => format!("the user said no: {reason}"),
+        None => "the user said no".into(),
+    }
+}
+
+fn agent_name(action: &ComputerAction) -> String {
+    if action.agent.trim().is_empty() {
+        "an agent".into()
+    } else {
+        action.agent.trim().to_string()
+    }
+}
+
+fn title_case(s: &str) -> String {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The card's words for one act: "click at 412, 230", "type <12 characters>", "press Enter".
+pub fn what(action: &ComputerAction) -> String {
+    let args = &action.args_redacted;
+    let s = |k: &str| args.get(k).and_then(Value::as_str);
+    let at = action
+        .point
+        .map(|p| format!(" at {}, {}", p.x, p.y))
+        .unwrap_or_default();
+    match action.tool.as_str() {
+        "click" => {
+            let how = match (s("button"), args.get("count").and_then(Value::as_u64)) {
+                (Some("right"), _) => "right-click",
+                (_, Some(2)) => "double-click",
+                _ => "click",
+            };
+            match (at.is_empty(), s("element_token")) {
+                (true, Some(_)) => format!("{how} an element it picked"),
+                _ => format!("{how}{at}"),
+            }
+        }
+        "type_text" => format!("type {}", s("text").unwrap_or("text")),
+        "press_key" => format!("press {}", s("key").unwrap_or("a key")),
+        "hotkey" => {
+            let keys: Vec<&str> = args
+                .get("keys")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            format!(
+                "press {}",
+                if keys.is_empty() {
+                    "a shortcut".into()
+                } else {
+                    keys.join("+")
+                }
+            )
+        }
+        "scroll" => format!("scroll{at}"),
+        "drag" => "drag the pointer".into(),
+        "move_cursor" => format!("move the pointer{at}"),
+        "clipboard_read" => "read the clipboard".into(),
+        "clipboard_write" => format!("put {} on the clipboard", s("text").unwrap_or("text")),
+        "invoke_menu" => {
+            let path: Vec<&str> = args
+                .get("path")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            format!("choose {} from a menu", path.join(" > "))
+        }
+        "set_window_frame" => "move or resize a window".into(),
+        other => other.replace('_', " "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mewndo_inbox::{Config, Deps, Event};
+    use mewndo_proto::Point;
+
+    fn gate(name: &str) -> (ComputerGate, Inbox) {
+        let d = std::env::temp_dir().join(format!(
+            "mewndo-computer-gate-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        let log = Arc::new(Log::new(&d.join("logs")));
+        let router = Arc::new(Router::default());
+        let inbox = Inbox::start(
+            Config {
+                grace: Duration::ZERO,
+                ..Config::default()
+            },
+            Deps::default(),
+        );
+        (ComputerGate::new(router, inbox.clone(), log), inbox)
+    }
+
+    fn act(tool: &str, args: Value, point: Option<Point>) -> ComputerAction {
+        ComputerAction {
+            session: "mewndo-claude-1".into(),
+            tool: tool.into(),
+            args_redacted: args,
+            point,
+            agent: "claude".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn off_by_default_and_reads_need_no_card() {
+        let (gate, _) = gate("off");
+        let read = act("get_desktop_state", json!({}), None);
+        assert_eq!(gate.decide(&read).await, deny(OFF), "off: not even a look");
+        gate.enable();
+        assert_eq!(gate.decide(&read).await, allow());
+        assert_eq!(
+            gate.decide(&act("set_agent_cursor_enabled", json!({}), None))
+                .await
+                .verdict,
+            Verdict::Deny
+        );
+    }
+
+    #[tokio::test]
+    async fn an_act_is_a_card_and_the_users_answer_is_the_verdict() {
+        let (gate, inbox) = gate("card");
+        gate.enable();
+        let gate = Arc::new(gate);
+        let mut events = inbox.subscribe();
+        let ask = |g: Arc<ComputerGate>| {
+            tokio::spawn(async move {
+                g.decide(&act("type_text", json!({"text": "<12 characters>"}), None))
+                    .await
+            })
+        };
+
+        for (choice, text, want) in [
+            (Some(0), None, allow()),
+            (Some(2), None, deny("the user said no")),
+            (
+                Some(2),
+                Some("wrong window"),
+                deny("the user said no: wrong window"),
+            ),
+        ] {
+            let waiting = ask(gate.clone());
+            let card = loop {
+                if let Event::Card(card) = events.recv().await.unwrap() {
+                    break card;
+                }
+            };
+            assert_eq!(card.title, "Claude wants to type <12 characters>");
+            assert_eq!(
+                card.options[..3],
+                ["Allow once", "Always allow here", "Deny"]
+            );
+            inbox
+                .answer(
+                    card.id.parse().unwrap(),
+                    Answer {
+                        card_id: card.id.clone(),
+                        choice,
+                        text: text.map(str::to_string),
+                        via: mewndo_proto::Via::Key,
+                    },
+                )
+                .await;
+            assert_eq!(waiting.await.unwrap(), want);
+        }
+    }
+
+    #[tokio::test]
+    async fn nobody_answering_is_a_refusal() {
+        let (gate, _) = gate("timeout");
+        let gate = gate.waiting(Duration::from_millis(50));
+        gate.enable();
+        assert_eq!(
+            gate.decide(&act(
+                "click",
+                json!({"x": 1, "y": 2}),
+                Some(Point { x: 1, y: 2 })
+            ))
+            .await,
+            deny("nobody answered in time")
+        );
+    }
+
+    #[test]
+    fn the_cards_words() {
+        let p = Some(Point { x: 412, y: 230 });
+        assert_eq!(
+            what(&act("click", json!({"x": 412, "y": 230}), p)),
+            "click at 412, 230"
+        );
+        assert_eq!(
+            what(&act("click", json!({"button": "right"}), p)),
+            "right-click at 412, 230"
+        );
+        assert_eq!(
+            what(&act("click", json!({"count": 2}), p)),
+            "double-click at 412, 230"
+        );
+        assert_eq!(
+            what(&act(
+                "click",
+                json!({"element_token": "s0000002a:22"}),
+                None
+            )),
+            "click an element it picked"
+        );
+        assert_eq!(
+            what(&act("press_key", json!({"key": "Enter"}), None)),
+            "press Enter"
+        );
+        assert_eq!(
+            what(&act(
+                "hotkey",
+                json!({"keys": ["ctrl", "<1 character>"]}),
+                None
+            )),
+            "press ctrl+<1 character>"
+        );
+        assert_eq!(
+            what(&act(
+                "invoke_menu",
+                json!({"path": ["File", "Save As"]}),
+                None
+            )),
+            "choose File > Save As from a menu"
+        );
+        assert_eq!(
+            what(&act("escalate_session", json!({}), None)),
+            "escalate session"
+        );
+    }
+}

@@ -27,6 +27,7 @@ mewndo-inbox = { path = "crates/mewndo-inbox" }
 mewndo-pty = { path = "crates/mewndo-pty" }
 mewndo-computer = { path = "crates/mewndo-computer" }
 mewndo-overlay = { path = "crates/mewndo-overlay" }
+mewndo-hook = { path = "crates/mewndo-hook" }
 
 # --- shared by more than one crate, so pinned once here (§32.5 rule 4) -------------------------------------------
 # These four arrived with mewndo-router and mewndo-trace, which had to pin them locally while another session held
