@@ -11,6 +11,8 @@ export { StateDO, HubDO }
 
 const stubAi = {
   async run(_model, input) {
+    // Whisper (POST /v1/transcribe): a fixed transcript, not real recognition.
+    if (Array.isArray(input.audio)) return { text: ' stub transcript ', word_count: 2 }
     const user = input.messages.find((m) => m.role === 'user')
     const req = JSON.parse(user.content)
     const answers = {}

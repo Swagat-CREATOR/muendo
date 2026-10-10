@@ -18,7 +18,8 @@
 //   devices_per_code    how many devices one judge code may be redeemed on
 //   max_codes           how many judge codes may be live at once (what the budget is sized for)
 //   low_budget_share    under this share of total_cap left, triage, receipt and showme calls
-//                       use rules only and voice falls back to keyword matching
+//                       use rules only, voice falls back to keyword matching, and transcribe to
+//                       the PC's own offline recognizer
 //   guard_until_used    Guard keeps the model until this share of total_cap is used
 const DEFAULT_SETTINGS = Object.freeze({
   total_cap: 9000,
@@ -30,6 +31,13 @@ const DEFAULT_SETTINGS = Object.freeze({
   guard_until_used: 0.95,
 })
 const NEURONS_PER_MTOK = 8182 // clef-flash, per 1M input tokens (§37.2)
+// @cf/openai/whisper, from Cloudflare's pricing page (workers-ai/platform/pricing.mdx, read 10 Oct 2026):
+// $0.0005 and 41.14 neurons per audio minute.
+const NEURONS_PER_AUDIO_MINUTE = 41.14
+// Speech for voice commands and dictation is seconds long. 30 s also keeps the byte-to-array conversion the
+// Workers AI binding needs well inside the free plan's CPU limit (unmeasured until deployed: docs/decisions.md).
+const MAX_AUDIO_SECONDS = 30
+const MAX_AUDIO_BYTES = 2 * 1024 * 1024
 
 // Merges stored overrides over the defaults, refusing anything that would make the
 // budget meaningless rather than clamping it into something nobody asked for.
@@ -61,7 +69,11 @@ const KINDS = {
   receipt: { deadline: 3000, low: 'rules' },
   // §34.8 gives showme no deadline, so it borrows receipt's; it is as deferrable as receipts.
   showme: { deadline: 3000, low: 'rules' },
+  // Speech to text (POST /v1/transcribe). Below Guard: when the day runs low it gives way, and the PC's offline
+  // recognizer takes over. Whisper on a few seconds of audio needs more time than a decision.
+  transcribe: { deadline: 8000, low: 'offline' },
 }
+const LOW_REASON = { keywords: 'budget_low_keywords', rules: 'budget_low_rules', offline: 'budget_low_offline' }
 const DEFAULT_KIND = 'guard' // the hook path: the tightest deadline, never the loosest
 
 const CACHE_SECONDS = 300 // §34.8: same brief hash + action signature for 5 minutes
@@ -135,6 +147,22 @@ function utcDay(ms) {
   return new Date(ms).toISOString().slice(0, 10)
 }
 
+// The length of a WAV recording in seconds, from its own header (RIFF/WAVE, byte rate at offset 28). Throws a
+// 400 for anything that is not a WAV, so a guess never reaches the model or the budget.
+function wavSeconds(bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  const text = (at) => String.fromCharCode(...b.subarray(at, at + 4))
+  if (b.length < 44 || text(0) !== 'RIFF' || text(8) !== 'WAVE') throw { status: 400, message: 'audio must be a WAV file' }
+  const byteRate = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(28, true)
+  if (!byteRate) throw { status: 400, message: 'the WAV header has no byte rate' }
+  return (b.length - 44) / byteRate
+}
+
+// What a recording costs, at least 1 so a short clip still counts.
+function estimateAudioNeurons(seconds) {
+  return Math.max(1, Math.ceil((Math.max(0, seconds) / 60) * NEURONS_PER_AUDIO_MINUTE))
+}
+
 function kindOf(name) {
   return KINDS[name] ? name : DEFAULT_KIND
 }
@@ -183,7 +211,7 @@ function plan({ kind, now, cache, usage, estNeurons, deadlineMs, settings = DEFA
   const after = (usage?.total ?? 0) + estNeurons
   // Guard keeps the model until guard_until_used; past that, no kind does.
   if (after > settings.guard_until_used * settings.total_cap) return fallback('total_cap')
-  if (budget.low && spec.low !== 'model') return fallback(spec.low === 'keywords' ? 'budget_low_keywords' : 'budget_low_rules')
+  if (budget.low && spec.low !== 'model') return fallback(LOW_REASON[spec.low])
   if (estNeurons > settings.code_cap - (usage?.code ?? 0)) return fallback('code_cap')
   if (estNeurons > settings.device_cap - (usage?.device ?? 0)) return fallback('device_cap')
   return { ...base, route: 'workers_ai', reserve: estNeurons }
@@ -306,7 +334,8 @@ function median(values) {
 }
 
 export {
-  DEFAULT_SETTINGS, NEURONS_PER_MTOK, KINDS, DEFAULT_KIND,
+  DEFAULT_SETTINGS, NEURONS_PER_MTOK, NEURONS_PER_AUDIO_MINUTE, MAX_AUDIO_SECONDS, MAX_AUDIO_BYTES,
+  wavSeconds, estimateAudioNeurons, KINDS, DEFAULT_KIND,
   CACHE_SECONDS, MAX_QUESTIONS, MAX_BODY_BYTES, DEFAULT_SCALE,
   validateDecideRequest, validateSettings, estimateNeurons, utcDay, resetAt, budgetState, kindOf, plan,
   parseClefAnswers, sortedJson, newToken, newInviteCode, median,

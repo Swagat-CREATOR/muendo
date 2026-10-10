@@ -13,6 +13,8 @@ workers_dev = true
 
 [vars]
 DECIDE_MODEL = "@cf/cloudflare/clef-flash"
+# Speech to text (POST /v1/transcribe); the user chose Whisper base on 10 Oct 2026.
+TRANSCRIBE_MODEL = "@cf/openai/whisper"
 
 # One Durable Object for invites, tokens, the daily neuron budget, the 5-minute
 # answer cache and the budget settings table (§37.6 K2). Free plan: SQLite class.

@@ -440,3 +440,23 @@ cannot push Inbox cards out of a slow app's queue. An app that falls behind on l
   turning it off (U8) without Mewndo's cursor (U7) would hide the agent's pointer from the user. Also not built:
   the UIA element lookup (U5.3) and the screenshot crop on the card (U5.5).
 
+## Cloud speech to text (10 Oct 2026)
+
+The user chose, on 10 Oct 2026: audio may leave the PC; **Whisper base** (`@cf/openai/whisper`) on Workers AI; **no
+clean-up model** (Whisper's text is used as it is). parakeet-redux was looked at and not used: its weights are
+CC-BY-4.0 but its only runtime is Moondream's proprietary, Python-only engine (research notes in the session; the
+Hugging Face page itself could not be reached from the build container).
+
+- **Gateway:** `POST /v1/transcribe`, a WAV body (at most 30 s and 2 MB), the device token as for `/v1/decide`.
+  Answers `{text, backend, ms, rules_only}` or `{fallback: true, reason}`. Model input is `{audio: [bytes]}` and
+  output `{text}`, as Cloudflare's `whisper.json` documents; not yet confirmed by a real call.
+- **Budget:** its own kind, `transcribe` (deadline 8 s), below Guard: when the day runs low it falls back with
+  `budget_low_offline` and the PC uses its own recognizer. Cost estimate from the WAV header's length at 41.14
+  neurons per audio minute (Cloudflare's pricing page), so 30 s costs 21. No answer cache. The audio is never
+  stored or logged, only its length and the time taken.
+- **App:** `speech.js` tries the gateway first when `MEWNDO_GATEWAY_URL` is set and the device token is in
+  Credential Manager (read through koffi), with a 9 s deadline; any fallback, error status, network failure,
+  missing token or timeout uses Windows' System.Speech recognizer, which stays the only provider otherwise.
+- **Unverified until deployed:** the CPU cost of turning up to 2 MB into the byte array the binding takes, under
+  the free plan's 10 ms CPU limit; and the koffi Credential Manager read, which has not run on Windows.
+

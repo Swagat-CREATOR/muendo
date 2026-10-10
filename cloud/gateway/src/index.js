@@ -7,6 +7,8 @@
 // Routes
 //   GET  /health            liveness, and what §34.9 R6 pre-connects to
 //   POST /v1/decide         one System One decision (§34.3 in, §34.9 R6 out)
+//   POST /v1/transcribe     speech to text: a WAV body in, {text} out (Whisper), or {fallback:true} for the PC's
+//                           offline recognizer
 //   POST /invite/redeem     a judge code for a device token (§37.5)
 //   POST /admin/invites     mint judge codes    (x-admin-secret)
 //   POST /admin/revoke      revoke a device     (x-admin-secret)
@@ -23,9 +25,11 @@ import { Hub } from './hub.js'
 import { handle as mcpHandle } from './mcp.js'
 import {
   MAX_BODY_BYTES, estimateNeurons, kindOf, parseClefAnswers, sortedJson, validateDecideRequest,
+  MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, wavSeconds, estimateAudioNeurons,
 } from './gateway.js'
 
 const DEFAULT_MODEL = '@cf/cloudflare/clef-flash'
+const DEFAULT_TRANSCRIBE_MODEL = '@cf/openai/whisper' // the user's choice, 10 Oct 2026
 
 export default {
   async fetch(request, env, ctx) {
@@ -45,6 +49,7 @@ async function route(request, env, ctx) {
   switch (`${request.method} ${path}`) {
     case 'GET /health': return json({ ok: true, service: 'mewndo-cloud' })
     case 'POST /v1/decide': return decide(request, env, ctx)
+    case 'POST /v1/transcribe': return transcribe(request, env, ctx)
     case 'POST /invite/redeem': return redeem(request, env)
     case 'POST /admin/invites': return adminInvites(request, env)
     case 'POST /admin/revoke': return adminRevoke(request, env)
@@ -242,6 +247,59 @@ function withDeadline(promise, ms, what) {
     promise.finally(() => clearTimeout(timer)),
     new Promise((_, reject) => { timer = setTimeout(() => reject(spent(new Error(`${what} past ${ms} ms`))), ms) }),
   ])
+}
+
+// --- speech to text ---------------------------------------------------------------
+// The audio is used for this one call and never stored or logged; only its length and the time taken are.
+// No answer cache: two recordings are never the same question.
+async function transcribe(request, env, ctx) {
+  const token = bearer(request)
+  if (!token) return json({ error: 'unauthorized' }, 401)
+  const audio = new Uint8Array(await request.arrayBuffer())
+  if (audio.length > MAX_AUDIO_BYTES) return json({ error: `audio over ${MAX_AUDIO_BYTES} bytes` }, 413)
+  let seconds
+  try {
+    seconds = wavSeconds(audio)
+  } catch (e) {
+    return json({ error: e.message }, e.status || 400)
+  }
+  if (seconds > MAX_AUDIO_SECONDS) return json({ error: `audio over ${MAX_AUDIO_SECONDS} seconds` }, 413)
+
+  const deadlineHeader = Number(request.headers.get('x-mewndo-deadline-ms'))
+  const decision = await state(env, 'authPrepare', {
+    token,
+    sig: `audio:${crypto.randomUUID()}`,
+    scope: 'audio',
+    kind: 'transcribe',
+    estNeurons: estimateAudioNeurons(seconds),
+    deadlineMs: Number.isFinite(deadlineHeader) ? deadlineHeader : undefined,
+  })
+  const who = { tester: decision.tester, device: decision.device }
+  const rulesOnly = decision.rules_only === true
+  if (decision.route === 'fallback') {
+    log({ at: 'transcribe', backend: 'fallback', reason: decision.reason, tester: who.tester })
+    return json({ fallback: true, reason: decision.reason, rules_only: rulesOnly })
+  }
+
+  const started = Date.now()
+  try {
+    if (!env.AI) throw new Error('no AI binding')
+    const model = env.TRANSCRIBE_MODEL || DEFAULT_TRANSCRIBE_MODEL
+    // The binding's documented input: the file's bytes as an array of 0..255 (whisper.json in Cloudflare's docs).
+    const out = await withDeadline(env.AI.run(model, { audio: [...audio] }), decision.deadlineMs, 'workers_ai')
+    if (typeof out?.text !== 'string') throw spent(new Error('no text in the answer'))
+    const ms = Date.now() - started
+    ctx.waitUntil(state(env, 'settle', { ...who, reserved: decision.reserve, backend: 'whisper', ms }).catch(() => {}))
+    log({ at: 'transcribe', backend: 'workers_ai', seconds: Math.round(seconds * 10) / 10, ms, tester: who.tester })
+    return json({ text: out.text.trim(), backend: 'workers_ai', ms, rules_only: rulesOnly })
+  } catch (e) {
+    const ms = Date.now() - started
+    ctx.waitUntil(state(env, 'settle', {
+      ...who, reserved: decision.reserve, actualNeurons: e?.spent ? null : 0, backend: 'whisper', ms,
+    }).catch(() => {}))
+    log({ at: 'transcribe', backend: 'workers_ai', ms, error: String(e && e.message) })
+    return json({ fallback: true, reason: 'workers_ai_error', ms, rules_only: rulesOnly })
+  }
 }
 
 // --- K3: invites and admin ----------------------------------------------------

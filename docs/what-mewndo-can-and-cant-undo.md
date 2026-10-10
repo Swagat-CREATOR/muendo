@@ -167,6 +167,11 @@ you choose Resume. What it can't do: **nothing a click does can be undone by Mew
 protection. The card cannot show what is under the pointer (no element name, no screenshot yet), and it shows
 typed text only as its length. Never run against the real cua-driver; tested with a fake driver on Linux.
 
+**Cloud speech** (voice commands): when a gateway is set up, what you say is sent to Mewndo's Cloudflare Worker and
+Whisper (base) for that one transcription, then dropped; nothing stores it. Without a network, a token, or today's
+free budget, Windows' own offline recognizer is used instead, which is less accurate. Not yet run against the real
+Whisper: tested with a fake model and a canned recording.
+
 **Uninstalling** asks whether to delete Mewndo's saved history; the default is No. Yes permanently deletes every
 save point, Mewndo's trash, the Agent Inbox's card history and rules.toml (`%APPDATA%\mewndo` and
 `%LOCALAPPDATA%\Mewndo`), and that cannot be undone. Either way Mewndo's hooks are taken out of Claude Code's
