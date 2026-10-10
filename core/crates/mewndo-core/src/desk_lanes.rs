@@ -50,7 +50,7 @@ impl LaneSink for Sink {
     }
 
     fn closed(&self, lane_id: &str, code: Option<u32>) {
-        // The reader saw the end of the output; the child has normally been reaped by then.
+        // mewndo-pty waits for the child to have really ended before calling this, so `code` is its own.
         let code = code.or_else(|| self.lanes.upgrade()?.get(lane_id)?.exit_code());
         self.log
             .info(&format!("lane {lane_id} ended (exit code {code:?})"));
