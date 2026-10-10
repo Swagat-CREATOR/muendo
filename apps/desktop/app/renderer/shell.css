@@ -1,0 +1,62 @@
+/* The main window shell (design spec §7): a 40 px title bar (Windows draws its buttons over the right end), the
+   224 px sidebar that collapses to 64 px, and one screen at a time. Tokens from design/tokens.css. */
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--ink); font: var(--t-body); }
+#main.shell { display: grid; grid-template-columns: 224px 1fr; grid-template-rows: 40px 1fr; height: 100vh; }
+#main.shell.collapsed { grid-template-columns: 64px 1fr; }
+
+.titlebar { grid-column: 2; display: flex; align-items: center; padding: 0 160px 0 24px; -webkit-app-region: drag;
+  font: var(--t-small); color: var(--ink-3); }
+.titlebar button, .titlebar a { -webkit-app-region: no-drag; }
+
+.sidebar { grid-row: 1 / 3; grid-column: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto;
+  padding: 8px 12px 12px; background: var(--sidebar); border-right: 1px solid var(--border); }
+.side-top { display: flex; align-items: center; justify-content: space-between; height: 32px; -webkit-app-region: drag; }
+.side-top button { -webkit-app-region: no-drag; }
+.icon-btn { all: unset; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: var(--ink-2); cursor: pointer; }
+.icon-btn:hover { background: var(--surface-2); }
+.icon-btn:focus-visible { outline: 2px solid var(--focus); }
+/* The mask url() resolves against design/base.css, where var(--pose) is used. */
+.cat-face { --cat-size: 24px; --pose: url(../../assets/cat/cat-face-small.svg); }
+.wordmark { display: flex; align-items: baseline; gap: 8px; padding: 0 12px; }
+.wordmark .name { font: 500 20px/28px var(--font-display); font-variation-settings: var(--display-axes); }
+.beta { font: var(--t-small); padding: 0 8px; border-radius: var(--r-pill); background: var(--done-soft); color: var(--ink); }
+
+.nav { display: flex; flex-direction: column; gap: 2px; }
+.nav-item { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px;
+  border-radius: 10px; border: 1px solid transparent; font: 500 14px/20px var(--font-ui); color: var(--ink-2); cursor: pointer; }
+.nav-item svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.nav-item .label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-item:hover { background: var(--surface-2); color: var(--ink); }
+.nav-item[aria-current="page"] { background: var(--surface); border-color: var(--border); color: var(--ink); }
+.nav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.count { font: 600 12px/18px var(--font-ui); color: var(--needs); }
+
+.checklist { padding: 12px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); }
+.checklist h2 { font: 600 14px/20px var(--font-ui); margin: 0 0 8px; }
+.progress { height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--done); transition: width var(--m-open); }
+.checklist .small { margin: 6px 0 8px; color: var(--ink-3); }
+.checklist li { display: flex; gap: 8px; align-items: center; padding: 3px 0; font: var(--t-small); color: var(--ink-2); }
+.checklist li::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--ink-3); flex: none; box-sizing: border-box; }
+.checklist a { color: var(--ink-2); }
+.checklist a:hover { color: var(--ink); }
+.checklist li.done { color: var(--ink-3); text-decoration: line-through; }
+.checklist li.done::before { border-color: var(--done); background: var(--done); }
+.checklist .set { display: flex; gap: 10px; align-items: center; }
+.checklist .set .cat { --cat-size: 48px; }
+
+.side-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 2px; }
+
+.collapsed .sidebar { padding: 8px 10px 12px; }
+.collapsed .label, .collapsed .wordmark, .collapsed .checklist, .collapsed .count, .collapsed .cat-face { display: none; }
+.collapsed .nav-item { justify-content: center; padding: 0; }
+
+.content { grid-column: 2; grid-row: 2; min-height: 0; overflow: auto; }
+.screen { padding: 8px 32px 32px; max-width: 960px; }
+.screen .display { margin: 8px 0 12px; }
+.screen .lead { color: var(--ink-2); max-width: 640px; }
+.screen a { color: var(--focus); }
+.folders-screen { max-width: none; padding: 0; height: 100%; display: flex; flex-direction: column; }
+.agents-setup { max-width: 640px; }
+.agents-setup button { margin: 4px 8px 4px 0; }

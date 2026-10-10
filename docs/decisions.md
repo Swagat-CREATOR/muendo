@@ -423,3 +423,23 @@ which can paint the canvas behind a transparent window.
 fillets; your own last message on a card (the core sends no snippet); a Brake key on cards (the dock's Brake works);
 the Receipt's suggested replies on Done cards; a live target line in the Talk box (it shows only after Enter); the
 §11.6 floating toasts (there is no toast surface yet; Windows notifications are still used).
+
+## Main window shell (design D4, 10 Oct 2026)
+
+The main window is now the §7 shell: a hidden title bar with Windows' own buttons drawn over our 40 px bar
+(`titleBarOverlay`, colours follow the system theme), a 224 px sidebar that collapses to 64 px (remembered in the
+window's localStorage), and one screen at a time: Home, Inbox, Agents, Timeline, Connections, Skills, Protected
+folders. Ctrl+1 to Ctrl+7 jump between them; arrow keys move in the list. The window opens at 1180 x 760 (minimum
+900 x 600) and remembers its size and position (`settings.windowBounds`) if that still lands on a display.
+
+The old single page is the Protected folders screen, unchanged inside; the agent hook setup and the brief safety
+rules moved to Agents. The old styles now use the design tokens, so the screens follow light and dark.
+
+The "Protect your work" checklist ticks itself from real state: a protected folder; Guard hooks installed for Claude
+Code, Codex or Cursor; a restore done (`settings.triedUndo`, set by the first restore); a shortcut Test that received
+the key press (`settings.shortcutsTested`). Once all four are done it says "You're set up" for that session, then
+hides for good (`settings.checklistDone`).
+
+**What it can't do yet:** Protected folders is the first screen until Home (D5) is built; Home, Inbox, Timeline,
+Connections and Skills are short pages that say what isn't there yet. "Connect an account" is left out of the
+checklist and "Invite a tester" out of the sidebar until those exist.

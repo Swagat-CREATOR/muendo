@@ -1,15 +1,19 @@
-/* Plain and clear. Design comes later. */
-:root { color-scheme: light dark; --line: #8884; --accent: #1f6b9c; --bad: #b3261e; --good: #1e7b34; }
+/* The main window's screens, on the design tokens (design/tokens.css); the shell itself is shell.css. */
+:root { --line: var(--border); --accent: var(--focus); --bad: var(--stopped); --good: var(--done); }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; } /* rules below set display; hidden must still win */
-body { margin: 0; font: 14px/1.45 system-ui, sans-serif; }
+body { margin: 0; }
 h1 { font-size: 20px; margin: 0; }
 h2 { font-size: 16px; margin: 16px 0 8px; }
 h3 { font-size: 14px; margin: 20px 0 6px; }
-button { font: inherit; padding: 5px 12px; cursor: pointer; }
-button.primary { background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: 3px; }
+button { font: inherit; padding: 6px 14px; cursor: pointer; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--ink); }
+button:hover:not(:disabled) { background: var(--surface-2); }
+button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
 button:disabled { opacity: .5; cursor: default; }
-input[type=text], input:not([type]) { font: inherit; padding: 4px 6px; min-width: 240px; }
+input[type=text], input:not([type]), textarea { font: inherit; padding: 6px 10px; min-width: 240px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink); }
 .muted { opacity: .7; }
 .error { color: var(--bad); }
 .good { color: var(--good); }
@@ -25,7 +29,6 @@ label { display: block; margin: 6px 0; }
 
 header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
 header label { margin: 0 0 0 auto; }
-#main { display: flex; flex-direction: column; height: 100vh; }
 .columns { display: grid; grid-template-columns: 300px 1fr; flex: 1; min-height: 0; }
 nav { border-right: 1px solid var(--line); padding: 0 12px; overflow: auto; }
 #detail { padding: 0 20px 20px; overflow: auto; }
@@ -39,7 +42,7 @@ nav { border-right: 1px solid var(--line); padding: 0 12px; overflow: auto; }
 .scroll { max-height: 280px; overflow: auto; border: 1px solid var(--line); }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
-thead th { position: sticky; top: 0; background: Canvas; }
+thead th { position: sticky; top: 0; background: var(--bg); }
 tbody tr { cursor: pointer; }
 tbody tr:hover, tbody tr.selected { background: #1f6b9c22; }
 
@@ -49,7 +52,7 @@ tbody tr:hover, tbody tr.selected { background: #1f6b9c22; }
 #result { border: 1px solid var(--line); padding: 8px 12px; border-radius: 4px; }
 #restores li { padding: 6px 0; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
-dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 6px; }
+dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); }
 dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 16px 0 0; }
 #confirm-list { max-height: 160px; overflow: auto; font-family: ui-monospace, monospace; font-size: 12px; }
 #toast { position: fixed; bottom: 16px; right: 16px; max-width: 420px; padding: 10px 14px; border-radius: 4px;

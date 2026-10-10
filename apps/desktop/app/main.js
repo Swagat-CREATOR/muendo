@@ -7,6 +7,7 @@ const fsp = require('node:fs/promises');
 const crypto = require('node:crypto');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard, screen,
+  nativeTheme,
 } = require('electron');
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
@@ -300,11 +301,39 @@ function icon() {
   return nativeImage.createFromBuffer(px, { width: size, height: size });
 }
 
+// The title bar (design spec §7.1): Windows draws real minimize, maximize and close buttons over our own 40 px bar,
+// in the page's background and ink colours, and they follow the system theme.
+const titleBarOverlay = () => (nativeTheme.shouldUseDarkColors
+  ? { color: '#121416', symbolColor: '#EEF1EC', height: 40 }
+  : { color: '#F4F6F3', symbolColor: '#15171A', height: 40 });
+nativeTheme.on('updated', () => { if (win && !win.isDestroyed() && process.platform !== 'linux') win.setTitleBarOverlay(titleBarOverlay()); });
+
+// The saved size and position, if it still lands on a connected display.
+function savedBounds() {
+  const b = settings.windowBounds;
+  if (!b || ![b.x, b.y, b.width, b.height].every(Number.isFinite)) return {};
+  const wa = screen.getDisplayMatching(b).workArea;
+  const visible = b.x < wa.x + wa.width - 100 && b.x + b.width > wa.x + 100 && b.y >= wa.y - 10 && b.y < wa.y + wa.height - 100;
+  return visible ? b : { width: b.width, height: b.height };
+}
+
 function createWindow(show) {
   win = new BrowserWindow({
-    width: 1150, height: 760, minWidth: 800, minHeight: 500, show, title: 'Mewndo', icon: icon(),
+    width: 1180, height: 760, ...savedBounds(), minWidth: 900, minHeight: 600, show, title: 'Mewndo', icon: icon(),
+    titleBarStyle: 'hidden', titleBarOverlay: titleBarOverlay(),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
+  let saveTimer = null;
+  const remember = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (win.isDestroyed() || win.isMaximized() || win.isMinimized()) return;
+      settings.windowBounds = win.getBounds();
+      saveSettings().catch((e) => log.warn(`Couldn't save the window's size: ${e.message}`));
+    }, 500);
+  };
+  win.on('resize', remember);
+  win.on('move', remember);
   win.removeMenu();
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -346,9 +375,30 @@ async function suggestions(folders) {
   return out;
 }
 
+// The sidebar's "Protect your work" checklist (design spec §7.3): each item ticks itself from what really happened.
+// Once everything is done it shows "You're set up" for the rest of that session, then never again.
+// What it can't do: "Connect an account" is left out until Connections exist.
+let checklistFinishing = false;
+function checklist(folders, guarded) {
+  const items = {
+    folder: folders.length > 0,
+    agent: Object.values(guarded).some(Boolean),
+    undo: settings.triedUndo === true,
+    shortcuts: settings.shortcutsTested === true,
+  };
+  const done = Object.values(items).every(Boolean);
+  if (done && !settings.checklistDone) {
+    settings.checklistDone = true;
+    checklistFinishing = true;
+    saveSettings().catch((e) => log.warn(`Couldn't save the checklist: ${e.message}`));
+  }
+  return { items, done, hidden: settings.checklistDone === true && !checklistFinishing };
+}
+
 async function state() {
-  const [folders, pausedUntil, report, agents, hookProblem] = await Promise.all([
+  const [folders, pausedUntil, report, agents, hookProblem, guarded] = await Promise.all([
     call('folders'), call('pausedUntil'), storageReport().catch(() => null), call('agents'), call('hookServerProblem'),
+    refreshHookStatus().catch(() => ({})),
   ]);
   const bytes = new Map((report?.folders ?? []).map((f) => [f.folder, f.bytes]));
   return {
@@ -369,6 +419,7 @@ async function state() {
     trashBytes: report?.trashBytes ?? null,
     usedBytes: report?.usedBytes ?? null,
     budgetBytes: report?.budgetBytes ?? null,
+    checklist: checklist(folders, guarded),
   };
 }
 
@@ -398,12 +449,17 @@ let ask = null; // a voice command waiting for the user: { id, heard, text, choi
 let hookStatus = { at: 0, guarded: {} }; // which agents have Mewndo's Guard hooks, re-read every 30 s
 
 // The up-arrow panel (spec §23.8), from local data only: agents and protected folders, and how sure Mewndo is.
-async function panelData(folders, brakedNames) {
+async function refreshHookStatus() {
   if (Date.now() - hookStatus.at > 30_000) {
     const [claude, codex, cursor] = await Promise.all([call('claudeHooksPlan'), call('agentHooksPlan', 'codex'), call('agentHooksPlan', 'cursor')]
       .map((p) => p.then((x) => x.installed === true, () => false)));
     hookStatus = { at: Date.now(), guarded: { 'Claude Code': claude, Codex: codex, Cursor: cursor } };
   }
+  return hookStatus.guarded;
+}
+
+async function panelData(folders, brakedNames) {
+  await refreshHookStatus();
   const activity = await call('activity').catch(() => ({ agents: [], folders: [], activeMs: 0 }));
   const names = [...new Set(['Claude Code', 'Codex', 'Cursor', ...activity.agents.map((a) => a.name), ...brakedNames])];
   const agents = names.map((name) => {
@@ -1062,6 +1118,7 @@ const handlers = {
       throw new Error('invalid mode');
     }
     const result = await call('journal.restore', root, str(id, 'save point'), { paths: strList(paths, 'paths'), into });
+    if (!settings.triedUndo) { settings.triedUndo = true; saveSettings().catch(() => {}); } // the checklist's "Try an undo"
     return reportRestore(root, result);
   },
   async restores(root) {
@@ -1196,6 +1253,7 @@ const settingsHandlers = {
     });
     shortcutTest = null;
     if (!ours) globalShortcut.unregister(accel);
+    if (pressed && !settings.shortcutsTested) { settings.shortcutsTested = true; saveSettings().catch(() => {}); stateChanged(); }
     return { ok: pressed, reason: pressed ? null : 'not-delivered' };
   },
 

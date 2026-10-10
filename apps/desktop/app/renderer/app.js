@@ -515,6 +515,84 @@ $('edit-rules').onclick = guard(async () => {
   }
 });
 
+// --- The shell (design spec §7): sidebar, screens, the checklist ------------------------------------------------
+// ponytail: Protected folders is the first screen until Home (D5) has something to show.
+
+const SCREENS = [...document.querySelectorAll('#nav .nav-item')].map((b) => b.dataset.screen);
+let screen = 'folders';
+function go(name) {
+  if (!SCREENS.includes(name)) return;
+  screen = name;
+  for (const s of document.querySelectorAll('.screen')) s.hidden = s.dataset.screen !== name;
+  for (const b of document.querySelectorAll('#nav .nav-item')) {
+    if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  }
+  $('screen-title').textContent = document.querySelector(`#nav [data-screen="${name}"] .label`).textContent;
+}
+$('nav').addEventListener('click', (e) => { const b = e.target.closest('.nav-item'); if (b) go(b.dataset.screen); });
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-go]');
+  if (a) { e.preventDefault(); go(a.dataset.go); }
+});
+// Ctrl+1 to Ctrl+7 jump to a screen; arrow keys move within the list.
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && !e.altKey && !e.shiftKey && /^[1-7]$/.test(e.key) && !$('main').hidden) {
+    e.preventDefault();
+    go(SCREENS[Number(e.key) - 1]);
+    document.querySelector(`#nav [data-screen="${screen}"]`).focus();
+  }
+});
+$('nav').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  const items = [...$('nav').querySelectorAll('.nav-item')];
+  const i = items.indexOf(document.activeElement);
+  items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+});
+function setCollapsed(on) {
+  $('main').classList.toggle('collapsed', on);
+  $('collapse').setAttribute('aria-expanded', String(!on));
+  $('collapse').setAttribute('aria-label', on ? 'Expand the sidebar' : 'Collapse the sidebar');
+  try { localStorage.setItem('mewndo.sidebar', on ? 'collapsed' : 'open'); } catch { /* fine without it */ }
+}
+$('collapse').onclick = () => setCollapsed(!$('main').classList.contains('collapsed'));
+try { if (localStorage.getItem('mewndo.sidebar') === 'collapsed') setCollapsed(true); } catch { /* fine without it */ }
+go(screen);
+
+const CHECKLIST = [
+  ['folder', 'Protect a folder', 'folders'],
+  ['agent', 'Connect an agent (Claude Code, Codex or Cursor)', 'agents'],
+  ['undo', 'Try an undo', 'folders'],
+  ['shortcuts', 'Pick your shortcuts (Settings, Test)', null],
+];
+function renderChecklist() {
+  const c = state.checklist;
+  $('checklist').hidden = !c || c.hidden;
+  if (!c || c.hidden) return;
+  const done = CHECKLIST.filter(([k]) => c.items[k]).length;
+  $('checklist-bar').style.width = `${(done / CHECKLIST.length) * 100}%`;
+  $('checklist-count').textContent = c.done ? "You're set up" : `${done} of ${CHECKLIST.length}`;
+  $('checklist-items').replaceChildren(...(c.done
+    ? [Object.assign(document.createElement('li'), { className: 'set', textContent: 'Mewndo has your back.' })]
+    : CHECKLIST.map(([k, label, to]) => {
+      const li = document.createElement('li');
+      li.className = c.items[k] ? 'done' : '';
+      if (!c.items[k] && to) {
+        const a = Object.assign(document.createElement('a'), { href: '#', textContent: label });
+        a.dataset.go = to;
+        li.append(a);
+      } else if (!c.items[k] && k === 'shortcuts') {
+        const a = Object.assign(document.createElement('a'), { href: '#', textContent: label });
+        a.onclick = (e) => { e.preventDefault(); guard(() => api.openSettings())(); };
+        li.append(a);
+      } else {
+        li.textContent = label;
+      }
+      return li;
+    })));
+}
+
 // --- Keeping up to date ----------------------------------------------------------------------------------------
 
 let hookStatusLoaded = false;
@@ -525,6 +603,7 @@ async function refresh() {
   $('main').hidden = !state.setupDone;
   if (!state.setupDone) return showSetup();
   renderHeader();
+  renderChecklist();
   if (selected && !state.folders.some((f) => f.root === selected)) {
     selected = null;
     $('folder-view').hidden = true;
@@ -551,6 +630,7 @@ api.on('toast', toast);
 // The bar's change ticker: show what changed in that folder since its newest save point.
 api.on('show-diff', guard(async ({ root, savePoint }) => {
   if (!state?.folders?.some((f) => f.root === root)) return;
+  go('folders');
   await selectFolder(root);
   const sp = (await api.savePoints(root)).find((x) => x.id === savePoint);
   if (sp) await showDiff(sp);
