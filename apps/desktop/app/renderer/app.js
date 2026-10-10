@@ -218,7 +218,8 @@ function renderFolders() {
     onclick: () => selectFolder(f.root),
     onkeydown: (e) => { if (e.key === 'Enter') selectFolder(f.root); },
   },
-  h('div', { class: 'name' }, f.name),
+  h('div', { class: 'name' }, h('span', { class: `ring ${f.status === 'paused' || f.status === 'unavailable' ? 'stopped' : f.status === 'scanning' ? 'working' : 'done'}` }), f.name),
+  h('div', { class: 'path mono' }, f.root),
   h('div', { class: 'muted' }, `${f.files.toLocaleString()} file${f.files === 1 ? '' : 's'} protected · ${size(f.storageBytes)}`),
   h('div', { class: f.status === 'paused' || f.status === 'unavailable' ? 'error' : '' }, statusText(f)),
   progressBar(f))));
@@ -227,6 +228,14 @@ function renderFolders() {
     ? `History uses ${size(state.usedBytes)} of ${size(state.budgetBytes)}. Trash: ${size(state.trashBytes)}.`
     : '';
   $('storage-summary').textContent = s;
+  // Used vs budget, with the trash's share drawn separately (design spec §8.7).
+  const bar = $('storage-bar');
+  bar.hidden = !(state.usedBytes != null && state.budgetBytes);
+  if (!bar.hidden) {
+    const pct = (b) => `${Math.min(100, (b / state.budgetBytes) * 100)}%`;
+    bar.querySelector('.used').style.width = pct(Math.max(0, state.usedBytes - (state.trashBytes ?? 0)));
+    bar.querySelector('.trash').style.width = pct(state.trashBytes ?? 0);
+  }
 }
 
 // mewndo-core, the version 1 service. It does no file work yet, so whatever its state, protection carries on.

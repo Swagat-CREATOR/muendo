@@ -524,3 +524,13 @@ redraw of the card stack (`inbox-changed`).
 
 **What it can't do yet:** no answered history; the dock panel still has two tabs (Agents, Connections), not
 Inbox and Skills; checked in the real app only with an empty Inbox, not with a live card.
+
+## Skills and Protected folders screens (design D11, 10 Oct 2026)
+
+Protected folders: each folder shows a status ring (mint protected, blue scanning, coral paused or unavailable),
+its path in mono, files and size; a storage bar shows history used against the budget with Mewndo's trash share in
+amber. Skills shows the sitting cat and says plainly that Show Me isn't available yet; its Record button is disabled.
+Connections came with D8.
+
+**What it can't do yet:** no "last save point" per folder in the list, no per-folder Pause (Pause is for all
+folders, for an hour); Show Me itself.

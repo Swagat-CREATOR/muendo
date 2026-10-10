@@ -31,10 +31,18 @@ header label { margin: 0 0 0 auto; }
 nav { border-right: 1px solid var(--line); padding: 0 12px; overflow: auto; }
 #detail { padding: 0 20px 20px; overflow: auto; }
 
-#folders li { padding: 8px; border-radius: 4px; cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
+#folders li { padding: 8px 10px; border-radius: 12px; cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
 #folders li:hover { border-color: var(--line); }
 #folders li.selected { border-color: var(--accent); }
-#folders .name { font-weight: 600; }
+#folders .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+#folders .name .ring { --ring-size: 12px; }
+#folders .name .ring::after { display: none; }
+#folders .path { font: var(--t-mono); font-size: 11.5px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#folders li.selected { background: var(--surface); }
+.storage-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--surface-2); margin: 12px 0 4px; }
+.storage-bar i { display: block; height: 100%; }
+.storage-bar .used { background: var(--done); }
+.storage-bar .trash { background: var(--needs); }
 #folders progress { width: 100%; }
 
 .scroll { max-height: 280px; overflow: auto; border: 1px solid var(--line); }

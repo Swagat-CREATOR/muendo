@@ -200,3 +200,4 @@ dialog::backdrop { background: rgba(21, 23, 26, 0.28); }
 @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 .ib-actions { display: flex; gap: 8px; }
 .ib-cat { --cat-size: 96px; }
+.sk-cat { --cat-size: 96px; --pose: url(../../assets/cat/cat-sit.svg); } /* resolves against design/base.css */

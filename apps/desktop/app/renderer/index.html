@@ -147,8 +147,12 @@
       <div id="cx-grid" class="cx-grid"></div>
     </section>
     <section class="screen" data-screen="skills" hidden>
-      <h1 class="display">Skills</h1>
-      <p class="lead">Show Me recordings aren't available yet.</p>
+      <div class="tl-head"><h1 class="display">Skills</h1><button class="primary" disabled title="Not available yet">Record a skill</button></div>
+      <div class="tl-empty">
+        <span class="cat sk-cat" aria-hidden="true"><i></i></span>
+        <p>Show Me will let you teach Mewndo a workflow once and let your agents repeat it.</p>
+        <p class="muted">It isn't available yet. When it comes, it stays off until you turn it on in Settings.</p>
+      </div>
     </section>
     <section class="screen folders-screen" data-screen="folders">
     <header>
@@ -166,6 +170,7 @@
         <h2>Protected folders</h2>
         <ul id="folders" class="plain"></ul>
         <button id="add-folder">Add folder…</button>
+        <div id="storage-bar" class="storage-bar" hidden title="History used, and Mewndo's trash, against the budget"><i class="used"></i><i class="trash"></i></div>
         <p id="storage-summary" class="muted"></p>
         <p><a href="#" id="open-limits">What Mewndo can and can't undo</a></p>
       </nav>
