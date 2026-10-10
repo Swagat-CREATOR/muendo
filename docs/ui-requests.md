@@ -18,3 +18,32 @@ field carries it, and which states exist. Nothing here is styled.
   reconnecting app until it is answered).
 - Currently it renders with whatever the renderer does for an unknown kind; it needs its own quiet look, lower key
   than a Permission card, since no agent is waiting on it.
+
+## Lanes window (spec §33.7, §33.10 Part G)
+
+The core and the app logic are done (`core/crates/mewndo-core/src/desk_lanes.rs`, `apps/desktop/app/desk/lanes.js`,
+wired in `desk.js`). The window still shows the "not yet connected" placeholder, and `app/lanes-preload.js` only
+exposes `action` and `onOpen`, so it needs:
+
+- **Preload** (`lanes-preload.js`, yours): also expose `onState(fn)` for `lanes:state` and `onData(fn)` for
+  `lanes:data`. `action(action, laneId, arg)` already sends `lanes:action` and is all the window needs to send.
+- **`lanes:state`** — `{ lanes: [...], connected }`, sent whole on every change. Each lane: `laneId`, `program`
+  (`claude` / `codex` / `cursor-agent`), `cwd`, `pid`, `rows`, `cols`, `running` (false once the agent ended; the
+  lane stays so its last output can be read), `exitCode`, `bytesOut`, `lastOutputAt` (ms), `agentId` (the agent
+  running in it once `agent.status` names the lane, else null). `connected: false` means the core is away; the
+  list is then empty until it reconnects.
+- **`lanes:data`** — `{ laneId, data }`: raw terminal output (a byte array, ANSI included) for a terminal emulator
+  such as xterm.js to draw. It arrives for every lane, also while the window is hidden.
+- **`lanes:open`** (existing) — show this lane.
+- **Actions to send** with `action(...)`:
+  - `('open', laneId)` when a lane is shown: the core replies with its replay buffer (up to 256 KB) as
+    `lanes:data`, then a fresh `lanes:state`, so clear that lane's terminal before sending it.
+  - `('start', null, { program, cwd, args? })`: program is one of the three agents; cwd an absolute folder (a
+    protected folder is the natural choice).
+  - `('type', laneId, data)`: the terminal's own keystrokes (xterm's `onData`), sent as they are.
+  - `('reply', laneId, text)`: a one-line reply box; the core adds Enter.
+  - `('brake', laneId)`: Ctrl+C. Worth a visible button: it is the §24 brake.
+  - `('resize', laneId, { rows, cols })`: xterm's size after a fit.
+  - `('close', laneId)`: ends the agent and removes the lane. It cannot be undone, so it wants a confirmation;
+    closing the *window* must not send it (the lane keeps running, §33.7).
+- **States per lane**: running, ended (with exit code, output still readable), and gone (removed from the list).

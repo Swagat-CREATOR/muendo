@@ -5,7 +5,9 @@
 // and fake windows. What it does:
 //   core events in  -> cards.js works out what the stack looks like -> the cards window is told to redraw;
 //   user keys in    -> cards.js says what that key means for that card -> an `inbox.answer` goes to the core;
-//   Talk text in    -> `route.request` to the core -> routing.js says how to deliver what comes back.
+//   Talk text in    -> `route.request` to the core -> routing.js says how to deliver what comes back;
+//   lane events in  -> lanes.js keeps the lane list -> the lanes window is told to redraw, and gets the bytes;
+//   lanes window in -> lanes.js turns start, reply, brake, resize, keystrokes and close into core messages.
 //
 // §38.3's rule, which shapes all of it: the renderer only displays core events and sends user answers. Every
 // decision lives in the core. So nothing here invents a card, an option or a target: the core's `inbox.card` says
@@ -13,24 +15,30 @@
 // there and what to redraw. The one thing it owns is the keyboard, because a key press is not a decision.
 const { createCards, keyAction, describe } = require('./cards');
 const { decide, deliver, chipLabels } = require('./routing');
+const { createLanes } = require('./lanes');
 
 // client: app/desk/core-client.js (or a fake). ui: app/desk/windows.js's return (or a fake), minus the windows.
 // focus: app/desk/focus.js. commands(command, plan): Mewndo's own commands, which main.js runs through the v0
 // confirmation UI of §23.3. problem(message): how the app tells the user something it could not do.
 // onAgents(agents): the dock and the layout follow the agent count (§33.1).
 function createDesk({
-  client, ui, focus, log, cards = createCards(),
+  client, ui, focus, log, cards = createCards(), lanes = createLanes({ client }),
   commands = () => {}, problem = () => {}, onAgents = () => {}, onBudget = () => {},
 } = {}) {
   const agents = new Map(); // agent_id -> the last agent.status for it
-  const lanes = new Map(); // lane_id -> agent_id, for Part H's first delivery row
+  const laneAgents = new Map(); // lane_id -> agent_id, from agent.status, for Part H's first delivery row
   let answerMode = false; // the Inbox key was pressed: the cards window has focus and the card keys work
   let textFor = null; // { cardId, via, hint } while a text box is open on a card
   let talking = null; // { text, via, chips } while the Talk box waits for, or acts on, a route.result
   let unsubscribe = [];
 
   const list = () => [...agents.values()];
-  const laneList = () => [...lanes.entries()].map(([laneId, agentId]) => ({ laneId, agentId }));
+  // Every lane the Talk box can deliver to: the running lanes the core reported, and any lane an agent.status named.
+  const laneList = () => {
+    const running = lanes.list().filter((l) => l.running).map((l) => ({ laneId: l.laneId, agentId: laneAgents.get(l.laneId) ?? null }));
+    const named = [...laneAgents.entries()].filter(([laneId]) => !lanes.get(laneId)).map(([laneId, agentId]) => ({ laneId, agentId }));
+    return [...running, ...named];
+  };
 
   // Everything the cards window draws. It is sent whole on every change: it is three cards, so there is nothing
   // to gain from diffing, and a renderer that holds no state of its own cannot drift from the core's.
@@ -112,7 +120,7 @@ function createDesk({
     });
     // §38.5's agent.status carries no lane id today. If the core ever adds one, Part H's first delivery row starts
     // working without another change here; until then `lanes` stays empty and a reply to a lane is unreachable.
-    if (b.lane_id) lanes.set(String(b.lane_id), String(b.agent_id));
+    if (b.lane_id) laneAgents.set(String(b.lane_id), String(b.agent_id));
     if (b.status === 'gone') agents.delete(String(b.agent_id));
     onAgents(list());
     redraw();
@@ -130,6 +138,53 @@ function createDesk({
       closeTalk();
     }
     return undefined;
+  }
+
+  // --- lanes (§33.7, Part G) ---------------------------------------------------------------------------------------
+
+  // Everything the lanes window draws, sent whole on every change, like the cards window's state.
+  function laneView() {
+    return {
+      lanes: lanes.list().map((l) => ({ ...l, agentId: laneAgents.get(l.laneId) ?? null })),
+      connected: client?.connected?.() ?? true,
+    };
+  }
+  const redrawLanes = () => ui?.send?.('lanes', 'lanes:state', laneView());
+
+  function onLane(event) {
+    const lane = lanes.apply(event);
+    if (!lane) return;
+    if (lane.removed) laneAgents.delete(lane.laneId);
+    redrawLanes();
+  }
+
+  // Terminal output: the bytes go to the lanes window as they are, for its terminal to draw.
+  function onLaneData(event) {
+    lanes.output(event.lane, event.data);
+    ui?.send?.('lanes', 'lanes:data', { laneId: String(event.lane), data: event.data });
+  }
+
+  // What the lanes window asks for (`lanes:action`). Returns whether it was sent.
+  function laneAction(action, laneId, arg) {
+    switch (action) {
+      case 'open':
+        // Show the window on that lane, and ask the core for its replay buffer so the terminal starts where the
+        // lane is now (§33.7: the session survives the window).
+        if (laneId) ui?.showLanes?.(laneId);
+        return laneId ? lanes.attach(laneId) : false;
+      case 'start': {
+        const sent = lanes.start(arg ?? {});
+        if (!sent) problem('Mewndo can start Claude, Codex or Cursor in a lane, in a folder, while it is connected to the core.');
+        return sent;
+      }
+      case 'reply': return lanes.reply(laneId, arg);
+      case 'brake': return lanes.brake(laneId);
+      case 'resize': return lanes.resize(laneId, arg?.rows, arg?.cols);
+      case 'type': return lanes.type(laneId, arg);
+      case 'attach': return lanes.attach(laneId);
+      case 'close': return lanes.close(laneId);
+      default: return false;
+    }
   }
 
   // --- delivery (Part H step 3) -----------------------------------------------------------------------------------
@@ -272,6 +327,11 @@ function createDesk({
         client.on('budget.state', (event) => onBudget(event.body?.rules_only === true)),
         client.on('agent.status', onAgentStatus),
         client.on('route.result', onRoute),
+        client.on('lane.opened', onLane),
+        client.on('lane.closed', onLane),
+        client.on('lane', onLaneData),
+        // The core keeps its lanes when a connection drops and re-sends lane.opened for each on reconnect.
+        client.on('closed', () => { lanes.forget(); redrawLanes(); }),
       ];
       client.start?.();
     },
@@ -327,14 +387,13 @@ function createDesk({
         if (target) send(target);
       },
       closeTalk,
-      lane(action, laneId) {
-        if (action === 'open' && laneId) ui?.showLanes?.(laneId);
-      },
+      lane: laneAction,
     },
 
     // For the layout and the tests.
     agents: list,
     lanes: laneList,
+    laneView,
     cards: () => cards,
     view,
     answerMode: () => answerMode,

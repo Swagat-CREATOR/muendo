@@ -152,6 +152,14 @@ stops. "Never ask" and the counts are kept in memory only, so they reset when th
 deleting its line from rules.toml; there is no Settings → Habits page yet. Tested in the core and the app's card
 logic on Linux; not yet seen in the real app on Windows.
 
+**Lanes** (spec §33.7): the core can start Claude Code, Codex or Cursor's agent in a terminal Mewndo owns, type a
+reply into it at any time, press Ctrl+C in it (the brake), resize it, replay its last 256 KB to a window that opens
+later, and stop it. Tested end to end over the desk pipe on Linux with `sh`, and on Windows in CI with `cmd` through
+ConPTY; never yet with a real agent. What it can't do: it reads a terminal, it doesn't understand one, so a reply
+typed while the agent is mid-answer is typed then, exactly as if you had pressed the keys. A lane does not outlive
+Mewndo: quitting Mewndo stops every agent running in a lane. The replay buffer is memory only. The lanes window
+still shows a placeholder, so none of this can be used from the app yet.
+
 **Uninstalling** asks whether to delete Mewndo's saved history; the default is No. Yes permanently deletes every
 save point, Mewndo's trash, the Agent Inbox's card history and rules.toml (`%APPDATA%\mewndo` and
 `%LOCALAPPDATA%\Mewndo`), and that cannot be undone. Either way Mewndo's hooks are taken out of Claude Code's
