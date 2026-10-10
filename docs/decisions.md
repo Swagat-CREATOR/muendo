@@ -400,3 +400,24 @@ No new message type, so mewndo-proto is unchanged.
 - **Not per project.** rules.toml (§34.9 R1) has no project field, so a written habit is a global phrase after a
   restart. Adding one is a spec change, so it is recorded here and in docs/what-mewndo-can-and-cant-undo.md instead.
 
+## Lanes on the desk pipe (10 Oct 2026)
+
+The lane control bodies moved from mewndo-pty into mewndo-proto unchanged (`lane.open`, `lane.opened`, `lane.reply`,
+`lane.brake`, `lane.resize`, `lane.closed`), mewndo-pty re-exports them, and three things were added:
+
+- **`lane.attach {lane_id}`** (app -> core): a lane window that (re)opens gets the 256 KB replay buffer as lane
+  frames, then `lane.opened`, on its own connection only. §33.7's "the session survives the window" needs it.
+- **`lane.close {lane_id}`** (app -> core): ends the lane for good (the agent is killed if it still runs). The core
+  answers every app with `lane.closed {removed: true}`; an agent that ends by itself is `lane.closed {exit_code,
+  removed: false}` and the lane stays, so its last output can still be read.
+- **`lane.opened` carries `running` and `exit_code`**, because it is also what an app connecting later is sent for
+  every lane that exists.
+
+Raw keystrokes from a lane window travel as lane frames (type 1) from the app; only an app connection may send
+them. `lane.open` can only start `claude`, `codex` or `cursor-agent` (`desk_lanes::AGENTS`), in an absolute folder
+that exists: the pipe already admits only this user, but this is the one message that starts a program.
+
+Lane output has its own broadcast channel (256 frames), separate from the desk's events (1024), so a busy agent
+cannot push Inbox cards out of a slow app's queue. An app that falls behind on lane output loses terminal bytes
+(logged) and should `lane.attach` again. The core kills every lane when it stops.
+

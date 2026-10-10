@@ -15,6 +15,7 @@ mod cloud_link;
 mod decide;
 mod desk;
 mod desk_agents;
+mod desk_lanes;
 mod engine_client;
 mod feed;
 mod ledger;

@@ -8,11 +8,13 @@
 // Every connection starts with `hello {role}`. App connections also receive everything published to the desk;
 // hook, computer and overlay connections are request and response.
 use crate::desk_agents::{Agents, Publisher};
+use crate::desk_lanes::DeskLanes;
 use crate::log::Log;
 use crate::writer::{self, Writer};
 use mewndo_proto::{
     self as proto, Body, Envelope, ErrorBody, Frame, HEADER, Hello, HookRequest, InboxAnswer,
-    InboxUndo, Ping, Pong, Role, RouteRequest, VERSION,
+    InboxUndo, LaneAttach, LaneBrake, LaneClose, LaneOpen, LaneReply, LaneResize, Ping, Pong, Role,
+    RouteRequest, VERSION,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -29,6 +31,7 @@ pub struct Desk {
     events: broadcast::Sender<Arc<Vec<u8>>>,
     writer: Arc<Writer>,
     agents: Agents,
+    lanes: DeskLanes,
     log: Arc<Log>,
 }
 
@@ -46,6 +49,7 @@ impl Desk {
                 Publisher(events.clone()),
                 log.clone(),
             ),
+            lanes: DeskLanes::new(Publisher(events.clone()), log.clone()),
             events,
             writer,
             log,
@@ -142,6 +146,7 @@ pub async fn serve(
     let tag = format!("{:08x}", ulid::Ulid::new().random() as u32);
     let result = listen(&instance.dir, &tag, desk.clone(), stopped).await;
     remove_core_json(&instance.dir);
+    desk.lanes.close_all();
     desk.writer.flush();
     result
 }
@@ -376,6 +381,36 @@ async fn respond(env: Envelope, role: Role, desk: Arc<Desk>) -> Option<Arc<Vec<u
             Ok(req) => Some(reply(&env.id, &desk.agents.route(&req.text))),
             Err(e) => refuse(e.to_string()),
         },
+        (LaneOpen::TYPE, Role::App) => match env.open::<LaneOpen>() {
+            Ok(open) => match desk.lanes.open(open).await {
+                Ok(opened) => Some(reply(&env.id, &opened)),
+                Err(e) => refuse(e),
+            },
+            Err(e) => refuse(e.to_string()),
+        },
+        (LaneReply::TYPE, Role::App) => match env.open::<LaneReply>() {
+            Ok(r) => desk.lanes.reply(&r).err().and_then(refuse),
+            Err(e) => refuse(e.to_string()),
+        },
+        (LaneBrake::TYPE, Role::App) => match env.open::<LaneBrake>() {
+            Ok(b) => desk.lanes.brake(&b).err().and_then(refuse),
+            Err(e) => refuse(e.to_string()),
+        },
+        (LaneResize::TYPE, Role::App) => match env.open::<LaneResize>() {
+            Ok(r) => desk.lanes.resize(&r).err().and_then(refuse),
+            Err(e) => refuse(e.to_string()),
+        },
+        (LaneAttach::TYPE, Role::App) => match env.open::<LaneAttach>() {
+            Ok(a) => match desk.lanes.attach(&a.lane_id) {
+                Ok(bytes) => Some(Arc::new(bytes)),
+                Err(e) => refuse(e),
+            },
+            Err(e) => refuse(e.to_string()),
+        },
+        (LaneClose::TYPE, Role::App) => match env.open::<LaneClose>() {
+            Ok(c) => desk.lanes.close(&c.lane_id).err().and_then(refuse),
+            Err(e) => refuse(e.to_string()),
+        },
         (other, role) => refuse(format!(
             "unknown message type {other} for a {role:?} connection"
         )),
@@ -424,6 +459,9 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
         if budget.rules_only {
             let _ = out.send(reply(&ulid::Ulid::new().to_string(), &budget));
         }
+        for lane in desk.lanes.all() {
+            let _ = out.send(reply(&ulid::Ulid::new().to_string(), &lane));
+        }
     }
 
     let events = (role == Role::App).then(|| {
@@ -445,6 +483,26 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
             }
         })
     });
+    // Lane output, on its own channel (desk_lanes.rs). An app that falls behind loses terminal bytes, never cards;
+    // its lane window can lane.attach to redraw from the replay buffer.
+    let lane_output = (role == Role::App).then(|| {
+        let (mut rx, out, log) = (desk.lanes.subscribe(), out.clone(), desk.log.clone());
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(frame) => {
+                        if out.send(frame).is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => log.warn(&format!(
+                        "desk pipe: a slow app missed {n} lane frames; its lane window should re-attach"
+                    )),
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+    });
 
     loop {
         match read_frame(&mut r).await {
@@ -456,7 +514,19 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
                     }
                 });
             }
-            Ok(Some(Ok(Frame::Lane { .. }))) => {} // lanes arrive with Part G
+            // Keystrokes typed into a lane window. Only an app may type into a lane.
+            Ok(Some(Ok(Frame::Lane { lane, data }))) => {
+                let refused = if role == Role::App {
+                    desk.lanes.write(&lane, &data).err()
+                } else {
+                    Some(format!("a {role:?} connection cannot type into a lane"))
+                };
+                if let Some(why) = refused
+                    && out.send(error("", why)).is_err()
+                {
+                    break;
+                }
+            }
             Ok(Some(Err(e))) => {
                 if out.send(error("", e.to_string())).is_err() {
                     break;
@@ -470,8 +540,8 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
             }
         }
     }
-    if let Some(events) = events {
-        events.abort();
+    for task in [events, lane_output].into_iter().flatten() {
+        task.abort();
     }
     drop(out);
     let _ = writing.await;
@@ -480,7 +550,7 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mewndo_proto::{AgentStatus, encode};
+    use mewndo_proto::{AgentStatus, LaneClosed, LaneOpened, encode};
     use tokio::io::DuplexStream;
 
     fn temp(name: &str) -> PathBuf {
@@ -593,6 +663,301 @@ mod tests {
         let mut c = connect(&d, Role::Hook).await;
         c.write_all(&[7, 0, 0, 0, 0]).await.unwrap();
         assert!(read_frame(&mut c).await.unwrap().is_none());
+    }
+
+    /// A desk whose lanes may start `sh` (an agent stand-in on Linux and in WSL).
+    #[cfg(unix)]
+    fn desk_with_sh(name: &str) -> Arc<Desk> {
+        let d = temp(name);
+        let mut desk = Desk::new(&d, d.join("v0"), None, Arc::new(Log::new(&d.join("logs"))));
+        desk.lanes =
+            DeskLanes::new(Publisher(desk.events.clone()), desk.log.clone()).allowing(&["sh"]);
+        Arc::new(desk)
+    }
+
+    /// Reads frames until `done` says so, keeping every lane byte seen on the way. Fails after 10 s.
+    async fn until(
+        c: &mut DuplexStream,
+        mut done: impl FnMut(&Frame, &[u8]) -> bool,
+    ) -> (Frame, Vec<u8>) {
+        let mut seen = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let frame = read_frame(c).await.unwrap().unwrap().unwrap();
+                if let Frame::Lane { data, .. } = &frame {
+                    seen.extend_from_slice(data);
+                }
+                if done(&frame, &seen) {
+                    return (frame, seen.clone());
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out; lane output so far: {}",
+                String::from_utf8_lossy(&seen)
+            )
+        })
+    }
+
+    fn json(frame: &Frame, kind: &str) -> bool {
+        matches!(frame, Frame::Json(env) if env.kind == kind)
+    }
+
+    fn has(seen: &[u8], text: &str) -> bool {
+        String::from_utf8_lossy(seen).contains(text)
+    }
+
+    /// The same path on every platform, so Windows CI runs it through ConPTY and `cmd`.
+    #[tokio::test]
+    async fn a_lane_over_the_pipe_on_every_platform() {
+        let shell = if cfg!(windows) { "cmd" } else { "sh" };
+        let d = temp("lanes-any");
+        let mut desk = Desk::new(&d, d.join("v0"), None, Arc::new(Log::new(&d.join("logs"))));
+        desk.lanes =
+            DeskLanes::new(Publisher(desk.events.clone()), desk.log.clone()).allowing(&[shell]);
+        let desk = Arc::new(desk);
+        let mut c = connect(&desk, Role::App).await;
+        let open = LaneOpen {
+            program: shell.into(),
+            args: vec![],
+            cwd: d.to_string_lossy().into(),
+            env: vec![],
+        };
+        send(&mut c, "o", &open).await;
+        let (opened, _) = until(&mut c, |f, _| json(f, "lane.opened")).await;
+        let Frame::Json(opened) = opened else {
+            unreachable!()
+        };
+        let id = opened.open::<LaneOpened>().unwrap().lane_id;
+        // The typed line holds "6*7000+1"; only the shell's answer holds 42001.
+        let sum = if cfg!(windows) {
+            "set /a 6*7000+1"
+        } else {
+            "echo $((6*7000+1))"
+        };
+        send(
+            &mut c,
+            "r",
+            &LaneReply {
+                lane_id: id.clone(),
+                text: sum.into(),
+            },
+        )
+        .await;
+        until(&mut c, |_, seen| has(seen, "42001")).await;
+        send(
+            &mut c,
+            "x",
+            &LaneReply {
+                lane_id: id.clone(),
+                text: "exit 7".into(),
+            },
+        )
+        .await;
+        let (ended, _) = until(&mut c, |f, _| json(f, "lane.closed")).await;
+        let Frame::Json(ended) = ended else {
+            unreachable!()
+        };
+        assert_eq!(ended.open::<LaneClosed>().unwrap().exit_code, Some(7));
+        send(&mut c, "c", &LaneClose { lane_id: id }).await;
+        let (gone, _) = until(&mut c, |f, _| json(f, "lane.closed")).await;
+        let Frame::Json(gone) = gone else {
+            unreachable!()
+        };
+        assert!(gone.open::<LaneClosed>().unwrap().removed);
+    }
+
+    // sh, stty and SIGINT: Unix only, like mewndo-pty's own resize and brake tests.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lane_takes_replies_keys_resizes_and_the_brake_and_replays_to_a_new_window() {
+        let d = desk_with_sh("lanes");
+        let folder = temp("lanes-cwd");
+        let mut c = connect(&d, Role::App).await;
+
+        // Only the agents of §33.7 (here: sh) can be started, and only in a real folder.
+        let open = |program: &str, cwd: &std::path::Path| LaneOpen {
+            program: program.into(),
+            args: vec![],
+            cwd: cwd.to_string_lossy().into(),
+            env: vec![],
+        };
+        send(&mut c, "bad", &open("rm", &folder)).await;
+        let (refused, _) = until(&mut c, |f, _| json(f, "error")).await;
+        let Frame::Json(refused) = refused else {
+            unreachable!()
+        };
+        assert!(
+            refused.body["message"]
+                .as_str()
+                .unwrap()
+                .contains("can only start sh")
+        );
+        send(&mut c, "nofolder", &open("sh", &folder.join("missing"))).await;
+        let (refused, _) = until(&mut c, |f, _| json(f, "error")).await;
+        let Frame::Json(refused) = refused else {
+            unreachable!()
+        };
+        assert!(
+            refused.body["message"]
+                .as_str()
+                .unwrap()
+                .contains("is not a folder")
+        );
+
+        send(&mut c, "o", &open("sh", &folder)).await;
+        let (opened, _) = until(&mut c, |f, _| json(f, "lane.opened")).await;
+        let Frame::Json(opened) = opened else {
+            unreachable!()
+        };
+        let opened: LaneOpened = opened.open().unwrap();
+        assert_eq!((opened.program.as_str(), opened.running), ("sh", true));
+        let id = opened.lane_id.clone();
+
+        // A reply is typed in with Enter; the output comes back as lane frames.
+        send(
+            &mut c,
+            "r",
+            &LaneReply {
+                lane_id: id.clone(),
+                text: "echo lane-$((40+2))".into(),
+            },
+        )
+        .await;
+        until(&mut c, |_, seen| has(seen, "lane-42")).await;
+
+        // Keystrokes from the lane window's terminal go in as they are.
+        c.write_all(
+            &encode(&Frame::Lane {
+                lane: id.clone(),
+                data: b"echo typed-$((1+1))\r".to_vec(),
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        until(&mut c, |_, seen| has(seen, "typed-2")).await;
+
+        send(
+            &mut c,
+            "s",
+            &LaneResize {
+                lane_id: id.clone(),
+                rows: 40,
+                cols: 100,
+            },
+        )
+        .await;
+        send(
+            &mut c,
+            "r2",
+            &LaneReply {
+                lane_id: id.clone(),
+                text: "stty size".into(),
+            },
+        )
+        .await;
+        until(&mut c, |_, seen| has(seen, "40 100")).await;
+
+        // The brake interrupts what is running and the lane carries on.
+        send(
+            &mut c,
+            "r3",
+            &LaneReply {
+                lane_id: id.clone(),
+                text: "sleep 30; echo not-braked".into(),
+            },
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        send(
+            &mut c,
+            "b",
+            &LaneBrake {
+                lane_id: id.clone(),
+            },
+        )
+        .await;
+        send(
+            &mut c,
+            "r4",
+            &LaneReply {
+                lane_id: id.clone(),
+                text: "echo after-$((2*3))".into(),
+            },
+        )
+        .await;
+        let (_, seen) = until(&mut c, |_, seen| has(seen, "after-6")).await;
+        // The terminal echoes the typed line, so "not-braked" appears once; a second time would be the echo's output.
+        assert_eq!(
+            String::from_utf8_lossy(&seen).matches("not-braked").count(),
+            1,
+            "{}",
+            String::from_utf8_lossy(&seen)
+        );
+
+        // A window that opens now gets the replay buffer, then lane.opened, and a newly connected app is told
+        // the lane exists.
+        let mut late = connect(&d, Role::App).await;
+        let (_, _) = until(&mut late, |f, _| json(f, "lane.opened")).await;
+        send(
+            &mut late,
+            "a",
+            &LaneAttach {
+                lane_id: id.clone(),
+            },
+        )
+        .await;
+        let (_, replay) = until(&mut late, |f, _| json(f, "lane.opened")).await;
+        assert!(has(&replay, "lane-42") && has(&replay, "after-6"));
+
+        // A hook connection cannot type into a lane.
+        let mut hook = connect(&d, Role::Hook).await;
+        hook.write_all(
+            &encode(&Frame::Lane {
+                lane: id.clone(),
+                data: b"echo no\r".to_vec(),
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(recv(&mut hook).await.kind, "error");
+
+        // The agent ending is lane.closed with its exit code; closing the lane removes it.
+        send(
+            &mut c,
+            "x",
+            &LaneReply {
+                lane_id: id.clone(),
+                text: "exit 7".into(),
+            },
+        )
+        .await;
+        let (ended, _) = until(&mut c, |f, _| json(f, "lane.closed")).await;
+        let Frame::Json(ended) = ended else {
+            unreachable!()
+        };
+        let ended: LaneClosed = ended.open().unwrap();
+        assert_eq!((ended.exit_code, ended.removed), (Some(7), false));
+        send(
+            &mut c,
+            "c",
+            &LaneClose {
+                lane_id: id.clone(),
+            },
+        )
+        .await;
+        let (gone, _) = until(&mut c, |f, _| json(f, "lane.closed")).await;
+        let Frame::Json(gone) = gone else {
+            unreachable!()
+        };
+        assert!(gone.open::<LaneClosed>().unwrap().removed);
+        assert!(d.lanes.all().is_empty());
+        send(&mut c, "c2", &LaneClose { lane_id: id }).await;
+        let (_, _) = until(&mut c, |f, _| json(f, "error")).await;
     }
 
     #[tokio::test]

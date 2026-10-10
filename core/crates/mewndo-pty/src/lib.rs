@@ -60,78 +60,27 @@ pub use launch::{LANE_ID_ENV, LaneSpec, LaunchError, LaunchPlan, Platform, Wrapp
 pub use ring::{CAPACITY, Ring};
 pub use wire::{BRAKE, Resize, brake_bytes, reply_bytes};
 
-use serde::{Deserialize, Serialize};
-
 // --- the control messages the app and the core exchange about a lane ---------------------------------------
 //
-// Lane *output* is `Frame::Lane` (type 1) and is already in mewndo-proto. Lane *control* is not: §38.5's
-// message list has no lane messages in it, and mewndo-proto belongs to Part A. So the five bodies live here,
-// shaped exactly as they would be as `impl Body for ..` once Part A adds the type names. Their `type` strings
-// are in the constants below, so moving them costs one line each and no renaming.
-//
-// Reported to the Part A owner rather than added to mewndo-proto by this session (§32.5 rule 1: a contract
-// change goes in mewndo-proto first, and only its owner may make it).
+// Lane *output* is `Frame::Lane` (type 1); lane *control* is the `lane.*` bodies in mewndo-proto, re-exported here
+// so a caller of this crate has one place to look. The core serves them on the desk pipe (mewndo-core
+// `desk_lanes.rs`).
 
-/// app -> core: "start Claude in shop" (§33.7).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneOpen {
-    /// `claude`, `codex` or `cursor-agent`, as the user would type it.
-    pub program: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// The protected folder the lane runs in.
-    pub cwd: String,
-    #[serde(default)]
-    pub env: Vec<(String, String)>,
-}
+pub use mewndo_proto::{
+    LaneAttach, LaneBrake, LaneClose, LaneClosed, LaneOpen, LaneOpened, LaneReply, LaneResize,
+};
 
-/// core -> app: the lane is open, with what a reopened window needs to know.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneOpened {
-    pub lane_id: String,
-    pub program: String,
-    pub cwd: String,
-    pub pid: Option<u32>,
-    pub rows: u16,
-    pub cols: u16,
-}
-
-/// app -> core: type this into the lane, at any time (§33.7).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneReply {
-    pub lane_id: String,
-    pub text: String,
-}
-
-/// app -> core: Ctrl+C (§24).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneBrake {
-    pub lane_id: String,
-}
-
-/// app -> core: an xterm.js `resize` event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneResize {
-    pub lane_id: String,
-    pub rows: u16,
-    pub cols: u16,
-}
-
-/// core -> app: the agent ended.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneClosed {
-    pub lane_id: String,
-    pub exit_code: Option<u32>,
-}
-
-/// The `type` names these bodies will carry once mewndo-proto has them.
+/// The `type` names the lane bodies carry (`mewndo_proto::Body::TYPE`).
 pub mod message_types {
-    pub const OPEN: &str = "lane.open";
-    pub const OPENED: &str = "lane.opened";
-    pub const REPLY: &str = "lane.reply";
-    pub const BRAKE: &str = "lane.brake";
-    pub const RESIZE: &str = "lane.resize";
-    pub const CLOSED: &str = "lane.closed";
+    use mewndo_proto::Body;
+    pub const OPEN: &str = super::LaneOpen::TYPE;
+    pub const OPENED: &str = super::LaneOpened::TYPE;
+    pub const REPLY: &str = super::LaneReply::TYPE;
+    pub const BRAKE: &str = super::LaneBrake::TYPE;
+    pub const RESIZE: &str = super::LaneResize::TYPE;
+    pub const ATTACH: &str = super::LaneAttach::TYPE;
+    pub const CLOSE: &str = super::LaneClose::TYPE;
+    pub const CLOSED: &str = super::LaneClosed::TYPE;
 }
 
 impl From<&LaneOpen> for LaneSpec {
@@ -145,17 +94,18 @@ impl From<&LaneOpen> for LaneSpec {
     }
 }
 
-impl LaneOpened {
-    pub fn of(lane: &Lane) -> LaneOpened {
-        let size = lane.size();
-        LaneOpened {
-            lane_id: lane.id().to_string(),
-            program: lane.spec().program.clone(),
-            cwd: lane.spec().cwd.to_string_lossy().to_string(),
-            pid: lane.pid(),
-            rows: size.rows,
-            cols: size.cols,
-        }
+/// What `lane.opened` says about a lane right now.
+pub fn opened(lane: &Lane) -> LaneOpened {
+    let size = lane.size();
+    LaneOpened {
+        lane_id: lane.id().to_string(),
+        program: lane.spec().program.clone(),
+        cwd: lane.spec().cwd.to_string_lossy().to_string(),
+        pid: lane.pid(),
+        rows: size.rows,
+        cols: size.cols,
+        running: lane.running(),
+        exit_code: lane.exit_code(),
     }
 }
 

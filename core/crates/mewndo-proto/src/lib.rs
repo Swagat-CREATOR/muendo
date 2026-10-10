@@ -381,6 +381,88 @@ pub struct ComputerResume {
     pub sessions: Vec<String>,
 }
 
+// --- lanes (§33.7, §33.10 Part G) ----------------------------------------------------------------------------------
+// A lane's output is `Frame::Lane` (type 1). These are its control messages. They lived in mewndo-pty until the
+// core served them; they moved here unchanged, plus `lane.attach` and `lane.close` (docs/decisions.md, "Lanes on
+// the desk pipe").
+
+/// app -> core: "start Claude in shop" (§33.7). The core answers with `lane.opened`, or `error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneOpen {
+    /// `claude`, `codex` or `cursor-agent`, as the user would type it.
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// The protected folder the lane runs in.
+    pub cwd: String,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+}
+
+/// core -> app: a lane exists, with what a window needs to draw it. Sent to every app when the lane opens, to an
+/// app that connects while it exists, and after a `lane.attach` replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneOpened {
+    pub lane_id: String,
+    pub program: String,
+    pub cwd: String,
+    pub pid: Option<u32>,
+    pub rows: u16,
+    pub cols: u16,
+    /// False once the agent has ended; the lane stays until `lane.close`, so its last output can be read.
+    #[serde(default = "yes")]
+    pub running: bool,
+    #[serde(default)]
+    pub exit_code: Option<u32>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// app -> core: type this into the lane, at any time (§33.7). The core adds Enter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneReply {
+    pub lane_id: String,
+    pub text: String,
+}
+
+/// app -> core: Ctrl+C (§24).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneBrake {
+    pub lane_id: String,
+}
+
+/// app -> core: an xterm.js `resize` event. The core clamps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneResize {
+    pub lane_id: String,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// app -> core: a window (re)opened. The core sends this connection the lane's replay buffer as lane frames,
+/// then `lane.opened`, so the window can draw from where the lane is now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneAttach {
+    pub lane_id: String,
+}
+
+/// app -> core: end the lane for good: the agent is stopped if it still runs, and its replay buffer goes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneClose {
+    pub lane_id: String,
+}
+
+/// core -> app: the agent ended (`exit_code`), or, with `removed`, the lane itself is gone (`lane.close`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneClosed {
+    pub lane_id: String,
+    pub exit_code: Option<u32>,
+    #[serde(default)]
+    pub removed: bool,
+}
+
 bodies! {
     Hello = "hello", Ping = "ping", Pong = "pong", ErrorBody = "error",
     HookRequest = "hook.request", HookResponse = "hook.response", AgentStatus = "agent.status",
@@ -390,6 +472,8 @@ bodies! {
     ShowmeStep = "showme.step", ShowmeStart = "showme.start", ShowmeStop = "showme.stop",
     ComputerAction = "computer.action", ComputerVerdict = "computer.verdict", ComputerPause = "computer.pause",
     ComputerResume = "computer.resume",
+    LaneOpen = "lane.open", LaneOpened = "lane.opened", LaneReply = "lane.reply", LaneBrake = "lane.brake",
+    LaneResize = "lane.resize", LaneAttach = "lane.attach", LaneClose = "lane.close", LaneClosed = "lane.closed",
 }
 
 #[cfg(test)]
