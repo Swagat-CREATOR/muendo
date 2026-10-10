@@ -5,10 +5,37 @@
   --green: #3ccf6e; --amber: #f5b83d; --red: #ef4b4b; --grey: #8a8a8a; }
 html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
 body {
-  display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-end; gap: 8px; padding: 8px;
-  box-sizing: border-box; font: 14px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--text);
+  position: relative; box-sizing: border-box; font: 14px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: var(--text); transition: opacity 90ms linear;
 }
-body.left { align-items: flex-start; }
+
+/* Placement (design spec §11.8). The window is a fixed transparent canvas on one edge of the screen; --anchor is how
+   far along that edge the surface sits. The pill lies along top and bottom edges and stands up on left and right
+   ones; the flyout (hover row, holds, cards, panel) always opens toward the middle of the screen. */
+.pill { position: absolute; will-change: transform; transition: transform 120ms cubic-bezier(0.2, 0, 0, 1); }
+.flyout { position: absolute; display: flex; gap: 8px; width: 360px; }
+.edge-bottom .pill { bottom: 8px; left: var(--anchor); transform: translateX(-50%); }
+.edge-top .pill { top: 8px; left: var(--anchor); transform: translateX(-50%); }
+.edge-right .pill { right: 8px; top: var(--anchor); transform: translateY(-50%); }
+.edge-left .pill { left: 8px; top: var(--anchor); transform: translateY(-50%); }
+.edge-bottom .flyout, .edge-top .flyout { left: clamp(8px, calc(var(--anchor) - 180px), calc(100% - 368px)); align-items: center; }
+.edge-bottom .flyout { bottom: 56px; flex-direction: column; justify-content: flex-end; max-height: calc(100% - 64px); }
+.edge-top .flyout { top: 56px; flex-direction: column-reverse; justify-content: flex-end; max-height: calc(100% - 64px); }
+.edge-right .flyout, .edge-left .flyout { top: clamp(8px, calc(var(--anchor) - 220px), calc(100% - 448px)); height: 440px;
+  flex-direction: column; justify-content: center; }
+.edge-right .flyout { right: 56px; align-items: flex-end; }
+.edge-left .flyout { left: 56px; align-items: flex-start; }
+/* Standing up on a side edge: the same pieces in a column. */
+.edge-left .pill, .edge-right .pill { flex-direction: column; width: 40px; height: auto; padding: 8px 0; }
+.edge-left .agents, .edge-right .agents { flex-direction: column; padding: 2px 0; }
+.edge-left .protection, .edge-right .protection { position: static; margin-bottom: 4px; }
+/* While dragging: only the compact surface, lifted (§11.8 step 2). The orientation switch hides behind a fade. */
+.dragging .flyout { display: none; }
+.dragging .pill > :not(.protection):not(.agents) { display: none; }
+.dragging.edge-bottom .pill, .dragging.edge-top .pill { transform: translateX(-50%) scale(1.04); }
+.dragging.edge-left .pill, .dragging.edge-right .pill { transform: translateY(-50%) scale(1.04); }
+.dragging .pill { box-shadow: 0 12px 34px rgba(0, 0, 0, .55); cursor: grabbing; }
+.turning { opacity: 0; }
 [hidden] { display: none !important; }
 button { all: unset; cursor: pointer; display: grid; place-items: center; }
 button:focus-visible { outline: 2px solid #8cf; outline-offset: 2px; }
@@ -16,7 +43,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 
 /* Resting pill: agent dots, mic, up-arrow (with the protection dot on its corner). */
 .pill {
-  position: relative; display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 3px 0 6px; border-radius: 20px;
+  display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 3px 0 6px; border-radius: 20px;
   background: var(--bg); border: 1px solid var(--edge); box-shadow: 0 2px 10px rgba(0, 0, 0, .45); cursor: grab;
 }
 .pill.dragging { cursor: grabbing; }

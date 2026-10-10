@@ -351,3 +351,38 @@ table, and usage per code and device.
 
 **What does not reach the dock yet:** the core has no HTTP client for the gateway (the Router's `Clef` is still
 `NoClef`), so `rules_only` is only set by tests until the Clef transport is wired, which needs the deployed Worker.
+
+## The dock sits on any edge, and the drag lives in the main process (design D3a, 10 Oct 2026)
+
+Why the old bar jittered, found in `app/bar.js` and `renderer/bar.js` before the change:
+
+1. The renderer sent every `pointermove` over IPC and the main process moved the window by the deltas. IPC
+   messages arrive late and in bursts, and adding rounded deltas drifts, so the window lagged and shook.
+2. A drop was one `setBounds` jump to the new place, with no glide.
+3. `bar.js` had no orientation logic: `dock-layout.js` existed but nothing used it, so the bar kept its bottom
+   shape on every edge.
+4. Always-on-top was set once at creation; Windows can drop it after another topmost window takes focus.
+
+(`hasShadow` was already false and the window size never changed on hover, so neither caused it.)
+
+Now (`app/dock-place.js`, `app/bar.js`): one fixed-size transparent canvas per orientation (520 x 560 lying
+down, 470 x 600 standing up), resized only when a drop changes the orientation. The renderer only says when a
+drag starts (with the pointer's offset in the window) and ends; in between the main process reads the cursor every
+8 ms and calls `setPosition` with whole pixels, only when the position changed. On release it snaps to the nearest
+edge of the display under the pointer, gliding over 180 ms in 8 ms whole-pixel steps (one jump with reduced
+motion). The edge decides the shape (left and right stand it up), the flyout opens toward the middle of the
+screen, and the spot is remembered as `{ displayId, edge, fraction }`, so a resolution or scaling change keeps
+it in the same place and a missing display falls back to the primary. Always-on-top is re-asserted on blur and
+after a snap, at most once a second. Double-clicking the status dots sends it back to bottom right.
+
+`bar-layout.js` and `dock-layout.js` are no longer used by the app; they stay, with their tests, until the design
+steps are done, then go in one commit.
+
+Two Windows fixes found by dragging the real app at 125 %: every move restates the window size (`setPosition` let a
+650 x 700 canvas creep to 700 x 755 over one drag), and click-through is re-applied after every snap (mouse
+forwarding went deaf after a resize). Double-click is listened on the document, since the press's pointer capture
+sends it to the body.
+
+**What it can't do:** the cursor is polled, so the window trails the pointer when the main process is busy; in one
+scripted run on the dev machine it only caught up at the drop, and the glide took about half a second. A drag that
+never reports its end stops by itself after 10 s.

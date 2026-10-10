@@ -3,7 +3,12 @@
 // Hover: the shortcuts hint, the change ticker (−deleted ~edited +created since the last save point) and Undo last,
 // Brake, Save point. Shrinks to a dot after 5 s idle; an alert or hover brings it back.
 // Pointer: a press that moves more than 4 px drags the bar; held 600 ms on a [data-long] element it's a long-press
-// (agent dot: brake it; ticker: undo that burst); otherwise it's a tap ([data-action]).
+// (agent dot: brake it; ticker: undo that burst); otherwise it's a tap ([data-action]). The drag itself runs in the
+// main process (app/bar.js): this only says where it started and when it ended. Double-click the face: back to
+// bottom right.
+// Placement: the main process says which edge the window is on and how far along it the surface sits (`anchor`);
+// the pill lies along top and bottom edges and stands up on left and right ones, and everything else opens toward
+// the middle of the screen (design spec §11.8).
 const $ = (id) => document.getElementById(id);
 const pill = $('pill');
 const IDLE_MS = 5000;
@@ -33,8 +38,8 @@ function el(tag, props, ...children) {
 
 function render() {
   pill.className = `pill hit ${['protected', 'drift', 'braked'].includes(state.status) ? state.status : ''}`;
-  setOpen(overPill);
-  document.body.classList.toggle('left', state.side === 'left');
+  setOpen(overPill && !state.dragging);
+  place();
   const label = state.label || 'Mewndo';
   $('protection').setAttribute('aria-label', label);
   $('protection').title = label;
@@ -70,6 +75,24 @@ function render() {
   wake();
 }
 window.bar.onState((s) => { state = s; render(); });
+
+// Which edge, and where along it. A new orientation cross-fades (90 ms) so the window's one size change is hidden.
+let edge = null;
+function place() {
+  const next = state.edge ?? 'bottom';
+  document.body.style.setProperty('--anchor', `${state.anchor ?? 0}px`);
+  document.body.classList.toggle('dragging', !!state.dragging || !!press?.dragging);
+  if (next === edge) return;
+  const turning = edge && (['left', 'right'].includes(next) !== ['left', 'right'].includes(edge));
+  edge = next;
+  const apply = () => {
+    document.body.classList.remove('edge-left', 'edge-right', 'edge-top', 'edge-bottom', 'turning');
+    document.body.classList.add(`edge-${edge}`);
+  };
+  if (!turning) return apply();
+  document.body.classList.add('turning');
+  setTimeout(apply, 90);
+}
 
 // The up-arrow panel. Open: the window may take focus once clicked (bar.js), so Escape and clicking elsewhere close
 // it. What it can't do: a click outside before you've clicked inside it can't be seen; press the up-arrow again.
@@ -251,9 +274,11 @@ document.addEventListener('pointermove', (e) => {
     press.dragging = true;
     clearTimeout(press.timer);
     pill.classList.add('dragging');
-    window.bar.drag({ phase: 'start' });
+    document.body.classList.add('dragging');
+    setPanel(false);
+    // Where the pointer is inside the window: the main process keeps it there while the cursor moves.
+    window.bar.dragStart(e.clientX, e.clientY);
   }
-  if (press.dragging) window.bar.drag({ phase: 'move', dx, dy });
 });
 document.addEventListener('pointerup', (e) => {
   if (!press) return;
@@ -262,8 +287,9 @@ document.addEventListener('pointerup', (e) => {
   press = null;
   if (document.body.hasPointerCapture(e.pointerId)) document.body.releasePointerCapture(e.pointerId);
   pill.classList.remove('dragging');
+  document.body.classList.remove('dragging');
   if (mic) stopTalking();
-  else if (dragging) window.bar.drag({ phase: 'end' });
+  else if (dragging) window.bar.dragEnd();
   else if (!long && target && !target.disabled && LOCAL[target.id]) LOCAL[target.id]();
   else if (!long && target && !target.disabled && target.dataset.action) window.bar.action(target.dataset.action, target.dataset.arg);
   const hit = !!document.elementFromPoint(e.clientX, e.clientY)?.closest('.hit');
@@ -278,5 +304,11 @@ document.addEventListener('keydown', (e) => {
     if (LOCAL[b.id]) LOCAL[b.id]();
     else window.bar.action(b.dataset.action, b.dataset.arg);
   }
+});
+// Double-click the pill (not a button) to send it back to bottom right (§11.8 step 7). Listened on the document: the
+// pointer capture taken on press sends click and dblclick to the body, not to what is under the pointer.
+document.addEventListener('dblclick', (e) => {
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  if (under?.closest('.pill') && !under.closest('button')) window.bar.action('dock-reset');
 });
 wake();

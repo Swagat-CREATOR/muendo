@@ -1,4 +1,6 @@
 // The pill and the side dock are one surface with two docking modes (spec §33.1, §33.10 Part E steps 2 and 3).
+// Superseded by dock-place.js (design spec §11.8: the edge it is dropped on decides the shape); app/bar.js no
+// longer uses this or bar-layout.js. Both stay, with their tests, until the design steps are done.
 // Plain math on Electron's display objects, in DIPs, like bar-layout.js; no Electron, so tests run it with plain
 // Node.
 //   Horizontal: the v0 pill above the taskbar, bottom right (bar-layout.js). Unchanged.

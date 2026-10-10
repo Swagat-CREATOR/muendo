@@ -1,6 +1,6 @@
 // The Agent Desk windows: the card stack, the Talk box and the lanes (spec §33.10 Part E step 2, §38.3
 // cards-window.ts / lanes-window.ts). The dock itself is the v0 pill's window, which stands up as the side dock
-// (app/bar.js with dock-layout.js), because the pill and the dock are one component tree (§33.1).
+// (app/bar.js with dock-place.js), because the pill and the dock are one component tree (§33.1).
 //
 // Every window is created once, at start-up, hidden: `show: false`, `paintWhenInitiallyHidden: true` and
 // `backgroundThrottling: false`, so showing one later is instant and nothing is ever created on demand
