@@ -15,9 +15,10 @@ for need in "$home/.cargo/bin/cargo.exe" "$home/.mewndo-dev/binutils/as.exe"; do
 done
 
 export CARGO_TARGET_DIR="$profile\\.mewndo-dev\\target"
+export CARGO_INCREMENTAL=0 # incremental caches grew to gigabytes on a nearly full C:
 export PATH="$home/.mewndo-dev/binutils:$home/.cargo/bin:$PATH"
 export MEWNDO_CORE_BIN="$profile\\.mewndo-dev\\target\\debug\\mewndo-core.exe" # for the Node tests
-export WSLENV="${WSLENV:+$WSLENV:}CARGO_TARGET_DIR:MEWNDO_CORE_BIN:PATH/l" # PATH/l: hand PATH to Windows, translated
+export WSLENV="${WSLENV:+$WSLENV:}CARGO_TARGET_DIR:CARGO_INCREMENTAL:MEWNDO_CORE_BIN:PATH/l" # PATH/l: hand PATH to Windows, translated
 program=$1
 case $program in cargo|rustc|rustup) program="$home/.cargo/bin/$program.exe" ;; node) program="/mnt/c/Program Files/nodejs/node.exe" ;; esac
 exec "$program" "${@:2}"

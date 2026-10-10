@@ -68,9 +68,10 @@ pub struct Lane {
     /// Shared with the reader thread. One buffer, not a copy: a window's replay has to see the bytes the
     /// reader has just written, not a snapshot that lags behind it.
     ring: Arc<Mutex<Ring>>,
-    writer: Mutex<Option<Box<dyn Write + Send>>>,
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    /// `None` once the agent has ended: dropping it closes the pseudo-console (see `watch_child`).
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     size: Mutex<Resize>,
     /// Set by the handlers when the agent's turn ends (Codex `notify`, Cursor `stop`, Claude `Stop`). It is
     /// *only* information for the Agents tab: nothing in `reply` reads it, which is what makes a reply ten
@@ -174,6 +175,8 @@ impl Lane {
         self.master
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .ok_or_else(ended)?
             .resize(PtySize {
                 rows: size.rows,
                 cols: size.cols,
@@ -196,6 +199,8 @@ impl Lane {
         self.master
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .ok_or_else(ended)?
             .get_size()
             .map(|s| Resize {
                 rows: s.rows,
@@ -370,18 +375,57 @@ pub fn start(
 
     let ring = Arc::new(Mutex::new(Ring::default()));
     let running = Arc::new(AtomicBool::new(true));
-    spawn_reader(id.to_string(), reader, ring.clone(), running.clone(), sink);
+    let master = Arc::new(Mutex::new(Some(pair.master)));
+    let child = Arc::new(Mutex::new(child));
+    watch_child(id, child.clone(), master.clone());
+    let writer = Arc::new(Mutex::new(Some(writer)));
+    spawn_reader(
+        id.to_string(),
+        reader,
+        ring.clone(),
+        running.clone(),
+        writer.clone(),
+        sink,
+    );
     Ok(Lane {
         id: id.to_string(),
         spec,
         ring,
-        writer: Mutex::new(Some(writer)),
-        master: Mutex::new(pair.master),
-        child: Mutex::new(child),
+        writer,
+        master,
+        child,
         size: Mutex::new(size),
         turn_ended: AtomicBool::new(false),
         running,
     })
+}
+
+fn ended() -> std::io::Error {
+    std::io::Error::other("the lane's agent has ended")
+}
+
+/// ConPTY keeps its output pipe open after the child exits, until the pseudo-console itself is closed, so the
+/// reader would never see the end. This closes it (drops the master) once the child has ended. Harmless on Unix,
+/// where the pty already reports end of file.
+/// ponytail: polls every 100 ms; a wait on the process handle would wake at once, if that ever matters.
+fn watch_child(
+    id: &str,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+) {
+    std::thread::Builder::new()
+        .name(format!("mewndo-lane-watch-{id}"))
+        .spawn(move || {
+            loop {
+                let done = child.lock().unwrap_or_else(|e| e.into_inner()).try_wait();
+                if !matches!(done, Ok(None)) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            master.lock().unwrap_or_else(|e| e.into_inner()).take();
+        })
+        .expect("a lane watcher thread");
 }
 
 /// Read until end of file, into the ring buffer and out as frames.
@@ -390,16 +434,29 @@ fn spawn_reader(
     mut reader: Box<dyn Read + Send>,
     ring: Arc<Mutex<Ring>>,
     running: Arc<AtomicBool>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     sink: Arc<dyn LaneSink>,
 ) {
     std::thread::Builder::new()
         .name(format!("mewndo-lane-{id}"))
         .spawn(move || {
             let mut buf = vec![0u8; READ_BUF];
+            let mut answered_dsr = false;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // ConPTY opens with a cursor-position query (ESC[6n) and sends no output until a terminal
+                        // answers it; a lane may have no window yet. So the lane answers that first one itself.
+                        // ponytail: only the first; later ones are the agent's own, for the lane window's xterm.
+                        if !answered_dsr && buf[..n].windows(4).any(|w| w == b"\x1b[6n") {
+                            answered_dsr = true;
+                            if let Some(w) =
+                                writer.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+                            {
+                                let _ = w.write_all(b"\x1b[1;1R").and_then(|_| w.flush());
+                            }
+                        }
                         ring.lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .push(&buf[..n]);

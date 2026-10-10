@@ -97,14 +97,18 @@ pub fn request(args: &Args, payload: Value) -> HookRequest {
 /// The happy path (§33.10 B2 and B3): find the core, open the pipe, hello, request, answer.
 ///
 /// Every failure is an `Err` for the caller to fail open on -- there is no error path that prints or exits.
-pub fn forward(args: &Args, payload: &Value) -> std::io::Result<HookResponse> {
+pub fn forward(
+    dir: Option<std::path::PathBuf>,
+    args: &Args,
+    payload: &Value,
+) -> std::io::Result<HookResponse> {
     let missing = |what: &str| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("{what}: the core is not running"),
         )
     };
-    let dir = pipe::desk_dir().ok_or_else(|| missing("no Mewndo data folder"))?;
+    let dir = dir.ok_or_else(|| missing("no Mewndo data folder"))?;
     let name = pipe::pipe_name(&dir).ok_or_else(|| missing("no core.json"))?;
     let mut connection = pipe::connect(&name)?;
     pipe::round_trip(&mut connection, &request(args, payload.clone()))
@@ -112,8 +116,13 @@ pub fn forward(args: &Args, payload: &Value) -> std::io::Result<HookResponse> {
 
 /// The whole job. Never fails, because there is no failure an agent should ever see from Mewndo.
 pub fn run(args: &Args, input: &[u8]) -> Outcome {
+    run_in(pipe::desk_dir(), args, input)
+}
+
+/// `run` with the desk folder given, so a test never reads this machine's real one.
+pub fn run_in(dir: Option<std::path::PathBuf>, args: &Args, input: &[u8]) -> Outcome {
     let payload = payload_of(input);
-    match forward(args, &payload) {
+    match forward(dir, args, &payload) {
         Ok(response) => Outcome {
             stdout: response.stdout,
             // The core's code, passed through: 0 to carry on, 2 to block with the stdout JSON, whatever a
@@ -186,7 +195,14 @@ mod tests {
         // `post-tool` is not a pre-action event, so this is silence whatever this machine happens to have in
         // its deny cache -- the cache paths are covered by failopen.rs's own tests and tests/forwarder.rs,
         // which point a child forwarder at a temporary folder instead of reading the real one.
-        let out = run(&args("claude", "post-tool"), br#"{"tool_name":"Read"}"#);
+        let empty = std::env::temp_dir().join(format!("mewndo-hook-nocore-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        let out = run_in(
+            Some(empty.clone()),
+            &args("claude", "post-tool"),
+            br#"{"tool_name":"Read"}"#,
+        );
+        let _ = std::fs::remove_dir_all(&empty);
         assert_eq!(out, Outcome::silent());
         assert_eq!((out.stdout.as_str(), out.exit_code), ("", 0));
     }
