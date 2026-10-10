@@ -152,6 +152,11 @@ stops. "Never ask" and the counts are kept in memory only, so they reset when th
 deleting its line from rules.toml; there is no Settings → Habits page yet. Tested in the core and the app's card
 logic on Linux; not yet seen in the real app on Windows.
 
+**Uninstalling** asks whether to delete Mewndo's saved history; the default is No. Yes permanently deletes every
+save point, Mewndo's trash, the Agent Inbox's card history and rules.toml (`%APPDATA%\mewndo` and
+`%LOCALAPPDATA%\Mewndo`), and that cannot be undone. Either way Mewndo's hooks are taken out of Claude Code's
+settings, keeping the rest of the file and a backup. The installer has not yet been built and run as part of v1.
+
 Partly built: the **Flight Recorder**. The core keeps a local append-only log of guard decisions, heals, holds,
 approvals, save points and restores, hash-chained and signed with a device key, so rewriting or dropping an event
 is detectable. A standalone verifier now exists (`tools/ledger-verify`, 11 tests) that recomputes the

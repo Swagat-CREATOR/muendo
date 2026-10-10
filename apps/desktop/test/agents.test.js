@@ -304,6 +304,18 @@ test('Claude Code hooks: uninstalling removes only Mewndo\'s hooks, keeps everyt
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')), own, 'exactly the user\'s own settings again');
   assert.deepStrictEqual(await removeClaudeHooks({ settingsPath }), { removed: 0, backup: null }, 'twice changes nothing');
 
+  // The v1 plugin's entries (integrations/claude-code/hooks/hooks.json, merged with absolute paths) go too: the
+  // uninstaller deletes the mewndo-hook.exe they run. A user's own hook that only mentions Mewndo stays.
+  const exe = 'C:/Users/Ana Maria/AppData/Local/Programs/Mewndo/resources/claude-code/bin/mewndo-hook.exe';
+  const withPlugin = { ...own, hooks: { ...own.hooks, Stop: [{ hooks: [
+    { type: 'command', command: `"${exe}" claude stop`, timeout: 130 },
+    { type: 'command', command: 'echo mewndo-hook-notes.txt' },
+  ] }] } };
+  fs.writeFileSync(settingsPath, JSON.stringify(withPlugin));
+  assert.strictEqual((await removeClaudeHooks({ settingsPath })).removed, 1);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).hooks.Stop,
+    [{ hooks: [{ type: 'command', command: 'echo mewndo-hook-notes.txt' }] }]);
+
   fs.writeFileSync(settingsPath, '{ not json');
   assert.deepStrictEqual(await removeClaudeHooks({ settingsPath }), { removed: 0, backup: null });
   assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), '{ not json', 'a file Mewndo can\'t read is left alone');

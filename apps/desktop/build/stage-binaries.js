@@ -5,7 +5,7 @@
 //   node apps/desktop/build/stage-binaries.js            copy, then report what was staged
 //   node apps/desktop/build/stage-binaries.js --check     verify only; writes nothing, exits 1 on a problem
 //
-// Plain Node, CommonJS, no dependencies (plot.md). It does exactly two things:
+// Plain Node, CommonJS, no dependencies (plot.md). It does three things:
 //
 //   1. Copies `core/target/release/mewndo-hook.exe` to `integrations/claude-code/bin/mewndo-hook.exe`.
 //      Every hook in `integrations/claude-code/hooks/hooks.json` runs `"${CLAUDE_PLUGIN_ROOT}/bin/mewndo-hook.exe"`,
@@ -17,6 +17,11 @@
 //
 //   2. Checks that every input electron-builder is told to copy exists, because electron-builder's own error
 //      for a missing `extraResources` entry does not say which prompt or which binary it belonged to.
+//
+//   3. Checks what will actually run on the user's PC: each binary is a 64-bit Windows program (a Linux build
+//      renamed to .exe, or a 32-bit one, would pass every other check and fail only after install), the plugin's
+//      hooks.json runs exactly the binary that is staged into it, its plugin.json is readable, and the app starts
+//      the core with `--desk` (without it the Agent Desk pipe never opens and every hook falls through).
 //
 // Why here and not in an electron-builder `afterPack` hook: the plugin copy has to happen *before* packaging,
 // since `extraResources` copies the whole `integrations/claude-code` folder - including `bin/` - into the
@@ -37,6 +42,7 @@ const ROOT = process.env.MEWNDO_REPO_ROOT
 
 const DESKTOP = path.join(ROOT, 'apps', 'desktop');
 const RELEASE = path.join(ROOT, 'core', 'target', 'release');
+const PLUGIN = path.join(ROOT, 'integrations', 'claude-code');
 
 // Windows is the only platform Mewndo installs on (spec §28.9), so the names are the Windows ones always -
 // not `process.platform`'s. The plugin's hook commands run `bin\mewndo-hook.exe` by that exact name, and an
@@ -58,9 +64,84 @@ const BINARIES = [
     // Twice over: once next to the app, and once inside the Claude Code plugin folder, because the hook
     // commands address it through ${CLAUDE_PLUGIN_ROOT} and not through the app's resources.
     to: 'resources and the Claude Code plugin',
-    plugin: path.join(ROOT, 'integrations', 'claude-code', 'bin'),
+    plugin: path.join(PLUGIN, 'bin'),
   },
 ];
+
+// x86-64, in the PE header's Machine field. Mewndo ships one Windows build (§28.9), and it is this one.
+const IMAGE_FILE_MACHINE_AMD64 = 0x8664;
+
+// What kind of program a file is, from its first bytes: 'windows-x64', another Windows architecture, 'elf'
+// (a Linux build), 'mach-o', or null for anything else. Reads at most the first 4 KB.
+function programKind(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(4096);
+    const n = fs.readSync(fd, head, 0, head.length, 0);
+    if (n >= 4 && head.readUInt32BE(0) === 0x7f454c46) return 'elf';
+    if (n >= 4 && [0xfeedfacf, 0xcffaedfe].includes(head.readUInt32BE(0))) return 'mach-o';
+    if (n < 64 || head.toString('latin1', 0, 2) !== 'MZ') return null;
+    const pe = head.readUInt32LE(0x3c); // e_lfanew: where the "PE\0\0" signature is
+    if (pe + 6 > n || head.toString('latin1', pe, pe + 4) !== 'PE\0\0') return null;
+    const machine = head.readUInt16LE(pe + 4);
+    return machine === IMAGE_FILE_MACHINE_AMD64 ? 'windows-x64' : `windows-0x${machine.toString(16)}`;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// The Claude Code plugin as it will be installed: its manifest must be readable, and every hook command must run
+// the binary this script stages into bin/, by that exact name. A hook that names another file cannot start, which
+// Claude Code treats as a hook that said nothing.
+function checkPlugin() {
+  const manifest = path.join(PLUGIN, '.claude-plugin', 'plugin.json');
+  try {
+    const plugin = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    if (!plugin.name) problem('integrations/claude-code/.claude-plugin/plugin.json has no "name"');
+  } catch (e) {
+    problem(`integrations/claude-code/.claude-plugin/plugin.json is not readable JSON: ${e.message}`);
+  }
+  const hook = BINARIES.find((b) => b.plugin).name;
+  for (const file of ['hooks.json', 'hooks.fallback.json']) {
+    const where = path.join(PLUGIN, 'hooks', file);
+    if (!fs.existsSync(where)) {
+      if (file === 'hooks.json') problem('integrations/claude-code/hooks/hooks.json is missing');
+      continue;
+    }
+    let hooks;
+    try {
+      hooks = JSON.parse(fs.readFileSync(where, 'utf8')).hooks;
+    } catch (e) {
+      problem(`integrations/claude-code/hooks/${file} is not readable JSON: ${e.message}`);
+      continue;
+    }
+    const commands = Object.values(hooks || {}).flat().flatMap((group) => group.hooks || []).map((h) => h.command);
+    if (!commands.length) problem(`integrations/claude-code/hooks/${file} has no hook commands`);
+    for (const command of commands) {
+      if (!String(command).startsWith(`"\${CLAUDE_PLUGIN_ROOT}/bin/${hook}" `)) {
+        problem(`integrations/claude-code/hooks/${file} runs ${command}, not the staged bin/${hook}`);
+      }
+    }
+  }
+}
+
+// The app must start the core with --desk (spec §33.10 Part A): that is what opens the pipe mewndo-hook.exe talks
+// to. app/main.js builds the arguments in startCore(); a text check, because main.js needs Electron to load.
+function checkCoreArgs() {
+  const main = path.join(DESKTOP, 'app', 'main.js');
+  let text = '';
+  try {
+    text = fs.readFileSync(main, 'utf8');
+  } catch (e) {
+    problem(`apps/desktop/app/main.js is not readable: ${e.message}`);
+    return;
+  }
+  const start = text.indexOf('function startCore(');
+  const body = start === -1 ? '' : text.slice(start, text.indexOf('\n}\n', start));
+  if (!/args:\s*\[[^\]]*'--desk'/.test(body)) {
+    problem("app/main.js startCore() does not start the core with '--desk', so the Agent Desk pipe would never open");
+  }
+}
 
 function problem(message) {
   process.exitCode = 1;
@@ -154,9 +235,10 @@ function checkConfig() {
   return build;
 }
 
-function main() {
-  const check = process.argv.includes('--check');
+function main(check = process.argv.includes('--check')) {
   const build = checkConfig();
+  checkPlugin();
+  checkCoreArgs();
   const staged = [];
 
   for (const binary of BINARIES) {
@@ -167,6 +249,14 @@ function main() {
           '  Build it first:  cargo build --release --manifest-path core/Cargo.toml\n' +
           '  On a non-Windows host that produces a Linux binary, not an .exe: the installer needs a\n' +
           '  Windows build (--target x86_64-pc-windows-msvc, or a Windows machine).',
+      );
+      continue;
+    }
+    const kind = programKind(from);
+    if (kind !== 'windows-x64') {
+      problem(
+        `core/target/release/${binary.name} is not a 64-bit Windows program (it is ${kind || 'not a program'}).\n` +
+          '  Build it on Windows, or with --target x86_64-pc-windows-msvc, and copy that build here.',
       );
       continue;
     }
@@ -201,4 +291,6 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { main, programKind, BINARIES };

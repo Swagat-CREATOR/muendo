@@ -24,28 +24,19 @@ user would silently lose the guard.
 
 ## Installing
 
-The Connect page (§22.2, prompt P5.2) installs this. Its logic is Rust, in
-`core/crates/mewndo-core/src/agents/claude.rs`, module `connect`:
+The Windows installer carries this folder to `%LOCALAPPDATA%\Programs\Mewndo\resources\claude-code\`, with
+`bin\mewndo-hook.exe` staged in by `apps/desktop/build/stage-binaries.js` (which also refuses to package a hook
+binary that is not a 64-bit Windows program, or a hooks file that runs anything but `bin/mewndo-hook.exe`).
 
-| Call | What it does |
-|---|---|
-| `connect::plan(settings_path, plugin_root, variant)` | What installing would change, without changing it: `preview`, `merged`, `installed`, `v0_entries` |
-| `connect::install(..)` | Backs the file up, merges, writes through a temp file and a rename |
-| `connect::remove(..)` | Takes every Mewndo entry out again and leaves everything else alone |
+**Nothing installs it into Claude Code yet.** An earlier version of this page described a Rust `connect` module
+(`plan`/`install`/`remove`) in `core/crates/mewndo-core/src/agents/claude.rs`; it does not exist. What the app's
+Connect page installs today is the v0 hooks (`apps/desktop/engine/claude-hooks.js`: a save-point hook and the
+HTTP Guard). Pointing Claude Code at this plugin needs the user's own `~/.claude/settings.json` changed (or Claude
+Code's plugin command), which is a verify-first item (§32.5 rule 3) and needs the user's consent first.
 
-It merges into `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) with absolute paths, because
-§33.10 Part C step 2's first choice - the official "install a local plugin" command - is a **verify-first item**
-(§32.5 rule 3) that could not be checked here: there is no Claude Code on this machine. See the report in
-`docs/samples/claude/README.md` for what is unverified.
-
-Installing **removes the v0 hook entries** first (§33.10's first pitfall: otherwise the v0 save-point hook and
-the v0 HTTP Guard fire alongside the plugin and the user gets two cards and two save points for one action). A
-Mewndo entry is any hook whose `command` contains `mewndo`, whose `url` is the v0 guard
-(`http://127.0.0.1:<port>/guard`), or which carries an `X-Mewndo-Token` header - the v0 Guard is an `http` hook
-with no command at all, so matching the command alone would leave it behind.
-
-Installing twice changes nothing. The previous settings file is copied to `settings.json.mewndo-backup` (kept
-once, so the first backup is always the one from before Mewndo) before anything is written.
+When it is installed by hand, uninstalling Mewndo takes it out again: `Mewndo.exe --remove-claude-hooks` (run by
+the uninstaller) removes every hook whose command runs `mewndo-hook`, as well as the v0 entries, and keeps the rest
+of the file, with a backup next to it.
 
 ## `hooks/hooks.fallback.json`
 

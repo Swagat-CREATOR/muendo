@@ -9,6 +9,14 @@
 ;   $INSTDIR\resources\claude-code\                the Claude Code plugin, with bin\mewndo-hook.exe staged
 ;                                                  into it by build\stage-binaries.js
 ;
+; The app starts the core as `mewndo-core.exe --desk %LOCALAPPDATA%\Mewndo --data ... --rules
+; %APPDATA%\Mewndo\rules.toml` (app\main.js, startCore); build\stage-binaries.js refuses to package an app whose
+; startCore() lost --desk. What Mewndo writes outside $INSTDIR, and what uninstall does with it:
+;
+;   %APPDATA%\mewndo\        save points, trash, logs, settings, rules.toml    kept unless the user says delete
+;   %LOCALAPPDATA%\Mewndo\   desk.db (the Inbox's card history), core.json     kept unless the user says delete
+;   ~\.claude\settings.json  Mewndo's hook entries                            always taken out, the rest kept
+;
 ; "Starts the core at login" means exactly this: the Run entry below starts **Mewndo.exe --hidden**, and the
 ; app starts mewndo-core.exe as a child (app\main.js, startCore). There is no Windows service and no separate
 ; entry for the core, on purpose - a service would need an elevated install (this one is per-user, so no UAC
@@ -43,8 +51,10 @@
     ; Start at sign-in
     DeleteRegValue HKCU "${MEWNDO_RUN_KEY}" "Mewndo"
     ; The saved history is the user's to keep or delete. Keeping is the default (and what a silent uninstall does).
-    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete Mewndo's saved history?$\r$\n$\r$\nThis permanently deletes every save point of your protected folders, and Mewndo's trash (files that restores moved aside).$\r$\n$\r$\nChoose No to keep it: if you install Mewndo again, it finds your history." /SD IDNO IDNO mewndoKeepHistory
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete Mewndo's saved history?$\r$\n$\r$\nThis permanently deletes every save point of your protected folders, Mewndo's trash (files that restores moved aside), the Agent Inbox's card history, and your rules.toml.$\r$\n$\r$\nChoose No to keep it: if you install Mewndo again, it finds your history." /SD IDNO IDNO mewndoKeepHistory
       RMDir /r "$APPDATA\mewndo"
+      ; The desk folder (decisions.md, "desk.db location"). Not $LOCALAPPDATA\Programs\Mewndo, which is $INSTDIR.
+      RMDir /r "$LOCALAPPDATA\Mewndo"
     mewndoKeepHistory:
   ${endIf}
 !macroend

@@ -59,3 +59,20 @@ took 3464 ms", Linux), and `mewndo-savepoint: asks Mewndo for a save point` (Win
 pipe isn't involved. CI on its own runner passes.
 
 If one fails on an idle PC, it's real: keep the budget and find where the time goes.
+
+## Installer: the shipped Claude Code plugin is not installed into Claude Code
+
+Found 10 Oct 2026. The installer carries `resources\claude-code\` with `bin\mewndo-hook.exe`, and the core starts
+with `--desk`, but nothing in the app writes the plugin's hooks into `~/.claude/settings.json`: the Connect page
+still installs the v0 hooks. Until it does (spec §33.10 Part C step 2, item 3 of the v1 build list, and it needs the
+user's consent to change their Claude settings), a Claude Code session on an installed Mewndo reaches the v0 Guard,
+not the Agent Inbox.
+
+## Installer: never built here
+
+Found 10 Oct 2026. `build/stage-binaries.js --check` and its tests run on Linux and in CI against synthetic Windows
+binaries, but no NSIS installer has been produced by this work, and `installer.nsh` has not been run. An update
+installed while Claude Code is running a `mewndo-hook.exe` from the installed plugin folder (a permission hook can
+wait 300 s) would find that file in use; the NSIS installer then asks to retry. Not seen, because the plugin is not
+installed yet (above).
+

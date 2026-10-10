@@ -16,6 +16,9 @@ const SCRIPT = path.join(__dirname, '..', 'bin', 'mewndo-savepoint.js').replace(
 const MARK = 'mewndo-savepoint'; // how Mewndo recognises its own command hooks
 const GUARD_MATCHER = 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read';
 const isMewndos = (h) => String(h?.command ?? '').includes(MARK) || /^http:\/\/127\.0\.0\.1:\d+\/guard$/.test(String(h?.url ?? ''));
+// Uninstalling also takes out the v1 Claude Code plugin's hooks (integrations/claude-code), which run
+// mewndo-hook.exe from the folder the uninstaller is about to delete: left behind, every one would fail to start.
+const isMewndosOnUninstall = (h) => isMewndos(h) || /mewndo-hook(\.exe)?"?\s/.test(String(h?.command ?? ''));
 
 // Claude Code reads ~/.claude/settings.json, or CLAUDE_CONFIG_DIR when set.
 const claudeSettingsPath = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json');
@@ -116,7 +119,7 @@ async function removeClaudeHooks({ settingsPath = claudeSettingsPath() } = {}) {
     if (!Array.isArray(groups)) continue;
     const kept = groups.flatMap((g) => {
       if (!Array.isArray(g?.hooks)) return [g];
-      const hooks = g.hooks.filter((h) => !isMewndos(h));
+      const hooks = g.hooks.filter((h) => !isMewndosOnUninstall(h));
       removed += g.hooks.length - hooks.length;
       return hooks.length ? [{ ...g, hooks }] : [];
     });
