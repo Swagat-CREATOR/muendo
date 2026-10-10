@@ -548,3 +548,23 @@ Highlight, and the Timeline's hover actions are always shown.
 
 **What it can't do yet:** the tray has no amber "needs you" dot (the desk doesn't tell the tray yet); run from source,
 Windows shows Electron's own taskbar icon; no full screen-reader audit has been done yet.
+
+## Capsule stack and the agent list (design D3c, 10 Oct 2026)
+
+The dock is now four capsules with 8 px gaps (design spec §11.8): **Inbox** (amber dot while cards wait; opens answer
+mode, or the main window's Inbox when nothing is waiting), **Agents** (one ring per agent in its status colour),
+**Talk** (the living face and the mic) and **More** (the panel). Idle, only the Agents capsule stays, as the 20 px
+edge tab. Standing up on a side edge the capsules stack in a column. The surface is wider, so `HALF` in
+`dock-place.js` grew (130 / 150 px) to keep it clear of corners.
+
+Clicking the Agents capsule opens the agent list (§11.12) toward the middle of the screen: 380 px, grouped by
+project, needs you first, then working, braked and idle; each 36 px row has a ring, the logo, the task cut to about
+40 characters on a word, and a count of open cards; on hover, the mic opens Talk and ✕ brakes after a second click
+within 2 s ("Stop Codex? Click ✕ again"). A row opens that agent's newest card, or the Agents screen. It closes 1.2 s
+after the pointer leaves.
+
+Cards (§11.11): X then X brakes the card's agent, with "Press X again to stop …" in between; ? shows the key list.
+Hover hints are the system tooltips for now.
+
+**What it can't do yet:** keyboard moves in the agent list (the dock never takes focus), a Talk box aimed at one
+agent, cloud agents, the dark hint chip with a 400 ms delay, and a Show Me record button in the Talk capsule.

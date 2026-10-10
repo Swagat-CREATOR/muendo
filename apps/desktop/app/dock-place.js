@@ -17,7 +17,7 @@ const CANVAS = {
 };
 const CORNER = 12; // the surface keeps at least this far from a work-area corner (§11.8 Drop)
 // Half the surface along its edge, so a drop near a corner still keeps the whole pill or dock on screen.
-const HALF = { horizontal: 80, vertical: 110 };
+const HALF = { horizontal: 130, vertical: 150 }; // the capsule stack: Inbox, Agents, Talk, More
 const DEFAULT = { edge: 'bottom', fraction: 0.92 }; // bottom right, clear of Wispr Flow's bar at bottom centre
 
 const EDGES = ['left', 'right', 'top', 'bottom'];

@@ -239,6 +239,13 @@ async function undoToSavePoint(savePointId) {
   return showAsk('', 'That save point is not in any protected folder any more.', [{ label: 'OK' }]);
 }
 
+// X then X on a card (design spec §11.11): brake the agent that card is from.
+function brakeCardAgent(cardId) {
+  const card = desk?.cards().get(cardId);
+  const name = card && desk.agents().find((a) => a.agentId === card.agentId)?.name;
+  if (name) call('brake', name, { reason: 'you braked it from its card' }).catch((e) => notify('Mewndo could not brake it', e.message));
+}
+
 function deskCommand(command, plan) {
   if (command === 'undo-to') return undoToSavePoint(plan.savepointId).catch((e) => notify('Mewndo could not plan that undo', e.message));
   // Talk-box commands (§23.3): the same intents and confirmations as the voice ones.
@@ -255,7 +262,7 @@ function startDesk() {
   });
   const on = {
     key: (k, id) => desk?.handlers.key(k, id),
-    click: (a, id, arg) => desk?.handlers.click(a, id, arg),
+    click: (a, id, arg) => (a === 'brake' ? brakeCardAgent(id) : desk?.handlers.click(a, id, arg)),
     graceEnd: (id) => desk?.handlers.graceEnd(id),
     text: (id, t, via) => desk?.handlers.text(id, t, via),
     talk: (t) => desk?.handlers.talk(t),
@@ -268,7 +275,7 @@ function startDesk() {
   screen.on('display-metrics-changed', placeDeskWindows);
   // The main window's Inbox screen hears every redraw of the card stack too.
   const ui = Object.create(deskWindows, { send: { value(name, channel, payload) {
-    if (name === 'cards') send('inbox-changed');
+    if (name === 'cards') { send('inbox-changed'); refreshBar(); }
     return deskWindows.send(name, channel, payload);
   } } });
   desk = createDesk({
@@ -347,6 +354,13 @@ function createWindow(show) {
   win.on('close', (e) => { // closing keeps Mewndo running in the tray
     if (!quitting) { e.preventDefault(); win.hide(); }
   });
+}
+
+// The main window on one of its screens (the dock's Inbox and Agents capsules).
+async function showScreen(name) {
+  showWindow();
+  if (win.webContents.isLoading()) await new Promise((r) => win.webContents.once('did-finish-load', r));
+  send('go', name);
 }
 
 function showWindow() {
@@ -446,6 +460,7 @@ let driftCard = null; // the newest drift card (spec §23.4) until the user answ
 let holds = []; // local holds waiting for the user (engine 'holds-changed')
 let cardSeq = 0;
 let panelOpen = false;
+let agentsOpen = false; // the dock's agent list (design spec §11.12)
 let speech = null; // speech to text for the bar's mic (speech.js)
 let ask = null; // a voice command waiting for the user: { id, heard, text, choices: [{ label, run }] }
 let hookStatus = { at: 0, guarded: {} }; // which agents have Mewndo's Guard hooks, re-read every 30 s
@@ -458,6 +473,19 @@ async function refreshHookStatus() {
     hookStatus = { at: Date.now(), guarded: { 'Claude Code': claude, Codex: codex, Cursor: cursor } };
   }
   return hookStatus.guarded;
+}
+
+// Open cards per agent name, and in all, from the Agent Desk (empty while it isn't running).
+function openCards() {
+  const byName = new Map();
+  if (!desk) return { total: 0, byName };
+  const names = new Map(desk.agents().map((a) => [a.agentId, a.name]));
+  const open = desk.cards().list().filter((c) => c.state === 'open' || c.state === 'answering');
+  for (const c of open) {
+    const n = names.get(c.agentId);
+    if (n) byName.set(n, (byName.get(n) ?? 0) + 1);
+  }
+  return { total: open.length, byName };
 }
 
 async function panelData(folders, brakedNames) {
@@ -474,6 +502,9 @@ async function panelData(folders, brakedNames) {
       status: brakedNames.has(name) ? 'Braked' : working ? 'Working' : guarded || a.running ? 'Idle' : 'Not connected',
       monitoring: guarded ? 'Guarded' : a.running ? 'Data only' : null,
       now: a.last ? `${a.last.text}${a.last.folder ? ` in ${folderName(a.last.folder)}` : ''}` : '',
+      task: a.last?.text ?? '',
+      folder: a.last?.folder ? folderName(a.last.folder) : null,
+      cards: openCards().byName.get(name) ?? 0,
     };
   });
   const connections = folders.map((f) => {
@@ -650,12 +681,14 @@ function refreshBar() {
       shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
       card: driftCard, holds, ask: ask && { id: ask.id, heard: ask.heard, text: ask.text, choices: ask.choices.map((c) => c.label) },
       voice: speech?.available === true, panel: panelOpen ? await panelData(folders ?? [], brakedNames) : null,
+      agentList: agentsOpen ? (await panelData(folders ?? [], brakedNames)).agents : null,
+      inbox: openCards().total,
       rulesOnly,
     });
   }, 30);
 }
 setInterval(refreshBar, 30_000).unref(); // drift and alert colours fade with time
-setInterval(() => panelOpen && refreshBar(), 5000).unref(); // the open panel's live activity
+setInterval(() => (panelOpen || agentsOpen) && refreshBar(), 5000).unref(); // the open panel's live activity
 
 // The bar's buttons (spec §23.2, §23.7). They all work with the main window closed.
 async function barAction(name, arg) {
@@ -663,6 +696,12 @@ async function barAction(name, arg) {
     case 'protection': case 'lane': case 'connection': showWindow(); break; // ponytail: the main window stands in for an agent's lane
     case 'panel-open': panelOpen = true; hookStatus.at = 0; refreshBar(); break;
     case 'panel-close': panelOpen = false; refreshBar(); break;
+    case 'agents-open': agentsOpen = true; hookStatus.at = 0; refreshBar(); break;
+    case 'agents-close': agentsOpen = false; refreshBar(); break;
+    // The capsules (design spec §11.8): the Inbox opens answer mode when there are cards, the main window otherwise.
+    case 'inbox': if (!desk?.openInbox?.()) await showScreen('inbox'); break;
+    case 'agent-open': if (openCards().byName.get(arg)) desk.openInbox(); else await showScreen('agents'); break;
+    case 'talk': desk?.openTalk?.(); break; // ponytail: the Talk box isn't aimed at one agent yet; the Router picks
     case 'undo': openUndo(); break;
     case 'undo-burst': openUndo(arg); break; // undo always shows what it will do first (spec §23.3)
     case 'diff': {

@@ -10,6 +10,9 @@
 </head>
 <body class="float">
   <div id="flyout" class="flyout">
+  <section id="agentlist" class="agentlist hit" aria-label="Every agent" hidden>
+    <div id="agentlist-rows"></div>
+  </section>
   <section id="box" class="box hit" aria-label="Agents and connections" hidden>
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-agents" aria-selected="true">Agents</button>
@@ -50,17 +53,29 @@
     </div>
   </div>
   </div>
+  <!-- The capsule stack (design spec §11.8): Inbox, Agents, Talk (the face and the mic), More. Idle, only the
+       Agents capsule shows, as the edge tab. -->
   <div id="pill" class="pill hit" role="toolbar" aria-label="Mewndo">
-    <span id="protection" class="protection face" role="img" aria-label="Mewndo"></span>
-    <span id="agents" class="agents"></span>
-    <span id="rules-only" class="rules-only" title="Today's decision-model budget is used up. Mewndo's own rules decide until it resets at midnight UTC." hidden>Rules only mode</span>
-    <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-    <button id="mic" class="round" aria-label="Hold to talk" disabled>
-      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg>
-    </button>
-    <button id="panel" class="round" aria-label="Agents and connections" aria-expanded="false">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>
-    </button>
+    <div class="cap cap-inbox">
+      <button id="inbox" class="round" data-action="inbox" aria-label="Inbox">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 9h3.5l1 1.5h3l1-1.5H14"/></svg>
+        <span id="inbox-dot" class="cap-dot" hidden></span>
+      </button>
+    </div>
+    <div id="cap-agents" class="cap cap-agents" title="Click to see every agent"><span id="agents" class="agents"></span></div>
+    <div class="cap cap-talk">
+      <span id="protection" class="protection face" role="img" aria-label="Mewndo"></span>
+      <span id="rules-only" class="rules-only" title="Today's decision-model budget is used up. Mewndo's own rules decide until it resets at midnight UTC." hidden>Rules only</span>
+      <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <button id="mic" class="round" aria-label="Hold to talk" disabled>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2.5"/></svg>
+      </button>
+    </div>
+    <div class="cap cap-more">
+      <button id="panel" class="round" aria-label="Open the panel" title="Open the panel" aria-expanded="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4"/></svg>
+      </button>
+    </div>
   </div>
   <script src="design/logos.js"></script>
   <script src="design/mew-eyes.js"></script>

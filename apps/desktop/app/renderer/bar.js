@@ -22,7 +22,7 @@ let closeTimer = null;
 function wake() {
   pill.classList.remove('dot');
   clearTimeout(idle);
-  idle = setTimeout(() => { if (!overHit && !state.alert && !state.card && !state.ask && !state.holds?.length && !press && !talking) pill.classList.add('dot'); }, IDLE_MS);
+  idle = setTimeout(() => { if (!overHit && !state.alert && !state.card && !state.ask && !state.holds?.length && !press && !talking && !agentsOpen) pill.classList.add('dot'); }, IDLE_MS);
 }
 
 function setOpen(open) {
@@ -65,6 +65,12 @@ function render() {
   renderAsk();
   renderChips();
   renderPanel();
+  renderAgentList();
+  $('inbox-dot').hidden = !state.inbox;
+  $('inbox').title = state.inbox ? `Inbox · ${state.inbox} waiting · Ctrl+Shift+F11` : 'Inbox · nothing waiting';
+  const working = (state.agents ?? []).filter((a) => !a.braked).length;
+  $('cap-agents').title = state.agents?.length ? `${working} running${state.agents.length > working ? ` · ${state.agents.length - working} braked` : ''} · Click to see every agent` : 'No agents running · Click to see every agent';
+  $('mic').title = state.voice ? 'Talk to your agents · hold to talk' : 'Voice commands need Windows';
   $('rules-only').hidden = !state.rulesOnly;
   $('mic').disabled = !state.voice;
   $('mic').setAttribute('aria-label', state.voice ? 'Hold to talk' : 'Voice commands need Windows');
@@ -177,14 +183,63 @@ function renderPanel() {
   });
   $('list').replaceChildren(...(rows.length ? rows : [el('p', { className: 'empty' }, tab === 'agents' ? 'No agents yet.' : 'No folders protected yet.')]));
 }
+// The agent list (design spec §11.12): every agent, grouped by project, needs-you first; opens from the Agents
+// capsule toward the middle of the screen. What it can't do yet: keyboard moves (the dock never takes focus), a
+// Talk box aimed at one agent, and cloud agents.
+let agentsOpen = false;
+const withData = (e, data) => { Object.assign(e.dataset, data); return e; };
+let brakeArmed = null; // { name, at } after the first ✕ press; a second within 2 s brakes
+function setAgents(open) {
+  if (open === agentsOpen) return;
+  agentsOpen = open;
+  if (open) setPanel(false);
+  $('agentlist').hidden = !open;
+  window.bar.action(open ? 'agents-open' : 'agents-close');
+}
+const RANK = { 'Needs you': 0, Working: 1, Braked: 2, Idle: 3, 'Not connected': 4 };
+const shortTask = (t) => (t.length <= 40 ? t : `${t.slice(0, 40).replace(/\s+\S*$/, '')}…`);
+function renderAgentList() {
+  if (!agentsOpen) return;
+  const list = (state.agentList ?? []).filter((a) => a.status !== 'Not connected' || a.cards);
+  const groups = new Map();
+  for (const a of list.map((x) => ({ ...x, status: x.cards ? 'Needs you' : x.status }))
+    .sort((x, y) => (RANK[x.status] ?? 9) - (RANK[y.status] ?? 9))) {
+    const g = a.folder ?? 'No project yet';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(a);
+  }
+  const ring = { 'Needs you': 'needs', Working: 'working', Braked: 'stopped', Idle: 'done' };
+  const rows = [];
+  for (const [g, agents] of groups) {
+    rows.push(el('div', { className: 'al-group' }, g));
+    for (const a of agents) {
+      const armed = brakeArmed?.name === a.name && Date.now() - brakeArmed.at < 2000;
+      const row = el('button', { className: 'al-row', title: [a.name, a.folder, a.status, a.now].filter(Boolean).join(' · ') },
+        el('span', { className: `al-ring ${ring[a.status] ?? ''}` }), MewLogos.img(a.name, 16),
+        el('span', { className: 'al-task' }, armed ? `Stop ${a.name}? Click ✕ again` : shortTask(a.task || a.name)),
+        a.cards ? el('span', { className: 'al-count' }, String(a.cards)) : '',
+        el('span', { className: 'al-tools' },
+          withData(el('span', { className: 'al-tool', title: 'Talk to your agents' }, '🎙'), { action: 'talk' }),
+          a.status === 'Braked' ? '' : withData(el('span', { className: `al-tool brake${armed ? ' armed' : ''}`, title: `Brake ${a.name}` }, '✕'), { brake: a.name })));
+      Object.assign(row.dataset, { action: 'agent-open', arg: a.name });
+      rows.push(row);
+    }
+  }
+  $('agentlist-rows').replaceChildren(...(rows.length ? rows : [el('p', { className: 'empty' }, 'No agents running.')]));
+}
+
 // Buttons handled here, not by the main process (the pointer handlers below call them).
 const LOCAL = {
-  panel: () => setPanel(!panelOpen),
+  panel: () => { setAgents(false); setPanel(!panelOpen); },
   'tab-agents': () => { tab = 'agents'; renderPanel(); },
   'tab-connections': () => { tab = 'connections'; renderPanel(); },
 };
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setPanel(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setPanel(false); setAgents(false); } });
 window.addEventListener('blur', () => setPanel(false));
+// The agent list closes a moment after the pointer leaves the dock, like the capsule stack (§11.8).
+let agentsTimer = null;
+document.addEventListener('mouseleave', () => { clearTimeout(agentsTimer); agentsTimer = setTimeout(() => setAgents(false), 1200); });
+document.addEventListener('mouseenter', () => clearTimeout(agentsTimer));
 
 // Voice: hold the mic to talk. Records 16 kHz mono and hands a WAV to the main process (speech.js) on release.
 const MAX_TALK_MS = 30_000;
@@ -333,6 +388,17 @@ document.addEventListener('pointerup', (e) => {
   document.body.classList.remove('dragging');
   if (mic) stopTalking();
   else if (dragging) window.bar.dragEnd();
+  else if (!long && !target && document.elementFromPoint(e.clientX, e.clientY)?.closest('#cap-agents')) setAgents(!agentsOpen);
+  else if (!long && target?.classList.contains('al-row')) {
+    const tool = document.elementFromPoint(e.clientX, e.clientY)?.closest('.al-tool');
+    if (tool?.dataset.brake) {
+      const name = tool.dataset.brake;
+      if (brakeArmed?.name === name && Date.now() - brakeArmed.at < 2000) { brakeArmed = null; window.bar.action('brake-agent', name); }
+      else { brakeArmed = { name, at: Date.now() }; setTimeout(renderAgentList, 2100); }
+      renderAgentList();
+    } else if (tool) window.bar.action('talk');
+    else window.bar.action('agent-open', target.dataset.arg);
+  }
   else if (!long && target && !target.disabled && LOCAL[target.id]) LOCAL[target.id]();
   else if (!long && target && !target.disabled && target.dataset.action) window.bar.action(target.dataset.action, target.dataset.arg);
   const hit = !!document.elementFromPoint(e.clientX, e.clientY)?.closest('.hit');

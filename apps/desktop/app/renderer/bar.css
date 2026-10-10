@@ -29,14 +29,14 @@ body {
 .edge-right .flyout { right: 56px; align-items: flex-end; }
 .edge-left .flyout { left: 56px; align-items: flex-start; }
 /* Standing up on a side edge: the same pieces in a column. */
-.edge-left .pill, .edge-right .pill { flex-direction: column; width: 40px; height: auto; padding: 8px 0; }
+.edge-left .pill, .edge-right .pill, .edge-left .cap, .edge-right .cap { flex-direction: column; }
 .edge-left .agents, .edge-right .agents { flex-direction: column; padding: 2px 0; }
 /* While dragging: only the compact surface, lifted (§11.8 step 2). The orientation switch hides behind a fade. */
 .dragging .flyout { display: none; }
-.dragging .pill > :not(.protection):not(.agents) { display: none; }
+.dragging .cap-inbox, .dragging .cap-more, .dragging #mic, .dragging .wave, .dragging .rules-only { display: none; }
 .dragging.edge-bottom .pill, .dragging.edge-top .pill { transform: translateX(-50%) scale(1.04); }
 .dragging.edge-left .pill, .dragging.edge-right .pill { transform: translateY(-50%) scale(1.04); }
-.dragging .pill { box-shadow: 0 12px 34px rgba(0, 0, 0, .55); cursor: grabbing; }
+.dragging .cap { box-shadow: 0 12px 34px rgba(0, 0, 0, .55); cursor: grabbing; }
 .turning { opacity: 0; }
 [hidden] { display: none !important; }
 button { all: unset; cursor: pointer; display: grid; place-items: center; }
@@ -44,10 +44,16 @@ button:focus-visible { outline: 2px solid #8cf; outline-offset: 2px; }
 svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 /* Resting pill: the face, agent dots, mic, up-arrow. */
-.pill {
-  display: flex; align-items: center; gap: 6px; height: 40px; box-sizing: border-box; padding: 0 6px 0 8px; border-radius: 20px;
-  background: var(--lift), var(--bg); border: 1px solid var(--edge); box-shadow: var(--float-shadow); cursor: grab;
-}
+/* The capsule stack (design spec §11.8): separate 40 px capsules with 8 px gaps, each with the float style. */
+.pill { display: flex; align-items: center; gap: 8px; cursor: grab; }
+.cap { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 40px; min-height: 40px; box-sizing: border-box;
+  padding: 0 6px; border-radius: 999px; background: var(--lift), var(--bg); border: 1px solid var(--edge); box-shadow: var(--float-shadow); }
+.edge-left .cap, .edge-right .cap { padding: 6px 0; width: 40px; }
+.cap-agents { padding: 0 10px; cursor: pointer; }
+.edge-left .cap-agents, .edge-right .cap-agents { padding: 10px 0; }
+.cap-agents:has(.agents:empty)::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--grey); }
+.cap .round { position: relative; }
+.cap-dot { position: absolute; top: 2px; right: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px var(--bg); }
 .pill.dragging { cursor: grabbing; }
 .round { width: 28px; height: 28px; border-radius: 50%; color: var(--text); background: var(--soft); }
 .round:hover:not(:disabled) { background: #24282C; }
@@ -70,9 +76,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 @media (prefers-reduced-motion: reduce) { .peek .face { animation: none; } }
 .agents { display: flex; gap: 4px; padding: 0 2px; }
 .agents:empty { display: none; }
-.agent { width: 8px; height: 8px; border-radius: 50%; background: var(--float-working); }
-.agent.drift { background: var(--amber); }
-.agent.braked { background: var(--red); }
+/* Agents as rings in the capsule (status colour, §3.6), dots in the edge tab. */
+.agent { width: 12px; height: 12px; box-sizing: border-box; border-radius: 50%; border: 2px solid var(--float-working); background: transparent; }
+.agent.drift { border-color: var(--amber); background: var(--amber); }
+.agent.braked { border-color: var(--red); }
+.pill.dot .agent { background: var(--float-working); }
+.pill.dot .agent.braked { background: var(--red); }
 .text, .ticker { height: 28px; padding: 0 11px; box-sizing: border-box; border-radius: 10px; background: var(--soft); white-space: nowrap;
   font: 500 12.5px/26px var(--font-ui); border: 1px solid var(--float-border); }
 .text:hover, .ticker:hover { background: #24282C; }
@@ -81,20 +90,22 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 #brake { color: var(--red); }
 .ticker { display: flex; gap: 6px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .ticker .del { color: var(--float-stopped); } .ticker .mod { color: var(--float-ink-2); } .ticker .add { color: var(--float-done); }
-/* Idle: the edge tab (§11.8 "Two resting looks"). Flush against the edge, 20 px thick, no radius on the edge side, one
-   8 px dot per agent; with no agents, one dot in the protection colour. ponytail: no concave SVG fillets yet. */
-.pill.dot { gap: 4px; padding: 0 10px; height: 20px; border-radius: 10px 10px 0 0; border-bottom: 0; box-shadow: none; }
-.pill.dot > :not(.agents) { display: none; }
-.pill.dot .agents { display: flex; padding: 0; }
-.pill.dot:has(.agents:empty)::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--grey); }
-.pill.dot.protected:has(.agents:empty)::before { background: var(--green); }
-.pill.dot.drift:has(.agents:empty)::before { background: var(--amber); }
-.pill.dot.braked:has(.agents:empty)::before { background: var(--red); }
+/* Idle: the edge tab (§11.8 "Two resting looks"). Only the Agents capsule shows, flush against the edge, 20 px thick,
+   no radius on the edge side, one 8 px dot per agent (or one in the protection colour). ponytail: no concave fillets. */
+.pill.dot > :not(.cap-agents) { display: none; }
+.pill.dot .cap-agents { gap: 4px; padding: 0 10px; min-height: 20px; height: 20px; border-radius: 10px 10px 0 0; border-bottom: 0; box-shadow: none; }
+.pill.dot .agent { width: 8px; height: 8px; border: 0; }
+.pill.dot.protected .cap-agents:has(.agents:empty)::before { background: var(--green); }
+.pill.dot.drift .cap-agents:has(.agents:empty)::before { background: var(--amber); }
+.pill.dot.braked .cap-agents:has(.agents:empty)::before { background: var(--red); }
 .edge-bottom .pill.dot { bottom: 0; }
-.edge-top .pill.dot { top: 0; border-radius: 0 0 10px 10px; border-bottom: 1px solid var(--edge); border-top: 0; }
-.edge-left .pill.dot, .edge-right .pill.dot { width: 20px; height: auto; padding: 10px 0; }
-.edge-left .pill.dot { left: 0; border-radius: 0 10px 10px 0; border-bottom: 1px solid var(--edge); border-left: 0; }
-.edge-right .pill.dot { right: 0; border-radius: 10px 0 0 10px; border-bottom: 1px solid var(--edge); border-right: 0; }
+.edge-top .pill.dot { top: 0; }
+.edge-top .pill.dot .cap-agents { border-radius: 0 0 10px 10px; border-bottom: 1px solid var(--edge); border-top: 0; }
+.edge-left .pill.dot .cap-agents, .edge-right .pill.dot .cap-agents { width: 20px; min-width: 20px; height: auto; min-height: 0; padding: 10px 0; }
+.edge-left .pill.dot { left: 0; }
+.edge-right .pill.dot { right: 0; }
+.edge-left .pill.dot .cap-agents { border-radius: 0 10px 10px 0; border-bottom: 1px solid var(--edge); border-left: 0; }
+.edge-right .pill.dot .cap-agents { border-radius: 10px 0 0 10px; border-bottom: 1px solid var(--edge); border-right: 0; }
 
 /* Hover hint, like Wispr Flow's "Dictate Ctrl + Alt →", with the change ticker and quick actions under it. */
 .hint { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 12px 10px; border-radius: 20px;
@@ -169,3 +180,28 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
   color: var(--float-needs); border: 1px solid rgba(242, 176, 74, 0.45); white-space: nowrap; }
 .badge .logo.initial { background: none; color: var(--text); font-size: 13px; }
 .badge .logo[src$="/cursor.svg"], .badge .logo[src$="/notion.svg"], .badge .logo[src$="/github.svg"] { filter: invert(0.93); }
+
+/* The agent list (design spec §11.12): 380 px, grouped by project, 36 px rows, tools on hover. */
+.agentlist { width: 380px; max-height: 480px; overflow-y: auto; box-sizing: border-box; padding: 8px; border-radius: 16px;
+  background: var(--lift), var(--bg); border: 1px solid var(--edge); box-shadow: var(--float-shadow); }
+.al-group { padding: 8px 8px 4px; font: 500 12.5px/18px var(--font-ui); color: var(--muted); }
+.al-row { display: flex !important; align-items: center; gap: 8px; width: 100%; height: 36px; box-sizing: border-box; padding: 0 8px; border-radius: 10px; }
+.al-row:hover { background: var(--soft); }
+.al-ring { width: 10px; height: 10px; box-sizing: border-box; border-radius: 50%; border: 2px solid var(--grey); flex: none; }
+.al-ring.working { border-color: var(--float-working); border-right-color: transparent; animation: al-turn 1.2s linear infinite; }
+.al-ring.needs { border-color: var(--amber); background: var(--amber); }
+.al-ring.done { border-color: var(--green); }
+.al-ring.stopped { border-color: var(--red); }
+@keyframes al-turn { to { transform: rotate(360deg); } }
+.al-task { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.al-count { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--amber); color: #121416; font: 600 11px/18px var(--font-ui); text-align: center; }
+.al-tools { display: flex; gap: 4px; opacity: 0; }
+.al-row:hover .al-tools { opacity: 1; }
+.al-tool { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #2A2E32; font-size: 12px; }
+.al-tool.brake { color: var(--red); }
+.al-tool.armed { background: var(--red); color: #121416; }
+.badge .logo, .al-row .logo { flex: none; }
+.al-row .logo[src$="/cursor.svg"], .al-row .logo[src$="/notion.svg"], .al-row .logo[src$="/github.svg"] { filter: invert(0.93); }
+.al-row .logo.initial { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; background: #2A2E32; font: 600 9px/1 var(--font-ui); }
+@media (prefers-reduced-motion: reduce) { .al-ring.working { animation: none; border-right-color: var(--float-working); } }
+.pill.dot .agent.drift { background: var(--amber); }

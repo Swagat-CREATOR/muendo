@@ -130,9 +130,31 @@ function draw(s) {
 }
 setInterval(() => { for (const t of stack.querySelectorAll('.ago')) t.textContent = `· ${ago(t.at)}`; }, 30_000); // keep "2 min ago" true
 
+// X then X brakes the selected card's agent (the second press within 2 s confirms, so one stray key never stops an
+// agent); ? shows the key list over the stack (design spec §11.11). Everything else goes to the main process.
+let brakeArmedAt = 0;
+const KEY_LIST = [['1–9', 'Pick that option'], ['Space', 'Reply'], ['V', 'Reply by voice (Wispr Flow)'], ['Enter', 'Send'],
+  ['J / K', 'Previous / next card'], ['Esc', 'Take back, or close'], ['E', 'Dismiss'], ['U', 'Undo this turn'], ['X, X', 'Brake this agent'], ['?', 'This list']];
+function showKeys(on) {
+  document.querySelector('.keylist')?.remove();
+  if (!on) return;
+  stack.prepend(el('div', 'card keylist', el('div', 'ask', 'Keys'),
+    ...KEY_LIST.map(([k, what]) => el('div', 'keyrow', keycap(k), el('span', null, what)))));
+}
 document.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return;
   e.preventDefault();
+  if (e.key === '?') return showKeys(!document.querySelector('.keylist'));
+  showKeys(false);
+  if (e.key.toLowerCase() === 'x' && state.selectedId) {
+    const card = state.cards.find((c) => c.id === state.selectedId);
+    if (Date.now() - brakeArmedAt < 2000) { brakeArmedAt = 0; window.desk.click('brake', state.selectedId); return; }
+    brakeArmedAt = Date.now();
+    const foot = el('div', 'foot', el('span', 'label', `Press X again to stop ${card?.agent ?? 'this agent'}`));
+    stack.querySelector('.card.selected')?.append(foot);
+    setTimeout(() => foot.remove(), 2000);
+    return;
+  }
   window.desk.key(e.key, state.selectedId);
 });
 

@@ -78,3 +78,5 @@ button:focus-visible { outline: 2px solid var(--float-done); outline-offset: 2px
 
 .more { width: 420px; text-align: center; font: var(--t-small); color: var(--float-ink-2); }
 .who .logo[src$="/cursor.svg"], .who .logo[src$="/notion.svg"], .who .logo[src$="/github.svg"] { filter: invert(0.93); } /* ink logos on the dark float */
+.keylist .keyrow { display: flex; align-items: center; gap: 10px; font: var(--t-small); color: var(--float-ink-2); }
+.keylist .keycap { min-width: 44px; justify-content: center; }

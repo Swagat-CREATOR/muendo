@@ -861,6 +861,7 @@ function renderInbox(connected = true) {
   if (keep) document.querySelector(`.ib-card[data-id="${CSS.escape(keep)}"] input`)?.focus();
 }
 api.on('inbox-changed', () => loadInbox());
+api.on('go', (name) => go(name)); // the dock's Inbox and Agents capsules
 setTimeout(loadInbox); // for the sidebar count
 // The same keys as the floating cards (§33.2), while the Inbox screen is showing and you're not typing.
 document.addEventListener('keydown', (e) => {
