@@ -454,3 +454,16 @@ Home is now the first screen: a greeting with the undo shortcut as keycaps, and 
 "Make Flow sound like you": dark, a serif headline with one italic word, a line of text, one button, and one of the
 kit's cat poses in milk on a warm glow. The banner points at the next unfinished checklist step (protect a folder,
 connect an agent, try an undo, pick shortcuts) and, once all are done, says "Mewndo has your back".
+
+## First run in five steps (design D6, 10 Oct 2026)
+
+First run is one card (720 x 520) on the frame grey: a progress row, the step with its cat (sit, trot, face, face,
+reach), and Back / Skip / Next. 1 Welcome. 2 Protect a folder: the same folder list, suggestions and checks as before;
+Next protects the ticked folders and won't go on until at least one is protected. 3 Connect agents: opens the same
+hook dialogs as the Agents screen (optional). 4 Shortcuts: undo, brief, Inbox and Talk as keycaps, with a link to
+Settings to change or test them (optional). 5 Done: "Try it", the start-at-sign-in choice, and "Start using Mewndo",
+which finishes setup.
+
+**What it can't do yet:** there is no invite code field (the app has no way to reach the gateway yet); shortcut
+conflicts with Wispr Flow are found by Settings' Test, not flagged here; the card sits inside the normal window
+instead of a 720 x 520 window of its own; and it hasn't been walked through on a fresh Windows profile.

@@ -10,17 +10,55 @@
   <link rel="stylesheet" href="shell.css">
 </head>
 <body>
-  <section id="setup" hidden>
-    <h1>Welcome to Mewndo</h1>
-    <p class="intro">Mewndo keeps a copy of every version of every file in the folders you choose, and all of it stays on this computer.
-      If an AI agent deletes or changes something it shouldn't, you can put the whole folder, or just some files, back the way they were.</p>
-    <h2>Folders to protect</h2>
-    <ul id="setup-folders" class="plain"></ul>
-    <button id="setup-add">Add project folders…</button>
-    <p class="muted">Folders larger than 20 GB, or that contain Mewndo's own data, can't be protected.</p>
-    <label id="setup-login-wrap"><input type="checkbox" id="setup-login" checked> Start Mewndo when I sign in</label>
-    <p id="setup-error" class="error" role="alert"></p>
-    <button id="setup-start" class="primary">Start protecting</button>
+  <section id="setup" class="firstrun" hidden>
+    <div class="fr-card">
+      <ol id="fr-steps" class="fr-steps" aria-label="Setup steps">
+        <li>Welcome</li><li>Protect a folder</li><li>Connect agents</li><li>Shortcuts</li><li>Done</li>
+      </ol>
+      <div class="fr-body">
+        <div class="fr-step" data-step="1">
+          <h1 class="fr-title">Welcome to Mewndo</h1>
+          <p class="fr-lead">Mewndo keeps a save point of your work while AI agents change it, so you can undo anything.</p>
+          <p class="muted">Every version of every file in the folders you choose is kept on this computer. Nothing is uploaded.</p>
+        </div>
+        <div class="fr-step" data-step="2" hidden>
+          <h1 class="fr-title">Protect a folder</h1>
+          <p class="fr-lead">Pick the folders your agents work in.</p>
+          <ul id="setup-folders" class="plain fr-folders"></ul>
+          <button id="setup-add">Add project folders…</button>
+          <p class="muted small">Folders larger than 20 GB, or that contain Mewndo's own data, can't be protected.</p>
+          <p id="setup-error" class="error" role="alert"></p>
+        </div>
+        <div class="fr-step" data-step="3" hidden>
+          <h1 class="fr-title">Connect your agents</h1>
+          <p class="fr-lead">Mewndo makes a save point before each turn and checks every command, edit and read (Guard).</p>
+          <div class="fr-agents">
+            <button data-hooks="claude-hooks">Connect Claude Code</button>
+            <button data-hooks="codex-hooks">Connect Codex</button>
+            <button data-hooks="cursor-hooks">Connect Cursor</button>
+          </div>
+          <p id="fr-agent-status" class="muted"></p>
+        </div>
+        <div class="fr-step" data-step="4" hidden>
+          <h1 class="fr-title">Your shortcuts</h1>
+          <p class="fr-lead">These work from any app.</p>
+          <dl id="fr-keys" class="fr-keys"></dl>
+          <button id="fr-test">Change or test them in Settings…</button>
+        </div>
+        <div class="fr-step" data-step="5" hidden>
+          <h1 class="fr-title">You're protected</h1>
+          <p id="fr-done" class="fr-lead"></p>
+          <label id="setup-login-wrap"><input type="checkbox" id="setup-login" checked> Start Mewndo when I sign in</label>
+        </div>
+        <span id="fr-cat" class="cat fr-cat" aria-hidden="true"><i></i></span>
+      </div>
+      <div class="fr-foot">
+        <button id="fr-back">Back</button>
+        <span class="fr-gap"></span>
+        <button id="fr-skip" hidden>Skip</button>
+        <button id="fr-next" class="primary">Next</button>
+      </div>
+    </div>
   </section>
 
   <main id="main" class="shell" hidden>

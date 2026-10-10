@@ -22,8 +22,6 @@ input[type=text], input:not([type]), textarea { font: inherit; padding: 6px 10px
 ul.plain { list-style: none; padding: 0; margin: 0 0 10px; }
 label { display: block; margin: 6px 0; }
 
-#setup { max-width: 640px; margin: 32px auto; padding: 0 16px; }
-#setup .intro { font-size: 15px; }
 #setup-folders li { padding: 4px 0; }
 #setup-folders .error { margin-left: 24px; }
 

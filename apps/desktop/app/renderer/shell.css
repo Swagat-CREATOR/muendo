@@ -82,3 +82,27 @@ body { background: var(--sidebar); color: var(--ink); font: var(--t-body); }
   filter: drop-shadow(0 0 22px rgba(242, 176, 74, 0.35)); }
 @media (max-width: 1100px) { .banner-cat { --cat-size: 150px; right: 4%; } }
 .checklist li.set::before { display: none; }
+
+/* First run (design spec §10): one 720 x 520 card on the frame grey, a progress row, the step, its cat, Back/Next. */
+.firstrun { min-height: 100vh; display: grid; place-items: center; padding: 48px 16px 16px; box-sizing: border-box; -webkit-app-region: drag; }
+.fr-card { width: 720px; max-width: 100%; height: 520px; display: flex; flex-direction: column; box-sizing: border-box; padding: 24px 32px;
+  background: #FFFFFF; border: 1px solid var(--border); border-radius: 16px; -webkit-app-region: no-drag; }
+.fr-steps { display: flex; gap: 6px; margin: 0 0 24px; padding: 0; list-style: none; counter-reset: step; }
+.fr-steps li { flex: 1; font: var(--t-small); color: var(--ink-3); padding-top: 10px; border-top: 3px solid var(--surface-2); counter-increment: step; }
+.fr-steps li::before { content: counter(step) ". "; }
+.fr-steps li.done { border-color: var(--done); color: var(--ink-2); }
+.fr-steps li.now { border-color: var(--focus); color: var(--ink); font-weight: 600; }
+.fr-body { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding-right: 200px; }
+.fr-title { margin: 8px 0 8px; font: 400 30px/38px var(--font-display); font-variation-settings: var(--display-axes); }
+.fr-lead { font-size: 16px; line-height: 24px; color: var(--ink-2); margin: 0 0 16px; }
+.fr-lead .keycap, .fr-keys .keycap { margin: 0 2px; }
+.fr-folders li { padding: 4px 0; }
+.fr-folders label { margin: 0; }
+.fr-agents { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.fr-keys { display: grid; grid-template-columns: 80px 1fr; gap: 10px 12px; align-items: center; margin: 0 0 20px; }
+.fr-keys dt { color: var(--ink-2); }
+.fr-keys dd { margin: 0; }
+.fr-cat { position: absolute; right: 0; top: 24px; --cat-size: 160px; }
+.fr-foot { display: flex; gap: 8px; align-items: center; padding-top: 16px; border-top: 1px solid var(--border); }
+.fr-gap { flex: 1; }
+.small { font: var(--t-small); }

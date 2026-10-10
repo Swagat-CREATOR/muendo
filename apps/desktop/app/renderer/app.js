@@ -94,6 +94,7 @@ function showSetup() {
   }
   $('setup-login-wrap').hidden = !state.loginSupported;
   if (changed || !$('setup-folders').children.length) renderSetup();
+  renderStep();
 }
 
 $('setup-add').onclick = guard(async () => {
@@ -103,42 +104,85 @@ $('setup-add').onclick = guard(async () => {
   renderSetup();
 });
 
-$('setup-start').onclick = guard(async () => {
+// Step 2's Next: protect the ticked folders (and stop the unticked ones from an earlier attempt). True when at
+// least one folder is protected, so the steps can go on.
+async function protectChosen() {
   const toProtect = setupFolders.filter((f) => f.checked && !f.already);
   const toStop = setupFolders.filter((f) => !f.checked && f.already);
   const kept = setupFolders.filter((f) => f.checked && f.already);
   if (!toProtect.length && !kept.length) {
     $('setup-error').textContent = 'Choose at least one folder to protect.';
-    return;
+    return false;
   }
-  $('setup-start').disabled = true;
+  for (const f of toStop) {
+    $('setup-error').textContent = `Stopping protection of ${f.path}…`;
+    await api.unprotect(f.path, true);
+    setupFolders.splice(setupFolders.indexOf(f), 1);
+  }
+  $('setup-error').textContent = toProtect.length ? 'Checking folders…' : '';
+  const results = toProtect.length ? await api.protect(toProtect.map((f) => f.path)) : [];
+  for (const r of results) {
+    const f = setupFolders.find((x) => x.path === r.root);
+    f.error = r.ok ? null : r.error;
+    if (r.ok) f.already = 'scanning'; // protected now: Next again won't protect it twice
+  }
+  renderSetup();
+  if (!kept.length && !results.some((r) => r.ok)) {
+    $('setup-error').textContent = 'None of the chosen folders can be protected. Choose others.';
+    return false;
+  }
+  $('setup-error').textContent = '';
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length) toast(`Not protected: ${failed.map((r) => `${r.root} (${r.error})`).join('; ')}`);
+  return true;
+}
+
+// First run (design spec §10): five steps in one card, Back and Next, Skip on the optional ones.
+// What it can't do: no invite code field yet (the app can't reach the gateway yet), and shortcut conflicts with
+// Wispr Flow aren't flagged here; Settings' Test finds them.
+const STEPS = [
+  { cat: 'sit' },
+  { cat: 'trot', next: protectChosen },
+  { cat: 'face', optional: true },
+  { cat: 'face', optional: true },
+  { cat: 'reach', last: true },
+];
+let step = 1;
+function renderStep() {
+  for (const el of document.querySelectorAll('.fr-step')) el.hidden = Number(el.dataset.step) !== step;
+  [...$('fr-steps').children].forEach((li, i) => {
+    li.className = i + 1 < step ? 'done' : i + 1 === step ? 'now' : '';
+    if (i + 1 === step) li.setAttribute('aria-current', 'step'); else li.removeAttribute('aria-current');
+  });
+  const s = STEPS[step - 1];
+  $('fr-back').hidden = step === 1;
+  $('fr-skip').hidden = !s.optional;
+  $('fr-next').textContent = s.last ? 'Start using Mewndo' : 'Next';
+  $('fr-cat').style.setProperty('--pose', `url("${new URL(`../assets/cat/cat-${s.cat}.svg`, document.baseURI).href}")`);
+  const keys = state?.shortcuts ?? { undo: 'Alt+Shift+Z', brief: 'Alt+Shift+B' };
+  const caps = (k) => k.split('+').flatMap((p, i) => [i ? ' + ' : '', h('span', { class: 'keycap' }, p)]);
+  fill($('fr-keys'), ...[['Undo', keys.undo], ['Brief', keys.brief], ['Inbox', 'Ctrl+Shift+F11'], ['Talk', 'Ctrl+Shift+F12']]
+    .flatMap(([what, k]) => [h('dt', {}, what), h('dd', {}, ...caps(k))]));
+  fill($('fr-done'), 'Try it: ask an agent to edit a file, then press ', ...caps(keys.undo), '.');
+  $('fr-agent-status').textContent = state?.checklist?.items?.agent ? 'Connected. You can add the others any time from Agents.' : '';
+}
+const goStep = (n) => { step = Math.max(1, Math.min(STEPS.length, n)); renderStep(); };
+$('fr-back').onclick = () => goStep(step - 1);
+$('fr-skip').onclick = () => goStep(step + 1);
+$('fr-next').onclick = guard(async () => {
+  const s = STEPS[step - 1];
+  $('fr-next').disabled = true;
   try {
-    for (const f of toStop) {
-      $('setup-error').textContent = `Stopping protection of ${f.path}…`;
-      await api.unprotect(f.path, true);
-      setupFolders.splice(setupFolders.indexOf(f), 1);
-    }
-    $('setup-error').textContent = toProtect.length ? 'Checking folders…' : '';
-    const results = toProtect.length ? await api.protect(toProtect.map((f) => f.path)) : [];
-    for (const r of results) {
-      const f = setupFolders.find((x) => x.path === r.root);
-      f.error = r.ok ? null : r.error;
-      if (r.ok) f.checked = false; // done; don't protect twice
-    }
-    renderSetup();
-    if (!kept.length && !results.some((r) => r.ok)) {
-      $('setup-error').textContent = 'None of the chosen folders can be protected. Choose others.';
-      return;
-    }
-    $('setup-error').textContent = '';
+    if (s.next && !(await s.next())) return;
+    if (!s.last) return goStep(step + 1);
     await api.finishSetup($('setup-login').checked);
-    const failed = results.filter((r) => !r.ok);
-    if (failed.length) toast(`Not protected: ${failed.map((r) => `${r.root} (${r.error})`).join('; ')}`);
     await refresh();
   } finally {
-    $('setup-start').disabled = false;
+    $('fr-next').disabled = false;
   }
 });
+for (const b of document.querySelectorAll('[data-hooks]')) b.onclick = () => $(b.dataset.hooks).click(); // the Agents screen's own flow
+$('fr-test').onclick = guard(() => api.openSettings());
 
 // --- Main window: folders --------------------------------------------------------------------------------------
 
