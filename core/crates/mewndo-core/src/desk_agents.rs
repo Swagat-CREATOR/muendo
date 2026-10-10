@@ -116,15 +116,18 @@ impl Agents {
         publisher: Publisher,
         log: Arc<Log>,
     ) -> Agents {
-        // Built-in rules and no model yet: every agent starts in shadow mode (§34.6), so the model is only ever
-        // advice, and the gateway (§37) is reached through mewndo-router's Clef client once it is configured.
-        Agents::start_with(
-            Arc::new(Router::default()),
-            data_dir,
-            writer,
-            publisher,
-            log,
-        )
+        // Built-in rules, and the gateway (§37) when it is configured (clef_gateway.rs): every agent starts in
+        // shadow mode (§34.6), so the model is only ever advice. No URL or no device token is the rules alone.
+        let clef = crate::clef_gateway::configured();
+        if clef.is_some() {
+            log.info("clef: gateway configured");
+        }
+        let router = Router::new(
+            mewndo_router::CompiledRules::builtin(),
+            clef.unwrap_or_else(|| Box::new(mewndo_router::clef::NoClef)),
+            Box::new(mewndo_router::facts::NoFacts),
+        );
+        Agents::start_with(Arc::new(router), data_dir, writer, publisher, log)
     }
 
     pub fn start_with(

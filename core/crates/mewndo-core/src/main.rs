@@ -10,6 +10,7 @@
 // It prints "ready" once it is listening, and stops when asked to, or when its stdin closes (the app is gone),
 // so it never outlives the app.
 mod agents;
+mod clef_gateway;
 mod cloud_link;
 mod decide;
 mod desk;

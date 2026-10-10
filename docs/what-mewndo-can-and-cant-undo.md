@@ -118,6 +118,11 @@ Written but not connected, so Mewndo can't undo anything there today:
   an answer it can't parse becomes a fallback to the local rules, never a guessed verdict. Nothing points the core
   at a gateway by default: unless `MEWNDO_DECIDE_URL` is set, no model is called at all and every Guard decision is
   made by the rules in the core, on this PC.
+  The core's gateway client (`core/crates/mewndo-core/src/clef_gateway.rs`) is written and has run against the real
+  Worker under `wrangler dev` with a **stubbed** model, on Linux only. It is used only when `MEWNDO_GATEWAY_URL` is
+  set and a device token is saved in Windows Credential Manager (`Mewndo/gateway-device-token`); nothing saves that
+  token yet, and the Worker is not deployed, so on a real PC every Guard decision is still the rules'. Its HTTPS
+  path (SChannel) has been compiled for Windows but never run there.
 
 Started on that date, and nothing in the app calls any of it yet:
 

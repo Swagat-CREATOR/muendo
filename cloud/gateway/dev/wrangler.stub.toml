@@ -1,0 +1,38 @@
+# Generated from ../wrangler.toml for local tests only: no [ai] binding (dev/stub-ai.js fakes it).
+# The gateway, hosted MCP and hub deploy together as one Worker for the demo
+# (spec §37.6). The MCP is served from the gateway module itself (plain JSON-RPC
+# on /mcp), so the only Durable Objects are StateDO and one HubDO per tester.
+name = "mewndo-cloud"
+main = "stub-ai.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Workers AI binding: no API key on any tester's PC, and no extra public hop
+# (§37.6). The model id is a var so the exact clef-flash name can be corrected
+# without a code change (§32.5 rule 3 lists its schema as unverified).
+
+[vars]
+DECIDE_MODEL = "@cf/cloudflare/clef-flash"
+
+# One Durable Object for invites, tokens, the daily neuron budget, the 5-minute
+# answer cache and the budget settings table (§37.6 K2). Free plan: SQLite class.
+[[durable_objects.bindings]]
+name = "STATE"
+class_name = "StateDO"
+
+# One hub per tester (§37.6 K7): cloud-agent cards out to the desktop over a
+# hibernating WebSocket, answers back.
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "HubDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StateDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["HubDO"]
+
+# Secrets (NOT stored here):
+#   wrangler secret put ADMIN_SECRET      mints and revokes invites

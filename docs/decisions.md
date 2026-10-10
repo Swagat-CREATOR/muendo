@@ -351,3 +351,31 @@ table, and usage per code and device.
 
 **What does not reach the dock yet:** the core has no HTTP client for the gateway (the Router's `Clef` is still
 `NoClef`), so `rules_only` is only set by tests until the Clef transport is wired, which needs the deployed Worker.
+
+## The core's Clef transport (10 Oct 2026)
+
+`core/crates/mewndo-core/src/clef_gateway.rs` implements mewndo-router's `Clef` over `POST /v1/decide`. Every reply
+goes through `mewndo_router::clef::read_reply`, so `rules_only` reaches `Router::rules_only` and from there
+`budget.state`. Choices made:
+
+- **Configuration.** The gateway URL comes from `MEWNDO_GATEWAY_URL`; the device token from Windows Credential
+  Manager, Generic credential `Mewndo/gateway-device-token` (CLAUDE.md rule 4), read once at start-up. Either one
+  missing means `NoClef`. Nothing in the app redeems an invite and saves the token yet; that is the next step and
+  needs the deployed Worker.
+- **One warm connection.** One `ureq::Agent` (SChannel via native-tls, as `decide.rs`) for the core's life, plus a
+  thread that sends `GET /health` at start-up and every 45 s. §34.9 R6 says "every 45 s while an agent is working";
+  this pings always, because the core has no "agent working" signal the thread can see yet. `/health` spends no
+  neurons. ureq 2 has no TCP keepalive or idle-timeout setting, so §34.9's "30 s keepalive, 90 s idle pool" are not
+  set explicitly; the pool's own defaults apply.
+- **Deadline.** The router's per-kind deadline is sent as `x-mewndo-deadline-ms` and is also ureq's whole-request
+  timeout; a reply that arrives after it is treated as `Deadline` anyway. Every failure (timeout, no network, any
+  non-200, a non-JSON body) is a `ClefError`, and the router decides by its rules (CLAUDE.md rule 3). A non-200 body
+  is never logged.
+- **Windows only.** Off Windows `configured()` returns None (no TLS stack on the WSL box, §32.5 rule 5); the logic is
+  tested everywhere with a fake transport.
+- **Tested against the real Worker** with `scripts/gateway-dev-test.sh`: `wrangler dev` on
+  `cloud/gateway/dev/wrangler.stub.toml`, whose entry `dev/stub-ai.js` replaces only the AI binding. Proven on Linux,
+  10 Oct 2026: model answer (`backend: workers_ai`), the same signature answered from the cache (`backend: cache`),
+  a wrong token answered 401 and turned into a fallback. **The stub's output is not clef-flash's real output**,
+  which stays unverified until one real call after deploy.
+
