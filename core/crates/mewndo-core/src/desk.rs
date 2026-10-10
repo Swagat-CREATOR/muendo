@@ -7,10 +7,12 @@
 //
 // Every connection starts with `hello {role}`. App connections also receive everything published to the desk;
 // hook, computer and overlay connections are request and response.
+use crate::desk_agents::{Agents, Publisher};
 use crate::log::Log;
 use crate::writer::{self, Writer};
 use mewndo_proto::{
-    self as proto, Body, Envelope, ErrorBody, Frame, HEADER, Hello, Ping, Pong, Role, VERSION,
+    self as proto, Body, Envelope, ErrorBody, Frame, HEADER, Hello, HookRequest, InboxAnswer,
+    InboxUndo, Ping, Pong, Role, RouteRequest, VERSION,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -19,35 +21,32 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, watch};
 
-const HELLO_WAIT: Duration = Duration::from_secs(5);
+// Generous: the app's main thread can be busy for seconds at start-up before its connect callback runs; this only
+// drops connections that never say anything.
+const HELLO_WAIT: Duration = Duration::from_secs(30);
 
 pub struct Desk {
     events: broadcast::Sender<Arc<Vec<u8>>>,
-    writer: Writer,
+    writer: Arc<Writer>,
+    agents: Agents,
     log: Arc<Log>,
 }
 
 impl Desk {
-    pub fn new(dir: &Path, log: Arc<Log>) -> Desk {
+    /// `dir`: the desk folder. `data_dir`: v0's data folder (save points go through its hook server).
+    pub fn new(dir: &Path, data_dir: PathBuf, log: Arc<Log>) -> Desk {
+        let events = broadcast::channel(1024).0;
+        let writer = Arc::new(writer::start(&dir.join("desk.db"), log.clone()));
         Desk {
-            events: broadcast::channel(1024).0,
-            writer: writer::start(&dir.join("desk.db"), log.clone()),
+            agents: Agents::start(
+                data_dir,
+                writer.clone(),
+                Publisher(events.clone()),
+                log.clone(),
+            ),
+            events,
+            writer,
             log,
-        }
-    }
-
-    /// Send a message to every connected app.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "first publishers: hooks (Part C) and the Inbox (Part D)"
-        )
-    )]
-    pub fn publish<B: Body>(&self, body: &B) {
-        let env = Envelope::wrap(ulid::Ulid::new().to_string(), body);
-        if let Ok(bytes) = proto::encode(&Frame::Json(env)) {
-            let _ = self.events.send(Arc::new(bytes)); // no app connected: nothing to do
         }
     }
 }
@@ -130,10 +129,11 @@ fn already_running(dir: &Path) -> io::Error {
 
 pub async fn serve(
     instance: Instance,
+    data_dir: PathBuf,
     log: Arc<Log>,
     stopped: watch::Receiver<bool>,
 ) -> io::Result<()> {
-    let desk = Arc::new(Desk::new(&instance.dir, log.clone()));
+    let desk = Arc::new(Desk::new(&instance.dir, data_dir, log.clone()));
     // ponytail: 32 random bits from a ULID (rand's CSPRNG); the name only has to be unguessable before core.json
     // is written, and the pipe refuses everyone but this user anyway.
     let tag = format!("{:08x}", ulid::Ulid::new().random() as u32);
@@ -343,15 +343,39 @@ fn error(id: &str, message: String) -> Arc<Vec<u8>> {
     reply(id, &ErrorBody { message })
 }
 
-// The answer to one request. Parts B to H add their message types here.
-fn respond(env: &Envelope) -> Arc<Vec<u8>> {
+// The answer to one request, if it has one: an app's answers and undos are acted on without a reply (the Inbox's
+// own events follow), a hook's request always gets its response. A hook may wait minutes for the user, so every
+// request runs on its own task and a slow one never holds up the next.
+async fn respond(env: Envelope, role: Role, desk: Arc<Desk>) -> Option<Arc<Vec<u8>>> {
     if env.v != VERSION {
-        return error(&env.id, proto::Error::WrongVersion(env.v).to_string());
+        return Some(error(
+            &env.id,
+            proto::Error::WrongVersion(env.v).to_string(),
+        ));
     }
-    match env.kind.as_str() {
-        Ping::TYPE => reply(&env.id, &Pong {}),
-        Hello::TYPE => error(&env.id, "hello was already sent".into()),
-        other => error(&env.id, format!("unknown message type {other}")),
+    let refuse = |why: String| Some(error(&env.id, why));
+    match (env.kind.as_str(), role) {
+        (Ping::TYPE, _) => Some(reply(&env.id, &Pong {})),
+        (Hello::TYPE, _) => refuse("hello was already sent".into()),
+        (HookRequest::TYPE, Role::Hook) => match env.open::<HookRequest>() {
+            Ok(req) => Some(reply(&env.id, &desk.agents.hook(&req).await)),
+            Err(e) => refuse(e.to_string()),
+        },
+        (InboxAnswer::TYPE, Role::App) => match env.open::<InboxAnswer>() {
+            Ok(answer) => desk.agents.answer(answer).await.err().and_then(refuse),
+            Err(e) => refuse(e.to_string()),
+        },
+        (InboxUndo::TYPE, Role::App) => match env.open::<InboxUndo>() {
+            Ok(undo) => desk.agents.undo(undo).await.err().and_then(refuse),
+            Err(e) => refuse(e.to_string()),
+        },
+        (RouteRequest::TYPE, Role::App) => match env.open::<RouteRequest>() {
+            Ok(req) => Some(reply(&env.id, &desk.agents.route(&req.text))),
+            Err(e) => refuse(e.to_string()),
+        },
+        (other, role) => refuse(format!(
+            "unknown message type {other} for a {role:?} connection"
+        )),
     }
 }
 
@@ -389,6 +413,11 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
         }
     };
     let _ = out.send(reply(&hello.id, &Pong {}));
+    if role == Role::App {
+        for card in desk.agents.open_cards().await {
+            let _ = out.send(reply(&ulid::Ulid::new().to_string(), &card));
+        }
+    }
 
     let events = (role == Role::App).then(|| {
         let (mut rx, out, log) = (desk.events.subscribe(), out.clone(), desk.log.clone());
@@ -413,9 +442,12 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
     loop {
         match read_frame(&mut r).await {
             Ok(Some(Ok(Frame::Json(env)))) => {
-                if out.send(respond(&env)).is_err() {
-                    break;
-                }
+                let (out, desk) = (out.clone(), desk.clone());
+                tokio::spawn(async move {
+                    if let Some(frame) = respond(env, role, desk).await {
+                        let _ = out.send(frame);
+                    }
+                });
             }
             Ok(Some(Ok(Frame::Lane { .. }))) => {} // lanes arrive with Part G
             Ok(Some(Err(e))) => {
@@ -453,7 +485,11 @@ mod tests {
 
     fn desk(name: &str) -> Arc<Desk> {
         let d = temp(name);
-        Arc::new(Desk::new(&d, Arc::new(Log::new(&d.join("logs")))))
+        Arc::new(Desk::new(
+            &d,
+            d.join("v0"),
+            Arc::new(Log::new(&d.join("logs"))),
+        ))
     }
 
     async fn send<B: Body>(c: &mut DuplexStream, id: &str, body: &B) {
@@ -564,7 +600,7 @@ mod tests {
             status: "working".into(),
             last_line: None,
         };
-        d.publish(&status);
+        Publisher(d.events.clone()).send(&status);
         assert_eq!(recv(&mut app).await.open::<AgentStatus>().unwrap(), status);
 
         send(&mut hook, "p", &Ping {}).await;
@@ -573,6 +609,36 @@ mod tests {
             "pong",
             "the hook's next frame is its own reply, not the event"
         );
+    }
+
+    #[tokio::test]
+    async fn an_app_that_connects_after_a_card_was_made_still_gets_it() {
+        let d = desk("late-app");
+        let mut hook = connect(&d, Role::Hook).await;
+        let req = HookRequest {
+            agent: "claude".into(),
+            event: "permission".into(),
+            session_id: None,
+            pid: None,
+            cwd: Some("/work/shop".into()),
+            lane_id: None,
+            payload: serde_json::json!({
+                "session_id": "s1", "cwd": "/work/shop", "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash", "tool_input": {"command": "git push --force"}
+            }),
+        };
+        send(&mut hook, "r1", &req).await;
+        // The card exists before the app is there to hear it.
+        for _ in 0..200 {
+            if !d.agents.open_cards().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let mut app = connect(&d, Role::App).await;
+        let card = recv(&mut app).await;
+        assert_eq!(card.kind, "inbox.card");
+        assert_eq!(card.body["grace_ms"], 2000);
     }
 
     #[test]

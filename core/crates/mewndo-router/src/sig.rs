@@ -70,12 +70,27 @@ mod tests {
 
     #[test]
     fn the_same_action_hashes_the_same_whatever_the_path_order() {
-        let a = action_sig("claude-code", "delete", "rm a b", &["/x/a".into(), "/x/b".into()]);
-        let b = action_sig("claude-code", "delete", "rm a b", &["/x/b".into(), "/x/a".into()]);
+        let a = action_sig(
+            "claude-code",
+            "delete",
+            "rm a b",
+            &["/x/a".into(), "/x/b".into()],
+        );
+        let b = action_sig(
+            "claude-code",
+            "delete",
+            "rm a b",
+            &["/x/b".into(), "/x/a".into()],
+        );
         assert_eq!(a, b);
         assert_ne!(
             a,
-            action_sig("cursor", "delete", "rm a b", &["/x/a".into(), "/x/b".into()]),
+            action_sig(
+                "cursor",
+                "delete",
+                "rm a b",
+                &["/x/a".into(), "/x/b".into()]
+            ),
             "a different agent is a different habit"
         );
         assert_eq!(hex(&a).len(), 32);

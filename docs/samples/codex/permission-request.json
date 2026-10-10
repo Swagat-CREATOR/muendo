@@ -1,0 +1,13 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No Codex CLI was available. Every field name is a guess; see README.md, \"permission-request.json\".",
+  "session_id": "0199b3d2-7c41-7e8a-b2d5-5f1c9a0e4477",
+  "hook_event_name": "PermissionRequest",
+  "permission_mode": "on-request",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "tool_name": "shell",
+  "tool_use_id": "call_8Hk2PqvS1mLbT0wA",
+  "tool_input": {
+    "command": ["bash", "-lc", "git push --force origin main"],
+    "workdir": "C:\\Users\\ana\\code\\shop"
+  }
+}

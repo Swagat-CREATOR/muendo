@@ -1,0 +1,15 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No Cursor install was available. Every field name is a guess; see README.md, \"before-mcp-execution.json\".",
+  "hook_event_name": "beforeMCPExecution",
+  "conversation_id": "conv_01K6Y2M4Q8ZT3NB7V0JX",
+  "generation_id": "gen_01K6Y2M9R1AC5PD8W2KY",
+  "workspace_roots": ["C:\\Users\\ana\\code\\shop"],
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "server_name": "filesystem",
+  "url": "http://127.0.0.1:7391/mcp",
+  "tool_name": "write_file",
+  "tool_input": {
+    "path": "C:\\Users\\ana\\.ssh\\config",
+    "contents": "Host build\n  User deploy\n"
+  }
+}

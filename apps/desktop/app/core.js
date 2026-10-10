@@ -16,8 +16,9 @@ const PROTOCOL_VERSION = 1;
 // onEvent(event): an event the core sends unasked: a change feed event for a watched folder ({ root, kind, path?,
 // dirs?, message?, at_ms }) or a restore's progress ({ root, kind: 'restore_progress', restore, ... }).
 // subscribe(fn) adds another listener and returns a function that removes it.
+// args: more arguments for the core, e.g. `--desk <folder>` for the Agent Desk pipe.
 function createCore({
-  binary, runDir, logDir, log, onChange = () => {}, onEvent = () => {},
+  binary, runDir, logDir, log, args = [], onChange = () => {}, onEvent = () => {},
   checkEveryMs = 10_000, answerWithinMs = 2_000, readyWithinMs = 10_000, restartAfterMs = 1_000,
 }) {
   // A new pipe name each run, which the core refuses to share: another program can't pose as the core.
@@ -115,7 +116,7 @@ function createCore({
     restartTimer = null;
     misses = 0;
     set({ state: 'starting', message: null, pid: null, uptimeMs: null });
-    const proc = spawn(binary, ['--socket', address, '--log-dir', logDir], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const proc = spawn(binary, ['--socket', address, '--log-dir', logDir, ...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     child = proc;
     const readyTimer = setTimeout(() => {
       log.error('mewndo-core did not start in time; restarting it');

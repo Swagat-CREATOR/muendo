@@ -1,0 +1,27 @@
+# §33.10 B6: link the C runtime statically, so mewndo-hook.exe runs on a machine with no Visual C++
+# redistributable installed. The forwarder is copied into the Claude Code plugin folder (§38.4,
+# `bin/mewndo-hook.exe`) and into %LOCALAPPDATA% for Codex and Cursor, where there is no installer to pull a
+# runtime in; a missing vcruntime140.dll would make every agent action pop a loader error instead of failing
+# open, which is the worst outcome in the whole spec.
+#
+# Two things to know about this file:
+#
+# 1. Cargo finds `.cargo/config.toml` by walking up from the *current directory*, not from the crate being
+#    built. Building from `core/` (as `cargo test -p mewndo-hook` and CI do) does not read this file; it
+#    applies when you build from inside this folder, which is what the release step does:
+#        cd core/crates/mewndo-hook
+#        cargo build --release --target x86_64-pc-windows-msvc
+#    To get the same flag from the workspace root, pass it explicitly instead:
+#        RUSTFLAGS="-C target-feature=+crt-static" cargo build --release -p mewndo-hook --target x86_64-pc-windows-msvc
+#
+# 2. The flag is scoped to the Windows MSVC target on purpose. As `[build] rustflags` it would be appended to
+#    every build run from this folder, including the Linux `cargo test` the other agents in this repository
+#    share, and any change to RUSTFLAGS invalidates the whole target directory -- a full workspace rebuild for
+#    everyone. Scoped like this it can only ever affect the Windows binary.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# The windows-gnu target is only used for `cargo check` from WSL (§32.5 rule 5), never for a shipped binary,
+# so it gets the same flag for parity and nothing else.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]

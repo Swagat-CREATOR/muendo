@@ -32,6 +32,8 @@ pub enum Runner {
     Go,
     Dotnet,
     Mocha,
+    /// `node --test`: TAP (`not ok 1 - name`, `# fail 1`) or its spec reporter (`ℹ fail 1`).
+    NodeTest,
     /// npm, pnpm, yarn: a wrapper that forwards to one of the others.
     Npm,
     Other,
@@ -88,6 +90,14 @@ const LINES: &[Lines] = &[
         fail: r"(?i)\b[1-9]\d*\s+failing\b",
         pass: Some(r"(?i)\b[1-9]\d*\s+passing\b"),
         names: Some(r"(?m)^\s*\d+\)\s*(.+?)\s*$"),
+    },
+    Lines {
+        runner: Runner::NodeTest,
+        // Not in the T2 table, but its summary is as definite as the others: both reporters end with
+        // `# fail N` (TAP) or `ℹ fail N` (spec).
+        fail: r"(?m)^(?:#|\u{2139})\s*fail\s+[1-9]\d*\s*$",
+        pass: Some(r"(?m)^(?:#|\u{2139})\s*fail\s+0\s*$"),
+        names: Some(r"(?m)^not ok \d+ - (.+?)\s*$"),
     },
     Lines {
         runner: Runner::Npm,
@@ -152,11 +162,7 @@ pub fn failure_count(tail: &str) -> Option<u32> {
             .expect("the failure-count pattern compiles")
     });
     let caps = re.captures(tail)?;
-    caps.get(1)
-        .or_else(|| caps.get(2))?
-        .as_str()
-        .parse()
-        .ok()
+    caps.get(1).or_else(|| caps.get(2))?.as_str().parse().ok()
 }
 
 /// T9. The first `limit` failing test names in the tail. A wrapper (`Npm`) or an unknown runner (`Other`) has no
@@ -203,8 +209,8 @@ pub struct Tests {
 }
 
 /// The §35.5 T3 list. `bun test` is read as jest/vitest because its summary lines copy theirs; Maven, Gradle,
-/// `node --test` and `deno test` are `Other` because the T2 table has no line for them, so without a payload
-/// exit code their result stays unknown rather than guessed.
+/// `deno test` are `Other` because the T2 table has no line for them, so without a payload exit code their result
+/// stays unknown rather than guessed. `node --test` has its own summary lines (`NodeTest`).
 const BUILTIN: &[(&str, Runner)] = &[
     ("npx jest", Runner::JestVitest),
     ("npx vitest", Runner::JestVitest),
@@ -219,7 +225,7 @@ const BUILTIN: &[(&str, Runner)] = &[
     // the character before the phrase is not part of a word, and `/` is not.
     ("gradlew test", Runner::Other),
     ("gradle test", Runner::Other),
-    ("node --test", Runner::Other),
+    ("node --test", Runner::NodeTest),
     ("deno test", Runner::Other),
     ("npm run test", Runner::Npm),
     ("npm test", Runner::Npm),
@@ -339,16 +345,17 @@ mod tests {
     const JEST_PASS: &str = "PASS  src/date.spec.ts\nTests:       5 passed, 5 total";
     const PYTEST_FAIL: &str = "=========== short test summary info ===========\nFAILED tests/test_date.py::test_iso - assert 1 == 2\n=========== 1 failed, 4 passed in 0.31s ===========";
     const PYTEST_PASS: &str = "=========== 5 passed in 0.12s ===========";
-    const CARGO_FAIL: &str =
-        "test date::parses_iso ... FAILED\n\nfailures:\n    date::parses_iso\n\ntest result: FAILED. 4 passed; 1 failed; 0 ignored";
+    const CARGO_FAIL: &str = "test date::parses_iso ... FAILED\n\nfailures:\n    date::parses_iso\n\ntest result: FAILED. 4 passed; 1 failed; 0 ignored";
     const CARGO_PASS: &str = "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured";
     const GO_FAIL: &str = "--- FAIL: TestParseISO (0.00s)\n    date_test.go:12: want 1 got 2\nFAIL\nFAIL\texample.com/date\t0.012s";
     const GO_PASS: &str = "ok  \texample.com/date\t0.012s";
-    const DOTNET_FAIL: &str =
-        "  Failed DateTests.ParsesIso [3 ms]\nFailed!  - Failed:     2, Passed:     5, Skipped:     0";
+    const DOTNET_FAIL: &str = "  Failed DateTests.ParsesIso [3 ms]\nFailed!  - Failed:     2, Passed:     5, Skipped:     0";
     const DOTNET_PASS: &str = "Passed!  - Failed:     0, Passed:     5, Skipped:     0";
-    const MOCHA_FAIL: &str = "  3 passing (21ms)\n  1 failing\n\n  1) date parses ISO:\n     AssertionError";
+    const MOCHA_FAIL: &str =
+        "  3 passing (21ms)\n  1 failing\n\n  1) date parses ISO:\n     AssertionError";
     const MOCHA_PASS: &str = "  4 passing (18ms)";
+    const NODE_FAIL: &str = "TAP version 13\nnot ok 1 - parses ISO dates\n  ---\n  ...\n# tests 7\n# pass 6\n# fail 1\n";
+    const NODE_PASS: &str = "\u{2139} tests 7\n\u{2139} pass 7\n\u{2139} fail 0\n";
     const NPM_FAIL: &str = "npm ERR! Test failed.  See above for more details.";
 
     #[test]
@@ -360,9 +367,14 @@ mod tests {
             ("go", GO_FAIL),
             ("dotnet", DOTNET_FAIL),
             ("mocha", MOCHA_FAIL),
+            ("node --test", NODE_FAIL),
             ("npm", NPM_FAIL),
         ] {
-            assert_eq!(infer_exit_code(tail), Some(1), "{name} failure not inferred");
+            assert_eq!(
+                infer_exit_code(tail),
+                Some(1),
+                "{name} failure not inferred"
+            );
         }
     }
 
@@ -375,6 +387,7 @@ mod tests {
             ("go", GO_PASS),
             ("dotnet", DOTNET_PASS),
             ("mocha", MOCHA_PASS),
+            ("node --test", NODE_PASS),
         ] {
             assert_eq!(infer_exit_code(tail), Some(0), "{name} pass not inferred");
         }
@@ -384,7 +397,10 @@ mod tests {
     fn a_zero_count_is_not_a_failure() {
         // The reason for the non-zero counts: these are green runs that the literal T2 lines would fail.
         assert_eq!(infer_exit_code("Failed:     0, Passed:     5"), Some(0));
-        assert_eq!(infer_exit_code("test result: ok. 5 passed; 0 failed"), Some(0));
+        assert_eq!(
+            infer_exit_code("test result: ok. 5 passed; 0 failed"),
+            Some(0)
+        );
         assert_eq!(infer_exit_code("Tests: 0 failed, 5 passed"), Some(0));
     }
 
@@ -428,6 +444,10 @@ mod tests {
             failing_tests(Runner::Mocha, MOCHA_FAIL, 3),
             vec!["date parses ISO"]
         );
+        assert_eq!(
+            failing_tests(Runner::NodeTest, NODE_FAIL, 3),
+            vec!["parses ISO dates"]
+        );
     }
 
     #[test]
@@ -442,7 +462,10 @@ mod tests {
     #[test]
     fn only_the_first_three_names_are_reported() {
         let tail = "--- FAIL: TestA (0.00s)\n--- FAIL: TestB (0.00s)\n--- FAIL: TestC (0.00s)\n--- FAIL: TestD (0.00s)\nFAIL";
-        assert_eq!(failing_tests(Runner::Go, tail, 3), vec!["TestA", "TestB", "TestC"]);
+        assert_eq!(
+            failing_tests(Runner::Go, tail, 3),
+            vec!["TestA", "TestB", "TestC"]
+        );
     }
 
     #[test]
@@ -464,7 +487,7 @@ mod tests {
             ("mvn test", Runner::Other),
             ("gradle test", Runner::Other),
             ("./gradlew test", Runner::Other),
-            ("node --test", Runner::Other),
+            ("node --test", Runner::NodeTest),
             ("deno test", Runner::Other),
         ] {
             assert_eq!(tests.detect(command), Some(expected), "{command}");
@@ -474,7 +497,13 @@ mod tests {
     #[test]
     fn t3_ignores_what_is_not_a_test_command() {
         let tests = Tests::builtin();
-        for command in ["git status", "npm install", "ls -la", "cargo build", "npm run lint"] {
+        for command in [
+            "git status",
+            "npm install",
+            "ls -la",
+            "cargo build",
+            "npm run lint",
+        ] {
             assert_eq!(tests.detect(command), None, "{command}");
         }
     }
@@ -484,8 +513,14 @@ mod tests {
         let tests = Tests::builtin();
         assert_eq!(tests.detect("npm.cmd test"), Some(Runner::Npm));
         assert_eq!(tests.detect("NPM TEST"), Some(Runner::Npm));
-        assert_eq!(tests.detect("cd api && npm run \"test\""), Some(Runner::Npm));
-        assert_eq!(tests.detect("C:\\tools\\pytest.exe -q"), Some(Runner::Pytest));
+        assert_eq!(
+            tests.detect("cd api && npm run \"test\""),
+            Some(Runner::Npm)
+        );
+        assert_eq!(
+            tests.detect("C:\\tools\\pytest.exe -q"),
+            Some(Runner::Pytest)
+        );
     }
 
     #[test]
@@ -507,7 +542,11 @@ mod tests {
         // The built-in knowledge still wins for a command we already understand.
         assert_eq!(tests.detect("cargo test"), Some(Runner::Cargo));
         // A rules.toml with no [tests] section is fine; a broken one is an error, not a panic.
-        assert!(Tests::builtin().with_rules_toml("[deny]\ncommands = []").is_ok());
+        assert!(
+            Tests::builtin()
+                .with_rules_toml("[deny]\ncommands = []")
+                .is_ok()
+        );
         assert!(Tests::builtin().with_rules_toml("[tests").is_err());
     }
 }

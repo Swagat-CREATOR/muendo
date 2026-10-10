@@ -1,0 +1,18 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No live Claude Code was available. See README.md.",
+  "session_id": "6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471",
+  "transcript_path": "C:\\Users\\ana\\.claude\\projects\\C--Users-ana-code-shop\\6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471.jsonl",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm test -- checkout",
+    "description": "Run the checkout tests"
+  },
+  "tool_response": {
+    "stdout": "> shop@1.4.0 test\n> node --test test/checkout\n\nTAP version 13\nnot ok 1 - parses ISO dates\n  ---\n  error: 'Expected 2026-10-09, got Invalid Date'\n  ...\n# tests 7\n# pass 6\n# fail 1\n",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false
+  }
+}

@@ -1,5 +1,6 @@
-# Guarded computer use: the MCP proxy in front of cua-driver (spec §36.6 U3 to U5).
-# Versions come from the workspace; see core/Cargo.toml.
+# Guarded computer use: the MCP proxy in front of cua-driver (spec §36.2, §36.4, build guide §36.6 U1 to U6,
+# U8). A library, not a binary: `mewndo-core.exe mcp-computer` is the subcommand that calls `run()` here, so the
+# threads, the stdio and the process tree stay in one place (§38.1) and this crate stays testable.
 [package]
 name = "mewndo-computer"
 version.workspace = true
@@ -7,3 +8,48 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# --- already in [workspace.dependencies] at these versions, so asked for by name ------------------------------
+mewndo-proto.workspace = true
+mewndo-router.workspace = true
+mewndo-inbox.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true                                   # §36.6 U1: the pinned release's SHA-256
+windows-sys.workspace = true                            # §36.6 U6: the two low-level input hooks
+# rmcp is pinned in [workspace.dependencies] with ["server", "transport-io", "macros"]; the proxy is also an MCP
+# *client* of cua-driver, which it starts as a child process (§36.6 U3). Features are additive, so asking for the
+# two extra ones here cannot change the version the lock holds.
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+# tokio is pinned in [workspace.dependencies] with default-features = false; these are the features this crate
+# needs. Same reasoning: additive, no version of our own.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "process", "sync", "time"] }
+
+# ponytail: this version belongs in core/Cargo.toml's [workspace.dependencies], with this crate asking for it as
+# `crossbeam-queue.workspace = true` like every other dependency above (§32.5 rule 4, §38.2). It is pinned here
+# only because core/Cargo.toml is not this crate's file to edit. Move it up and switch to `.workspace = true`.
+# §36.6's own table names `crossbeam-queue`'s `ArrayQueue`: the hook callback must return almost at once or
+# Windows removes the hook, so the queue it pushes into cannot be allowed to block or allocate. `try_push` on a
+# fixed-capacity lock-free queue is the whole requirement; `default-features = false` keeps `std` out of the
+# dependency and leaves nothing but the two queues.
+crossbeam-queue = { version = "0.3.12", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+
+# Not taken, on purpose:
+#   zip       - §36.6 U1 verifies the release archive's SHA-256; unpacking it is the installer's step (P8.2),
+#               which already has PowerShell's Expand-Archive. vendor.rs says so where it stops.
+#   ureq      - the download itself is behind the `download` feature and the `Fetcher` trait, so a build with no
+#               feature has no HTTP client at all (plot.md rule 7). See vendor.rs.
+#   xcap, image - the screenshot crop of §36.6 U5.5 is taken by the main core, which owns the capture thread;
+#               this crate only passes the card through. Honestly stated in lib.rs.
+
+[features]
+default = []
+# Turns on the real HTTP download in vendor.rs. Off by default so a plain `cargo build` of the core links no
+# network client: the only thing that ever fetches the driver is the installer, once, on the user's machine.
+download = ["dep:ureq"]
+
+[dependencies.ureq]
+workspace = true
+optional = true

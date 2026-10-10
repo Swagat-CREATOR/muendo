@@ -262,6 +262,13 @@ pub struct InboxRelease {
     pub savepoint_id: Option<String>,
 }
 
+/// core -> app: the card can no longer be answered (its hook timed out, or the user answered in the terminal), so
+/// it leaves the stack. Not in §38.5's table; added with the core's Inbox wiring (docs/decisions.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InboxExpired {
+    pub card_id: String,
+}
+
 /// app -> core: undo what the agent did after this answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InboxUndo {
@@ -370,7 +377,7 @@ pub struct ComputerResume {
 bodies! {
     Hello = "hello", Ping = "ping", Pong = "pong", ErrorBody = "error",
     HookRequest = "hook.request", HookResponse = "hook.response", AgentStatus = "agent.status",
-    InboxCard = "inbox.card", InboxAnswer = "inbox.answer", InboxRelease = "inbox.release", InboxUndo = "inbox.undo",
+    InboxCard = "inbox.card", InboxAnswer = "inbox.answer", InboxRelease = "inbox.release", InboxUndo = "inbox.undo", InboxExpired = "inbox.expired",
     RouteRequest = "route.request", RouteResult = "route.result", SpanCreated = "span.created",
     ReceiptResult = "receipt.result", CursorMove = "cursor.move", ShowmeState = "showme.state",
     ShowmeStep = "showme.step", ShowmeStart = "showme.start", ShowmeStop = "showme.stop",
@@ -481,6 +488,9 @@ mod tests {
         check(InboxUndo {
             card_id: "c".into(),
             savepoint_id: None,
+        });
+        check(InboxExpired {
+            card_id: "c".into(),
         });
         check(RouteRequest {
             text: "tell Claude to update the README".into(),

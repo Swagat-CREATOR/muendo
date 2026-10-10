@@ -46,7 +46,11 @@ impl LiveAgent {
 
     /// "<Agent> · <cwd folder> · last: <last line, up to 40 chars>" (§34.9 R12).
     pub fn label(&self) -> String {
-        let mut last: String = self.last_line.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut last: String = self
+            .last_line
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         if last.chars().count() > 40 {
             last = last.chars().take(40).collect();
         }
@@ -106,13 +110,24 @@ pub fn questions(agents: &[LiveAgent]) -> Vec<Question> {
 /// Words that mean Mewndo itself, for the fallback. Short list on purpose: these are the §23.3 intents, and
 /// a word that is also ordinary English ("stop") only counts when nothing names an agent.
 const MEWNDO_WORDS: [&str; 10] = [
-    "mewndo", "undo", "roll back", "rollback", "restore", "save point", "savepoint", "router off", "resume",
+    "mewndo",
+    "undo",
+    "roll back",
+    "rollback",
+    "restore",
+    "save point",
+    "savepoint",
+    "router off",
+    "resume",
     "stop",
 ];
 
 /// Score every option by how much of the text names it. Returns the best and the runner-up: §34.5's "top two
 /// by keyword match".
-pub fn keyword_fallback(text: &str, agents: &[LiveAgent]) -> (RouteChoice, Option<RouteChoice>, f64) {
+pub fn keyword_fallback(
+    text: &str,
+    agents: &[LiveAgent],
+) -> (RouteChoice, Option<RouteChoice>, f64) {
     let said = text.to_lowercase();
     let mut scored: Vec<(usize, RouteChoice)> = Vec::new();
     for (i, a) in agents.iter().enumerate() {
@@ -142,7 +157,7 @@ pub fn keyword_fallback(text: &str, agents: &[LiveAgent]) -> (RouteChoice, Optio
     if said.contains("new agent") || said.contains("start a new") || said.contains("open a new") {
         scored.push((20, RouteChoice::NewAgent));
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
     match scored.len() {
         0 => (
             // Nothing matched anything. The only honest default is the single live agent, or "Mewndo
@@ -175,9 +190,12 @@ pub fn route(text: &str, agents: &[LiveAgent], answers: Option<&Answers>) -> Rou
     // The choice question's options are labels, not verdicts, so it is read straight out of `by_id` rather
     // than through `Answers::choice`, which only knows the §34.3 verdict vocabulary.
     let picked = answers.and_then(|a| match a.by_id.get("route") {
-        Some(crate::answers::Answer::Choice { choice, confidence, .. }) => {
-            labels.iter().position(|l| l == choice).map(|i| (i, *confidence))
-        }
+        Some(crate::answers::Answer::Choice {
+            choice, confidence, ..
+        }) => labels
+            .iter()
+            .position(|l| l == choice)
+            .map(|i| (i, *confidence)),
         _ => None,
     });
     match picked {
@@ -200,7 +218,13 @@ pub fn route(text: &str, agents: &[LiveAgent], answers: Option<&Answers>) -> Rou
         // No answer, or one the model was not sure of: chips, not a guess (§34.5).
         _ => {
             let (choice, runner_up, confidence) = keyword_fallback(text, agents);
-            RouteResult { choice, confidence, backend: Backend::Rules, runner_up, to_mewndo }
+            RouteResult {
+                choice,
+                confidence,
+                backend: Backend::Rules,
+                runner_up,
+                to_mewndo,
+            }
         }
     }
 }

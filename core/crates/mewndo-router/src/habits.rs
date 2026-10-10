@@ -110,7 +110,11 @@ impl Habits {
     /// The user pressed yes. The rule applies from now on and is what `decide`'s `habits` argument carries.
     pub fn accept(&mut self, request: &HabitRequest) {
         self.rules.insert(
-            (request.agent_kind.clone(), request.project.clone(), request.sig),
+            (
+                request.agent_kind.clone(),
+                request.project.clone(),
+                request.sig,
+            ),
             request.answer,
         );
         self.pending.push(request.clone());

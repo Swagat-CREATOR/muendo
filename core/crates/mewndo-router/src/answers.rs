@@ -45,7 +45,13 @@ pub struct Question {
 
 impl Question {
     pub fn noul(id: &str, text: &str) -> Question {
-        Question { id: id.into(), kind: QuestionType::Noul, text: text.into(), options: vec![], scale: vec![] }
+        Question {
+            id: id.into(),
+            kind: QuestionType::Noul,
+            text: text.into(),
+            options: vec![],
+            scale: vec![],
+        }
     }
     pub fn score(id: &str, text: &str) -> Question {
         Question {
@@ -57,7 +63,13 @@ impl Question {
         }
     }
     pub fn choice(id: &str, text: &str, options: Vec<String>) -> Question {
-        Question { id: id.into(), kind: QuestionType::Choice, text: text.into(), options, scale: vec![] }
+        Question {
+            id: id.into(),
+            kind: QuestionType::Choice,
+            text: text.into(),
+            options,
+            scale: vec![],
+        }
     }
 }
 
@@ -113,9 +125,9 @@ impl Answers {
     /// seventh verdict) is None, not a guess.
     pub fn choice(&self, id: &str) -> Option<(ChoiceVerdict, f64)> {
         match self.by_id.get(id) {
-            Some(Answer::Choice { choice, confidence, .. }) => {
-                ChoiceVerdict::parse(choice).map(|c| (c, *confidence))
-            }
+            Some(Answer::Choice {
+                choice, confidence, ..
+            }) => ChoiceVerdict::parse(choice).map(|c| (c, *confidence)),
             _ => None,
         }
     }
@@ -137,20 +149,32 @@ fn fallback(reason: impl Into<String>, raw: &Value) -> Fallback {
     if sample.len() > SAMPLE_LIMIT {
         sample.truncate(SAMPLE_LIMIT);
     }
-    Fallback { reason: reason.into(), raw_sample: sample }
+    Fallback {
+        reason: reason.into(),
+        raw_sample: sample,
+    }
 }
 
 /// The §34.3 guard batch: one call, five answers.
 pub fn guard_questions() -> Vec<Question> {
     vec![
         Question::noul("in_scope", "Is this action part of what the brief asks?"),
-        Question::noul("irreversible", "Would this action be hard to undo without a backup?"),
-        Question::noul("secrets", "Does this action read, send or expose passwords, keys or tokens?"),
+        Question::noul(
+            "irreversible",
+            "Would this action be hard to undo without a backup?",
+        ),
+        Question::noul(
+            "secrets",
+            "Does this action read, send or expose passwords, keys or tokens?",
+        ),
         Question::score("risk", "How risky is this action for the user's data?"),
         Question::choice(
             "verdict",
             "What should happen next?",
-            ChoiceVerdict::ALL.iter().map(|c| c.as_str().to_string()).collect(),
+            ChoiceVerdict::ALL
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect(),
         ),
     ]
 }
@@ -175,7 +199,9 @@ fn index(raw: &Value) -> BTreeMap<String, &Value> {
 }
 
 fn number(v: &Value) -> Option<f64> {
-    v.as_f64().or_else(|| v.as_str()?.trim().parse().ok()).filter(|n| n.is_finite())
+    v.as_f64()
+        .or_else(|| v.as_str()?.trim().parse().ok())
+        .filter(|n| n.is_finite())
 }
 
 /// `p_yes ?? prob ?? the bare value`, in 0..1 with the gateway's 1% slack.
@@ -200,7 +226,10 @@ fn on_scale(scale: &[f64], got: &Value) -> Option<f64> {
 /// The gateway's `choiceAnswer`: floor the probabilities at 0, require a positive sum, renormalize, and take
 /// the largest as the choice. Flooring only -- clamping at 1 would erase the ratios.
 fn choice_answer(options: &[String], got: &Value) -> Option<Answer> {
-    let probs = got.get("probabilities").or_else(|| got.get("probs"))?.as_object()?;
+    let probs = got
+        .get("probabilities")
+        .or_else(|| got.get("probs"))?
+        .as_object()?;
     let mut out: BTreeMap<String, f64> = BTreeMap::new();
     let mut sum = 0.0;
     for o in options {
@@ -220,13 +249,20 @@ fn choice_answer(options: &[String], got: &Value) -> Option<Answer> {
         }
     }
     let confidence = out[&choice];
-    Some(Answer::Choice { choice, probabilities: out, confidence })
+    Some(Answer::Choice {
+        choice,
+        probabilities: out,
+        confidence,
+    })
 }
 
 /// Parse a whole response. All or nothing, exactly like the gateway: one missing or unreadable answer makes
 /// the whole call a fallback, because a half-answered §34.4 table is a table whose rows disagree about what
 /// the model said.
-pub fn parse_answers(questions: &[Question], raw: &Value) -> Result<BTreeMap<String, Answer>, Fallback> {
+pub fn parse_answers(
+    questions: &[Question],
+    raw: &Value,
+) -> Result<BTreeMap<String, Answer>, Fallback> {
     if raw.get("fallback").and_then(Value::as_bool) == Some(true) {
         return Err(fallback("gateway reported a fallback", raw));
     }
@@ -277,14 +313,20 @@ mod tests {
         assert_eq!(a.score("risk"), Some(2.0));
         let (choice, confidence) = a.choice("verdict").unwrap();
         assert_eq!(choice, ChoiceVerdict::Allow);
-        assert!((confidence - 0.7).abs() < 1e-9, "probabilities are renormalized: {confidence}");
+        assert!(
+            (confidence - 0.7).abs() < 1e-9,
+            "probabilities are renormalized: {confidence}"
+        );
     }
 
     #[test]
     fn a_list_with_ids_and_a_bare_map_both_work() {
         let qs = vec![Question::noul("in_scope", "?")];
         assert!(parse_answers(&qs, &json!([{"id": "in_scope", "p_yes": 0.4}])).is_ok());
-        assert!(parse_answers(&qs, &json!({"in_scope": 0.4})).is_ok(), "a bare number");
+        assert!(
+            parse_answers(&qs, &json!({"in_scope": 0.4})).is_ok(),
+            "a bare number"
+        );
     }
 
     #[test]
@@ -303,16 +345,32 @@ mod tests {
         let risk = vec![Question::score("risk", "?")];
         assert!(parse_answers(&risk, &json!({"risk": {"value": 0.8}})).is_err());
         // A choice with no distribution is not enough to act on.
-        let v = vec![Question::choice("verdict", "?", vec!["allow".into(), "deny".into()])];
+        let v = vec![Question::choice(
+            "verdict",
+            "?",
+            vec!["allow".into(), "deny".into()],
+        )];
         assert!(parse_answers(&v, &json!({"verdict": {"choice": "allow"}})).is_err());
         assert!(parse_answers(&v, &json!({"verdict": {"probabilities": {"allow": 0}}})).is_err());
     }
 
     #[test]
     fn an_unknown_option_is_no_opinion() {
-        let qs = vec![Question::choice("verdict", "?", vec!["teleport".into(), "allow".into()])];
-        let parsed = parse_answers(&qs, &json!({"verdict": {"probabilities": {"teleport": 1.0}}})).unwrap();
+        let qs = vec![Question::choice(
+            "verdict",
+            "?",
+            vec!["teleport".into(), "allow".into()],
+        )];
+        let parsed = parse_answers(
+            &qs,
+            &json!({"verdict": {"probabilities": {"teleport": 1.0}}}),
+        )
+        .unwrap();
         let a = Answers::new(Backend::WorkersAi, parsed);
-        assert_eq!(a.choice("verdict"), None, "a verdict the router does not know is not a verdict");
+        assert_eq!(
+            a.choice("verdict"),
+            None,
+            "a verdict the router does not know is not a verdict"
+        );
     }
 }

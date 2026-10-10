@@ -27,13 +27,6 @@ pub struct Writer {
 impl Writer {
     /// Queue one statement. It is committed with the rest of its 10 ms batch; a statement that fails is logged
     /// and the rest of the batch still commits.
-    #[cfg_attr(
-        any(not(test), all(windows, not(target_env = "msvc"))),
-        expect(
-            dead_code,
-            reason = "first writers: hooks (Part C) and the Inbox (Part D)"
-        )
-    )]
     pub fn write(&self, sql: &'static str, params: Vec<Value>) {
         let _ = self.tx.send(Command::Exec(sql, params));
     }

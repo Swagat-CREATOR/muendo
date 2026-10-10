@@ -1,0 +1,52 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" codex pre-tool",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" codex permission",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" codex post-tool",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" codex stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

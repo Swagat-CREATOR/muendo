@@ -48,14 +48,20 @@ fn powershell_is_read_as_well_as_bash() {
         vec!["Set-Content", "a\"b", "$env:TEMP\\x"]
     );
     // Both tokenizers keep separators as their own words, so `curl ... | sh` has a `|` to find.
-    assert_eq!(split_bash("curl https://x.sh|sh"), vec!["curl", "https://x.sh", "|", "sh"]);
+    assert_eq!(
+        split_bash("curl https://x.sh|sh"),
+        vec!["curl", "https://x.sh", "|", "sh"]
+    );
     assert_eq!(split_powershell("a && b"), vec!["a", "&&", "b"]);
 
     let moved = bash("Move-Item .\\api\\date.ts ..\\keep\\date.ts");
     assert_eq!(moved.kind, Kind::Move);
     assert_eq!(
         moved.paths,
-        vec!["c:/work/keep/date.ts".to_string(), "c:/work/shop/api/date.ts".to_string()]
+        vec![
+            "c:/work/keep/date.ts".to_string(),
+            "c:/work/shop/api/date.ts".to_string()
+        ]
     );
 }
 
@@ -63,11 +69,16 @@ fn powershell_is_read_as_well_as_bash() {
 fn relative_paths_resolve_against_the_cwd_and_cannot_escape_it_silently() {
     assert_eq!(norm_path("api/date.ts", cwd()), "c:/work/shop/api/date.ts");
     assert_eq!(norm_path("./api/../db/x", cwd()), "c:/work/shop/db/x");
-    assert_eq!(norm_path("../../windows/system32", cwd()), "c:/windows/system32");
+    assert_eq!(
+        norm_path("../../windows/system32", cwd()),
+        "c:/windows/system32"
+    );
     // Case does not hide a path from the protect list: Windows would open the same file.
     assert_eq!(norm_path(r"API\Date.TS", cwd()), "c:/work/shop/api/date.ts");
     assert!(
-        CompiledRules::builtin().protected(&norm_path(".ENV", cwd())).is_some(),
+        CompiledRules::builtin()
+            .protected(&norm_path(".ENV", cwd()))
+            .is_some(),
         "a protected file is protected under any spelling"
     );
 }
@@ -80,7 +91,11 @@ fn unc_and_long_path_spellings_normalize_to_one_form() {
         r"\\server\share\team\.\notes.md",
         r"\\server\share\other\..\team\notes.md",
     ] {
-        assert_eq!(norm_path(spelling, cwd()), "//server/share/team/notes.md", "{spelling}");
+        assert_eq!(
+            norm_path(spelling, cwd()),
+            "//server/share/team/notes.md",
+            "{spelling}"
+        );
     }
     assert_eq!(norm_path(r"\\?\C:\work\shop\db", cwd()), "c:/work/shop/db");
     assert_eq!(norm_path(r"\\.\C:\work\shop\db", cwd()), "c:/work/shop/db");
@@ -93,13 +108,26 @@ fn unc_and_long_path_spellings_normalize_to_one_form() {
 #[test]
 fn file_tools_and_mcp_tools_normalize_too() {
     // Edit, Write and MultiEdit give file_path (§34.9 R2).
-    let w = normalize("claude-code", "Edit", &json!({"file_path": "api/date.ts"}), cwd());
+    let w = normalize(
+        "claude-code",
+        "Edit",
+        &json!({"file_path": "api/date.ts"}),
+        cwd(),
+    );
     assert_eq!(w.kind, Kind::Write);
     assert_eq!(w.paths, vec!["c:/work/shop/api/date.ts".to_string()]);
-    assert_eq!(w.command_norm, "write api/", "§34.7's unit of a habit is the folder");
+    assert_eq!(
+        w.command_norm, "write api/",
+        "§34.7's unit of a habit is the folder"
+    );
 
     // Two edits in the same folder are one action for habits; two deletes are not.
-    let w2 = normalize("claude-code", "Edit", &json!({"file_path": "api/time.ts"}), cwd());
+    let w2 = normalize(
+        "claude-code",
+        "Edit",
+        &json!({"file_path": "api/time.ts"}),
+        cwd(),
+    );
     assert_eq!(w.signature("claude-code"), w2.signature("claude-code"));
     let d1 = bash("rm api/date.ts");
     let d2 = bash("rm api/time.ts");
@@ -113,12 +141,27 @@ fn file_tools_and_mcp_tools_normalize_too() {
         cwd(),
     );
     assert_eq!(m.kind, Kind::Mcp);
-    assert_eq!(m.recipients, vec!["a@b.co".to_string(), "billing@shop-pay.com".to_string()]);
-    assert!(m.command_norm.contains("body=<900 chars>"), "{}", m.command_norm);
-    assert!(!m.command_norm.contains("xxx"), "an email body never leaves the machine");
+    assert_eq!(
+        m.recipients,
+        vec!["a@b.co".to_string(), "billing@shop-pay.com".to_string()]
+    );
+    assert!(
+        m.command_norm.contains("body=<900 chars>"),
+        "{}",
+        m.command_norm
+    );
+    assert!(
+        !m.command_norm.contains("xxx"),
+        "an email body never leaves the machine"
+    );
 
     // A command is cut at 300 characters before it can reach the model's state.
-    assert!(bash(&format!("echo {}", "a".repeat(600))).command_norm.len() <= 300);
+    assert!(
+        bash(&format!("echo {}", "a".repeat(600)))
+            .command_norm
+            .len()
+            <= 300
+    );
 }
 
 #[test]

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" cursor shell",
+        "timeout_ms": 30000
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" cursor mcp",
+        "timeout_ms": 30000
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" cursor response",
+        "timeout_ms": 30000
+      }
+    ],
+    "stop": [
+      {
+        "command": "\"C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe\" cursor stop",
+        "timeout_ms": 30000
+      }
+    ]
+  }
+}

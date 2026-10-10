@@ -7,3 +7,18 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Lane output travels to the app as `Frame::Lane` (type 1), so the framing lives in proto, not here.
+mewndo-proto.workspace = true
+# §33.10 G1: `native_pty_system().openpty(..)`. ConPTY on Windows, openpty(3) elsewhere - see lib.rs on why
+# this is not behind cfg(windows).
+portable-pty.workspace = true
+which.workspace = true                                              # §33.10 G1: find `claude`, `codex`, `cursor-agent`
+ulid.workspace = true                                               # lane ids (§38.2)
+serde.workspace = true
+serde_json.workspace = true
+
+# Not taken, on purpose (§32.5 rule 4 keeps the lock small):
+#   tokio       - a lane is two blocking file handles and one reader thread; async buys nothing and the core
+#                 already owns a runtime it can `spawn_blocking` into.
+#   vte, strip-ansi-escapes - the ring buffer replays raw bytes into xterm.js, which is the terminal emulator.
+#                 Parsing them here would mean emulating one twice.

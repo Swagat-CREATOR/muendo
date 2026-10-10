@@ -77,7 +77,11 @@ pub struct Router {
 
 impl Default for Router {
     fn default() -> Router {
-        Router::new(CompiledRules::builtin(), Box::new(NoClef), Box::new(NoFacts))
+        Router::new(
+            CompiledRules::builtin(),
+            Box::new(NoClef),
+            Box::new(NoFacts),
+        )
     }
 }
 
@@ -157,7 +161,9 @@ impl Router {
             } else {
                 let request = self.guard_request(g, &action, &rule_outcome, &sig);
                 match self.clef.ask(&request, deadline) {
-                    Ok((backend, by_id)) => (Some(Answers::new(backend, by_id)), true, false, None, true),
+                    Ok((backend, by_id)) => {
+                        (Some(Answers::new(backend, by_id)), true, false, None, true)
+                    }
                     Err(ClefError::Deadline) => (None, false, true, None, false),
                     Err(ClefError::Unavailable(_)) => (None, true, true, None, false),
                     Err(ClefError::Shape(f)) => (None, true, true, Some(f.raw_sample), false),
@@ -214,7 +220,12 @@ impl Router {
     }
 
     /// §34.9's `router.route(text, agents)`.
-    pub fn route(&self, text: &str, agents: &[LiveAgent], answers: Option<&Answers>) -> RouteResult {
+    pub fn route(
+        &self,
+        text: &str,
+        agents: &[LiveAgent],
+        answers: Option<&Answers>,
+    ) -> RouteResult {
         // The router being off must not stop the talk box working; it falls back to keyword matching.
         let answers = if self.enabled() { answers } else { None };
         crate::voice::route(text, agents, answers)

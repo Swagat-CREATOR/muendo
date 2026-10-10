@@ -60,7 +60,10 @@ impl Kind {
     /// deadline "a destructive action becomes ask"). A write counts: an overwrite loses the old contents,
     /// which is the whole reason Mewndo exists.
     pub fn destructive(self) -> bool {
-        matches!(self, Kind::Delete | Kind::Move | Kind::Write | Kind::Computer | Kind::Mcp)
+        matches!(
+            self,
+            Kind::Delete | Kind::Move | Kind::Write | Kind::Computer | Kind::Mcp
+        )
     }
 }
 
@@ -77,6 +80,9 @@ pub struct Action {
     pub hosts: Vec<String>,
     /// Email addresses, channel names, phone numbers: who an MCP write tool would reach (§34.2).
     pub recipients: Vec<String>,
+    /// The command was longer than the cut, so `command_norm` is not all of it. The rules can't clear what they
+    /// didn't see: `facts::rules_pass` turns this into an ask, never an allow.
+    pub truncated: bool,
 }
 
 /// §34.9 "Speed rules": commands are cut at 300 characters before they go anywhere near the model's state.
@@ -115,7 +121,11 @@ fn looks_windows(s: &str) -> bool {
 }
 
 fn to_slashes(raw: &str) -> String {
-    let s = raw.trim().trim_matches('"').trim_matches('\'').replace('\\', "/");
+    let s = raw
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .replace('\\', "/");
     // `\\?\C:\x` and `\\?\UNC\server\share` are the Win32 long-path spellings. Stripping them is lexical and
     // must happen before anything else, or `//?/c:` would be read as a UNC server called `?`.
     if let Some(r) = s.strip_prefix("//?/UNC/") {
@@ -130,7 +140,8 @@ fn to_slashes(raw: &str) -> String {
 }
 
 fn is_absolute(s: &str) -> bool {
-    s.starts_with('/') || (s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic())
+    s.starts_with('/')
+        || (s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic())
 }
 
 /// Resolve `raw` against `cwd` and put it in compare form. Never touches the disk.
@@ -200,7 +211,10 @@ fn parent_of(path: &str) -> String {
 pub fn short_folder(path: &str, cwd: &Path, cwd_norm: &str) -> String {
     let _ = cwd;
     let dir = parent_of(path);
-    match dir.strip_prefix(cwd_norm).map(|r| r.trim_start_matches('/')) {
+    match dir
+        .strip_prefix(cwd_norm)
+        .map(|r| r.trim_start_matches('/'))
+    {
         Some("") => "./".to_string(),
         Some(rel) => format!("{rel}/"),
         None => format!("{dir}/"),
@@ -340,17 +354,52 @@ fn command_norm(tokens: &[String]) -> String {
 // --- what a command does -------------------------------------------------------------------------------
 
 const DELETERS: [&str; 10] = [
-    "rm", "rmdir", "del", "erase", "rd", "remove-item", "ri", "unlink", "shred", "clear-content",
+    "rm",
+    "rmdir",
+    "del",
+    "erase",
+    "rd",
+    "remove-item",
+    "ri",
+    "unlink",
+    "shred",
+    "clear-content",
 ];
 const MOVERS: [&str; 6] = ["mv", "move", "move-item", "ren", "rename", "rename-item"];
 const WRITERS: [&str; 10] = [
-    "touch", "tee", "set-content", "add-content", "out-file", "cp", "copy", "copy-item", "new-item", "dd",
+    "touch",
+    "tee",
+    "set-content",
+    "add-content",
+    "out-file",
+    "cp",
+    "copy",
+    "copy-item",
+    "new-item",
+    "dd",
 ];
 const READERS: [&str; 9] = [
-    "cat", "type", "get-content", "gc", "less", "more", "head", "tail", "select-string",
+    "cat",
+    "type",
+    "get-content",
+    "gc",
+    "less",
+    "more",
+    "head",
+    "tail",
+    "select-string",
 ];
 const NETWORKERS: [&str; 10] = [
-    "curl", "wget", "invoke-webrequest", "iwr", "invoke-restmethod", "irm", "scp", "sftp", "ssh", "rsync",
+    "curl",
+    "wget",
+    "invoke-webrequest",
+    "iwr",
+    "invoke-restmethod",
+    "irm",
+    "scp",
+    "sftp",
+    "ssh",
+    "rsync",
 ];
 
 fn kind_of_program(prog: &str) -> Option<Kind> {
@@ -468,7 +517,8 @@ pub fn normalize(agent: &str, tool: &str, input: &Value, cwd: &Path) -> Action {
 /// that contains one is tokenized the Windows way.
 fn windows_path_in(command: &str) -> bool {
     command.as_bytes().windows(2).any(|w| {
-        w[0] == b'\\' && (w[1].is_ascii_alphanumeric() || w[1] == b'\\' || w[1] == b'.' || w[1] == b'?')
+        w[0] == b'\\'
+            && (w[1].is_ascii_alphanumeric() || w[1] == b'\\' || w[1] == b'.' || w[1] == b'?')
     })
 }
 
@@ -490,13 +540,16 @@ fn shell_action(agent: &str, tool: &str, command: &str, cwd: &Path) -> Action {
         split_bash(command)
     };
     let mut action = Action {
+        truncated: tokens.iter().map(|t| t.len() + 1).sum::<usize>() > MAX_COMMAND + 1,
         command_norm: command_norm(&tokens),
         ..Action::default()
     };
     let mut best = Kind::Shell;
     let mut raw_paths: Vec<String> = Vec::new();
     for part in tokens.split(|t| is_separator(t)) {
-        let Some(program) = part.first() else { continue };
+        let Some(program) = part.first() else {
+            continue;
+        };
         let prog = program_name(program);
         let args = &part[1..];
         if let Some(k) = kind_of_program(&prog)
@@ -536,12 +589,22 @@ fn shell_action(agent: &str, tool: &str, command: &str, cwd: &Path) -> Action {
 /// `Edit`, `Write` and `MultiEdit` give `file_path` (§34.9 R2).
 fn file_action(kind: Kind, input: &Value, cwd: &Path) -> Action {
     let mut paths: Vec<String> = Vec::new();
-    for key in ["file_path", "path", "filePath", "notebook_path", "target_file"] {
+    for key in [
+        "file_path",
+        "path",
+        "filePath",
+        "notebook_path",
+        "target_file",
+    ] {
         if let Some(s) = input.get(key).and_then(Value::as_str) {
             paths.push(norm_path(s, cwd));
         }
     }
-    if let Some(list) = input.get("file_paths").or_else(|| input.get("paths")).and_then(Value::as_array) {
+    if let Some(list) = input
+        .get("file_paths")
+        .or_else(|| input.get("paths"))
+        .and_then(Value::as_array)
+    {
         for v in list {
             if let Some(s) = v.as_str() {
                 paths.push(norm_path(s, cwd));
@@ -559,7 +622,9 @@ fn file_action(kind: Kind, input: &Value, cwd: &Path) -> Action {
         .unwrap_or_default();
     Action {
         kind,
-        command_norm: format!("{} {}", kind.as_str(), where_).trim_end().to_string(),
+        command_norm: format!("{} {}", kind.as_str(), where_)
+            .trim_end()
+            .to_string(),
         paths,
         ..Action::default()
     }
@@ -624,7 +689,8 @@ fn mcp_action(tool: &str, input: &Value, cwd: &Path) -> Action {
     }
     summary.sort();
     let mut command = format!("{} {}", tool.to_lowercase(), summary.join(" "));
-    if command.len() > MAX_COMMAND {
+    let truncated = command.len() > MAX_COMMAND;
+    if truncated {
         command.truncate(
             (0..=MAX_COMMAND)
                 .rev()
@@ -637,6 +703,7 @@ fn mcp_action(tool: &str, input: &Value, cwd: &Path) -> Action {
     paths.sort();
     paths.dedup();
     Action {
+        truncated,
         kind: Kind::Mcp,
         command_norm: command.trim_end().to_string(),
         paths,
@@ -649,7 +716,16 @@ fn mcp_action(tool: &str, input: &Value, cwd: &Path) -> Action {
 /// is missed here is a recipient nobody checks: the key list is deliberately wide.
 fn recipients_from(input: &Value) -> Vec<String> {
     const KEYS: [&str; 10] = [
-        "to", "recipient", "recipients", "email", "emails", "cc", "bcc", "channel", "chat_id", "phone",
+        "to",
+        "recipient",
+        "recipients",
+        "email",
+        "emails",
+        "cc",
+        "bcc",
+        "channel",
+        "chat_id",
+        "phone",
     ];
     let mut out: Vec<String> = Vec::new();
     let Some(obj) = input.as_object() else {
@@ -662,9 +738,11 @@ fn recipients_from(input: &Value) -> Vec<String> {
         }
         match v {
             Value::String(s) => out.extend(s.split([',', ';']).map(|p| p.trim().to_lowercase())),
-            Value::Array(list) => {
-                out.extend(list.iter().filter_map(Value::as_str).map(|s| s.trim().to_lowercase()))
-            }
+            Value::Array(list) => out.extend(
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(|s| s.trim().to_lowercase()),
+            ),
             _ => {}
         }
     }
@@ -684,11 +762,20 @@ mod tests {
 
     #[test]
     fn strips_long_path_prefixes_and_resolves_dots() {
-        assert_eq!(norm_path(r"\\?\C:\Work\Shop\..\other", win()), "c:/work/other");
-        assert_eq!(norm_path(r"\\?\UNC\server\share\x", win()), "//server/share/x");
+        assert_eq!(
+            norm_path(r"\\?\C:\Work\Shop\..\other", win()),
+            "c:/work/other"
+        );
+        assert_eq!(
+            norm_path(r"\\?\UNC\server\share\x", win()),
+            "//server/share/x"
+        );
         assert_eq!(norm_path(r"\\server\share\x", win()), "//server/share/x");
         assert_eq!(norm_path("api/date.ts", win()), "c:/work/shop/api/date.ts");
-        assert_eq!(norm_path(r"DB\Migrations", win()), "c:/work/shop/db/migrations");
+        assert_eq!(
+            norm_path(r"DB\Migrations", win()),
+            "c:/work/shop/db/migrations"
+        );
     }
 
     #[test]
@@ -697,11 +784,22 @@ mod tests {
         assert_eq!(bash.kind, Kind::Delete);
         assert_eq!(
             bash.paths,
-            vec!["c:/work/shop/db".to_string(), "c:/work/shop/my docs/old".to_string()]
+            vec![
+                "c:/work/shop/db".to_string(),
+                "c:/work/shop/my docs/old".to_string()
+            ]
         );
-        let ps = shell_action("claude-code", "bash", "Remove-Item -Recurse -Force 'C:\\work\\shop\\dist'", win());
+        let ps = shell_action(
+            "claude-code",
+            "bash",
+            "Remove-Item -Recurse -Force 'C:\\work\\shop\\dist'",
+            win(),
+        );
         assert_eq!(ps.kind, Kind::Delete);
         assert_eq!(ps.paths, vec!["c:/work/shop/dist".to_string()]);
-        assert_eq!(ps.command_norm, "remove-item -recurse -force c:\\work\\shop\\dist");
+        assert_eq!(
+            ps.command_norm,
+            "remove-item -recurse -force c:\\work\\shop\\dist"
+        );
     }
 }

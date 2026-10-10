@@ -1,5 +1,8 @@
-# Agent Inbox: cards, their states and the 2-second grace (spec §33.10 Part D).
-# Versions come from the workspace; see core/Cargo.toml.
+# The Agent Inbox (spec §33, build guide §33.10 Part D): the cards that ask the user something, the 2-second
+# grace before an answer is released, and the card state machine of §33.9.
+#
+# Versions come from [workspace.dependencies] in core/Cargo.toml (§32.5 rule 4). Every dependency below was
+# already pinned there, so this crate adds nothing new to the lock file.
 [package]
 name = "mewndo-inbox"
 version.workspace = true
@@ -7,3 +10,29 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# §38.5's wire bodies. The Inbox does not invent its own: `inbox.card`, `inbox.answer`, `inbox.release` and
+# `inbox.undo` travel exactly as mewndo-proto defines them, and an answer *is* `InboxAnswer` (§32.5 rule 1).
+mewndo-proto.workspace = true
+# §33.10 Part D step 5 (the urgency score, §34.5) and step 6 (`router.habits.record`, §34.9 R11). The real
+# `Habits` counter is called through a one-method trait so tests can watch it; see src/habits.rs.
+mewndo-router.workspace = true
+serde.workspace = true
+# `options_json` and `answer_json` for the §38.6 `cards` table, and the writer's parameter type.
+serde_json.workspace = true
+# rt: the actor task and the grace timers. sync: mpsc (commands), oneshot (the answer the hook waits on),
+# broadcast (`inbox.release`). time: the 2 s grace, the 300 ms save-point budget, the hook deadline.
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+ulid.workspace = true
+
+[dev-dependencies]
+# macros + test-util: `#[tokio::test(start_paused = true)]`. Virtual time is why the whole state machine --
+# a 2 s grace, a 300 ms budget, a 300 s hook timeout -- is tested in milliseconds and without a single sleep
+# that could flake on a loaded machine. test-util pulls in no new crate: it is rt + sync + time.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
+
+# Not taken, on purpose:
+#   rusqlite - every state change is persisted through a one-method trait (src/store.rs) that mirrors
+#              mewndo-core's batched writer task, so the real SQLite stays in the one crate that owns it and
+#              these tests need no C compiler (core/Cargo.toml's note on the windows-gnu dev box).
+#   reqwest / ureq - the save point comes from the v0 engine through the `EngineClient` trait (src/engine.rs).
+#              §32.5 rule 6: the core owns the one wrapper over the v0 local server, and this crate calls in.

@@ -1,0 +1,9 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No Cursor install was available. Every field name is a guess; see README.md, \"before-shell-execution.json\".",
+  "hook_event_name": "beforeShellExecution",
+  "conversation_id": "conv_01K6Y2M4Q8ZT3NB7V0JX",
+  "generation_id": "gen_01K6Y2M9R1AC5PD8W2KY",
+  "workspace_roots": ["C:\\Users\\ana\\code\\shop"],
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "command": "git push --force origin main"
+}

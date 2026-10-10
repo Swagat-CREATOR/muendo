@@ -55,7 +55,13 @@ pub struct Decision {
 }
 
 impl Decision {
-    fn new(verdict: Verdict, rule: &str, reason: impl Into<String>, confidence: f64, backend: Backend) -> Decision {
+    fn new(
+        verdict: Verdict,
+        rule: &str,
+        reason: impl Into<String>,
+        confidence: f64,
+        backend: Backend,
+    ) -> Decision {
         Decision {
             verdict,
             reason: reason.into(),
@@ -99,7 +105,13 @@ pub fn decide(
     if rules.hard()
         && let Some(verdict) = rules.decided
     {
-        return finish(Decision::new(verdict, &rules.rule, rules.reason.clone(), 1.0, Backend::Rules));
+        return finish(Decision::new(
+            verdict,
+            &rules.rule,
+            rules.reason.clone(),
+            1.0,
+            Backend::Rules,
+        ));
     }
 
     // --- row 2: brake -----------------------------------------------------------------------------------
@@ -129,7 +141,13 @@ pub fn decide(
 
     // The allow list (§34.9 R1): decided, but softer than a hard rule, so it sits after the brake.
     if rules.decided == Some(Verdict::Allow) {
-        return finish(Decision::new(Verdict::Allow, &rules.rule, rules.reason.clone(), 1.0, Backend::Rules));
+        return finish(Decision::new(
+            Verdict::Allow,
+            &rules.rule,
+            rules.reason.clone(),
+            1.0,
+            Backend::Rules,
+        ));
     }
 
     // --- habits (§34.7) ---------------------------------------------------------------------------------
@@ -157,7 +175,13 @@ pub fn decide(
                 Backend::Rules,
             )
         } else {
-            Decision::new(Verdict::Allow, "rules_fallback", "No rule matched.", 1.0, Backend::Rules)
+            Decision::new(
+                Verdict::Allow,
+                "rules_fallback",
+                "No rule matched.",
+                1.0,
+                Backend::Rules,
+            )
         });
     };
 
@@ -246,5 +270,11 @@ pub fn decide(
             "Mewndo: this looked serious enough to stop for. Waiting for the user.",
         ),
     };
-    finish(Decision::new(verdict, "row7_model_verdict", reason, confidence, backend))
+    finish(Decision::new(
+        verdict,
+        "row7_model_verdict",
+        reason,
+        confidence,
+        backend,
+    ))
 }

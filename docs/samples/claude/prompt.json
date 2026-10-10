@@ -1,0 +1,8 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No live Claude Code was available. See README.md.",
+  "session_id": "6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471",
+  "transcript_path": "C:\\Users\\ana\\.claude\\projects\\C--Users-ana-code-shop\\6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471.jsonl",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "the date tests are failing on the checkout page, please fix them"
+}

@@ -1,0 +1,8 @@
+# Mewndo: add this one line to ~/.codex/config.toml (spec §33.10 Part F step 2).
+#
+# `mewndo-core config-merge` does it for you and keeps every comment in the file. It also keeps your
+# own `notify` if you have one, commented out as `# mewndo:was`, so uninstalling puts it back.
+#
+# Codex calls this program when a turn finishes, with one JSON argument carrying the last assistant
+# message. That is what fills in the Done card (§33.2).
+notify = ["C:\\Users\\<you>\\AppData\\Local\\Mewndo\\bin\\mewndo-hook.exe", "codex", "notify"]

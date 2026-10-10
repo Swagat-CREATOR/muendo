@@ -1,0 +1,8 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No Codex CLI was available. Every field name is a guess; see README.md, \"stop.json\". Mewndo never blocks on Codex's Stop: §33.6 makes the reply window conditional on a harness confirmation that has not happened.",
+  "session_id": "0199b3d2-7c41-7e8a-b2d5-5f1c9a0e4477",
+  "hook_event_name": "Stop",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "stop_hook_active": false,
+  "last_assistant_message": "The checkout date test was comparing a Date to a string. I changed test/checkout/date.test.js to compare ISO strings and all 7 tests pass."
+}

@@ -173,7 +173,8 @@ impl Claims {
     pub fn builtin() -> &'static Claims {
         static BUILTIN: OnceLock<Claims> = OnceLock::new();
         BUILTIN.get_or_init(|| {
-            Claims::parse(include_str!("../claims.toml")).expect("the embedded claims.toml compiles")
+            Claims::parse(include_str!("../claims.toml"))
+                .expect("the embedded claims.toml compiles")
         })
     }
 
@@ -303,7 +304,9 @@ fn clauses(text: &str) -> Vec<&str> {
 fn negated(clause: &str, at: usize) -> bool {
     let lower = clause[..at].to_lowercase();
     let mut cut = 0;
-    for sep in [",", " and ", " but ", " or ", " then ", " while ", " so ", "("] {
+    for sep in [
+        ",", " and ", " but ", " or ", " then ", " while ", " so ", "(",
+    ] {
         if let Some(i) = lower.rfind(sep) {
             cut = cut.max(i + sep.len());
         }
@@ -348,7 +351,8 @@ mod tests {
         assert!(Claims::parse("[[claim]]\ntype = \"nope\"\npattern = 'x'").is_err());
         assert!(Claims::parse("[[claim]]\ntype = \"tests_pass\"\npattern = '('").is_err());
         assert!(
-            Claims::parse("[[claim]]\ntype = \"created\"\nsubject = \"file\"\npattern = 'x'").is_err(),
+            Claims::parse("[[claim]]\ntype = \"created\"\nsubject = \"file\"\npattern = 'x'")
+                .is_err(),
             "a subject with no (?<subj>) group would silently never match"
         );
         assert!(Claims::parse("").is_ok(), "an empty override file is legal");
@@ -424,7 +428,10 @@ mod tests {
     fn a_negation_in_an_earlier_statement_is_not_borrowed() {
         // The dangerous false negative: a true claim sitting after an unrelated "no".
         assert!(kinds("No changes to db/ and all tests pass.").contains(&ClaimType::TestsPass));
-        assert!(kinds("The build does not matter here, but the tests pass.").contains(&ClaimType::TestsPass));
+        assert!(
+            kinds("The build does not matter here, but the tests pass.")
+                .contains(&ClaimType::TestsPass)
+        );
         assert!(
             kinds("I didn't touch db/schema.sql. All tests pass.").contains(&ClaimType::TestsPass),
             "a new sentence starts a new statement"
@@ -470,7 +477,10 @@ mod tests {
 
     #[test]
     fn inline_code_is_kept_because_real_claims_use_it() {
-        assert_eq!(kinds("`npm test`: all tests pass."), vec![ClaimType::TestsPass]);
+        assert_eq!(
+            kinds("`npm test`: all tests pass."),
+            vec![ClaimType::TestsPass]
+        );
         assert_eq!(
             subject("I didn't touch `db/migrations/`.", ClaimType::Untouched).as_deref(),
             Some("db/migrations/")
@@ -509,7 +519,10 @@ mod tests {
             ClaimType::Deleted,
             ClaimType::EmailSent,
         ] {
-            assert!(kinds.contains(&expected), "{expected:?} missing from {kinds:?}");
+            assert!(
+                kinds.contains(&expected),
+                "{expected:?} missing from {kinds:?}"
+            );
         }
     }
 

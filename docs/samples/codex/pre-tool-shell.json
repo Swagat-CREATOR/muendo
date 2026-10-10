@@ -1,0 +1,13 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No Codex CLI was available. Every field name is a guess; see README.md, \"pre-tool-shell.json\".",
+  "session_id": "0199b3d2-7c41-7e8a-b2d5-5f1c9a0e4477",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "on-request",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "tool_name": "shell",
+  "tool_input": {
+    "command": ["bash", "-lc", "rm -rf build && npm run build"],
+    "workdir": "C:\\Users\\ana\\code\\shop",
+    "timeout_ms": 120000
+  }
+}

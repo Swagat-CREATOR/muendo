@@ -121,7 +121,10 @@ impl RuleOutcome {
     /// discussion. An allow-list hit is a decision too, but it is not a *hard* rule -- it must still lose to
     /// the brake.
     pub fn hard(&self) -> bool {
-        matches!(self.decided, Some(Verdict::Deny) | Some(Verdict::Ask) | Some(Verdict::Brake))
+        matches!(
+            self.decided,
+            Some(Verdict::Deny) | Some(Verdict::Ask) | Some(Verdict::Brake)
+        )
     }
 }
 
@@ -189,6 +192,15 @@ pub fn rules_pass(
             format!("Mewndo: {where_} is outside your brief. Ask the user if this is needed."),
         );
     }
+    // Past the 300-character cut the lists below would judge only the start of the command, and an allow-list
+    // phrase at the front could clear whatever follows it. Too long to check is the user's call.
+    if action.truncated {
+        return out.decide(
+            Verdict::Ask,
+            "too_long",
+            "Mewndo: this command is too long to check in full. Waiting for the user.".to_string(),
+        );
+    }
     if let Some((bad, like)) = look_alike(&action.recipients, &facts.known_hosts()) {
         return out.decide(
             Verdict::Ask,
@@ -203,7 +215,9 @@ pub fn rules_pass(
         return out.decide(
             Verdict::Ask,
             "ask_list",
-            format!("Mewndo: `{phrase}` can destroy work git cannot bring back. Waiting for the user."),
+            format!(
+                "Mewndo: `{phrase}` can destroy work git cannot bring back. Waiting for the user."
+            ),
         );
     }
     if action.kind == Kind::Computer {
@@ -341,8 +355,34 @@ mod tests {
         );
         assert_eq!(out.decided, Some(Verdict::Deny));
         assert_eq!(out.rule, "outside_brief");
-        assert_eq!(out.reason, "Mewndo: db/migrations is outside your brief. Ask the user if this is needed.");
-        assert_eq!(out.facts.paths_outside_brief, vec!["c:/work/shop/db/migrations".to_string()]);
+        assert_eq!(
+            out.reason,
+            "Mewndo: db/migrations is outside your brief. Ask the user if this is needed."
+        );
+        assert_eq!(
+            out.facts.paths_outside_brief,
+            vec!["c:/work/shop/db/migrations".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_command_longer_than_the_cut_is_never_cleared_by_the_rules() {
+        // `git status` is on the allow list; the rest is past the 300-character cut the lists match against.
+        let long = format!("git status {} ; rm -rf ~", "x".repeat(400));
+        let out = pass(&long, "", &NoFacts);
+        assert_eq!(
+            (out.rule.as_str(), out.decided),
+            ("too_long", Some(Verdict::Ask))
+        );
+        assert!(
+            out.hard(),
+            "an ask the model can't overrule, in shadow mode too"
+        );
+        assert_eq!(
+            pass("git status", "", &NoFacts).rule,
+            "allow_list",
+            "a short one still is"
+        );
     }
 
     #[test]
@@ -351,12 +391,19 @@ mod tests {
         assert_eq!(pass("cat .env", "", &NoFacts).rule, "protected_path");
         assert_eq!(pass("git push --force", "", &NoFacts).rule, "ask_list");
         assert_eq!(pass("git status", "", &NoFacts).rule, "allow_list");
-        assert_eq!(pass("npm run build", "", &NoFacts).decided, None, "rules do not know");
+        assert_eq!(
+            pass("npm run build", "", &NoFacts).decided,
+            None,
+            "rules do not know"
+        );
     }
 
     #[test]
     fn a_look_alike_recipient_needs_the_user() {
-        let facts = FakeFacts { hosts: vec!["shop-pay.com".into()], ..FakeFacts::default() };
+        let facts = FakeFacts {
+            hosts: vec!["shop-pay.com".into()],
+            ..FakeFacts::default()
+        };
         let action = normalize(
             "claude-code",
             "mcp__gmail__send",
@@ -364,8 +411,17 @@ mod tests {
             cwd(),
         );
         let sig = action.signature("claude-code");
-        let out = rules_pass(&CompiledRules::builtin(), &action, &Scope::cwd(cwd()), &facts, &sig);
-        assert_eq!((out.decided, out.rule.as_str()), (Some(Verdict::Ask), "look_alike_recipient"));
+        let out = rules_pass(
+            &CompiledRules::builtin(),
+            &action,
+            &Scope::cwd(cwd()),
+            &facts,
+            &sig,
+        );
+        assert_eq!(
+            (out.decided, out.rule.as_str()),
+            (Some(Verdict::Ask), "look_alike_recipient")
+        );
         // The address the project really uses is not a look-alike of itself.
         let good = normalize(
             "claude-code",
@@ -373,7 +429,13 @@ mod tests {
             &json!({"to": "billing@shop-pay.com"}),
             cwd(),
         );
-        let out = rules_pass(&CompiledRules::builtin(), &good, &Scope::cwd(cwd()), &facts, &good.signature("c"));
+        let out = rules_pass(
+            &CompiledRules::builtin(),
+            &good,
+            &Scope::cwd(cwd()),
+            &facts,
+            &good.signature("c"),
+        );
         assert_eq!(out.decided, None);
     }
 }

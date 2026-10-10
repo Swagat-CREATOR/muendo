@@ -1,0 +1,10 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No Codex CLI was available. The key spellings follow the Codex notify documentation (hyphenated) but were not captured from a run; see README.md, \"notify-agent-turn-complete.json\". This arrives as the LAST ARGV ARGUMENT, not on stdin (see mewndo-hook/src/args.rs::read_input).",
+  "type": "agent-turn-complete",
+  "turn-id": "0199b3d2-9a07-70c3-8f44-1b2e6d8c0a15",
+  "input-messages": [
+    "the date tests are failing on the checkout page, please fix them"
+  ],
+  "last-assistant-message": "The checkout date test was comparing a Date to a string. I changed test/checkout/date.test.js to compare ISO strings and all 7 tests pass.",
+  "cwd": "C:\\Users\\ana\\code\\shop"
+}

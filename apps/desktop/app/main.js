@@ -6,11 +6,15 @@ const path = require('node:path');
 const fsp = require('node:fs/promises');
 const crypto = require('node:crypto');
 const {
-  app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard,
+  app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard, screen,
 } = require('electron');
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
 const { createCore } = require('./core');
+const { createCoreClient } = require('./desk/core-client');
+const { createDeskWindows } = require('./desk/windows');
+const { createFocus } = require('./desk/focus');
+const { createDesk } = require('./desk/desk');
 const { createBar } = require('./bar');
 const { DEFAULTS: SHORTCUT_DEFAULTS, pickShortcut } = require('./shortcuts');
 const { createSpeech } = require('./speech');
@@ -174,15 +178,95 @@ function startEngine() {
 
 let core = null;
 
-// Installed: shipped next to the app. From source: what `npm start` at the repository root just built.
+// Installed: shipped next to the app. From source: what `npm start` at the repository root just built, or
+// MEWNDO_CORE_BIN (a Windows build kept outside the repository, scripts/windows.sh).
 function coreBinary() {
   const exe = process.platform === 'win32' ? 'mewndo-core.exe' : 'mewndo-core';
-  return app.isPackaged ? path.join(process.resourcesPath, exe) : path.join(__dirname, '..', '..', '..', 'core', 'target', 'debug', exe);
+  if (app.isPackaged) return path.join(process.resourcesPath, exe);
+  return process.env.MEWNDO_CORE_BIN || path.join(__dirname, '..', '..', '..', 'core', 'target', 'debug', exe);
 }
 
+// The Agent Desk's folder: core.json and desk.db (docs/decisions.md, "desk.db location").
+const deskDir = () => (process.platform === 'win32' && process.env.LOCALAPPDATA
+  ? path.join(process.env.LOCALAPPDATA, 'Mewndo')
+  : path.join(app.getPath('userData'), 'desk'));
+
 function startCore() {
-  core = createCore({ binary: coreBinary(), runDir: app.getPath('userData'), logDir: path.dirname(log.file), log, onChange: stateChanged });
+  core = createCore({
+    binary: coreBinary(), runDir: app.getPath('userData'), logDir: path.dirname(log.file), log, onChange: stateChanged,
+    args: ['--desk', deskDir(), '--data', dataDir()],
+  });
   core.start();
+}
+
+// --- The Agent Desk (spec §33): the Inbox cards, the Talk box and the agents, fed by the core's v2 pipe ---------
+
+const INBOX_KEY = 'Control+Shift+F11'; // §33.3; not configurable yet
+const TALK_KEY = 'Control+Shift+F12'; // §33.5
+let desk = null;
+let deskWindows = null;
+
+function placeDeskWindows() {
+  const { workArea } = screen.getPrimaryDisplay();
+  deskWindows.place('cards', { x: workArea.x + workArea.width - 360 - 56, y: workArea.y + 80, width: 360, height: 420 });
+  deskWindows.place('talk', {
+    x: workArea.x + Math.round((workArea.width - 380) / 2), y: workArea.y + workArea.height - 56 - 96, width: 380, height: 56,
+  });
+}
+
+// Undo on an Inbox card: put the folder back to the save point written when the answer was released (§33.4),
+// after the same kind of confirmation as every other undo (§23.3).
+async function undoToSavePoint(savePointId) {
+  for (const f of await call('folders')) {
+    const sp = (await call('journal.listSavePoints', f.root)).find((x) => x.id === savePointId);
+    if (!sp) continue;
+    const plan = await call('journal.planRestore', f.root, sp.id, {});
+    if (!plan.write.length && !plan.links.length && !plan.trash.length) {
+      return showAsk('', `Nothing changed in ${folderName(f.root)} since that answer.`, [{ label: 'OK' }]);
+    }
+    return showAsk('', `Undo everything since that answer? ${folderName(f.root)} goes back to ${new Date(sp.createdAt).toLocaleTimeString()}: ${confirmText(plan).split('\n')[0]}`, [
+      { label: 'Undo', run: async () => reportRestore(f.root, await call('journal.restore', f.root, sp.id)) },
+      { label: 'Cancel' },
+    ]);
+  }
+  return showAsk('', 'That save point is not in any protected folder any more.', [{ label: 'OK' }]);
+}
+
+function deskCommand(command, plan) {
+  if (command === 'undo-to') return undoToSavePoint(plan.savepointId).catch((e) => notify('Mewndo could not plan that undo', e.message));
+  // Talk-box commands (§23.3): the same intents and confirmations as the voice ones.
+  return runIntent(plan.intent ?? { intent: command }).catch((e) => notify('Mewndo could not do that', e.message));
+}
+
+function startDesk() {
+  const client = createCoreClient({
+    dir: deskDir(), log,
+    onStatus: ({ state, message }) => {
+      log.info(`Agent Desk: ${state}${message ? ` (${message})` : ''}`);
+      if (state === 'needs-update') notify('Mewndo', message);
+    },
+  });
+  const on = {
+    key: (k, id) => desk?.handlers.key(k, id),
+    click: (a, id, arg) => desk?.handlers.click(a, id, arg),
+    graceEnd: (id) => desk?.handlers.graceEnd(id),
+    text: (id, t, via) => desk?.handlers.text(id, t, via),
+    talk: (t) => desk?.handlers.talk(t),
+    chip: (n) => desk?.handlers.chip(n),
+    closeTalk: () => desk?.handlers.closeTalk(),
+    lane: (a, id, arg) => desk?.handlers.lane(a, id, arg),
+  };
+  deskWindows = createDeskWindows({ log, on });
+  placeDeskWindows();
+  screen.on('display-metrics-changed', placeDeskWindows);
+  desk = createDesk({
+    client, ui: deskWindows, focus: createFocus({ log }), log,
+    commands: deskCommand,
+    problem: (message) => notify('Mewndo', message),
+  });
+  desk.start();
+  if (!tryRegister(INBOX_KEY, () => desk.openInbox())) log.warn(`The Inbox key ${INBOX_KEY} is taken by another app`);
+  if (!tryRegister(TALK_KEY, () => desk.openTalk())) log.warn(`The Talk key ${TALK_KEY} is taken by another app`);
 }
 
 // Windows and macOS; a no-op on Linux. Started at login, Mewndo opens hidden in the tray. Only for the installed app:
@@ -1237,6 +1321,7 @@ if (process.argv.includes('--remove-claude-hooks')) {
       });
     }
     registerShortcuts();
+    startDesk();
     for (const [name, fn] of Object.entries(settingsHandlers)) {
       ipcMain.handle(`settings:${name}`, (event, ...args) => { // own prefix: names can't clash with the main window's
         if (event.sender !== settingsWin?.webContents) throw new Error('unknown sender');

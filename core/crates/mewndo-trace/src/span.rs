@@ -45,9 +45,15 @@ impl SpanKind {
     /// tools, and a span whose kind is wrong is a rule that never fires.
     pub fn from_tool(tool: &str) -> SpanKind {
         let tool = tool.trim().to_lowercase();
-        if matches!(tool.as_str(), "bash" | "powershell" | "pwsh" | "shell" | "terminal") {
+        if matches!(
+            tool.as_str(),
+            "bash" | "powershell" | "pwsh" | "shell" | "terminal"
+        ) {
             SpanKind::Shell
-        } else if matches!(tool.as_str(), "edit" | "write" | "multiedit" | "notebookedit") {
+        } else if matches!(
+            tool.as_str(),
+            "edit" | "write" | "multiedit" | "notebookedit"
+        ) {
             SpanKind::File
         } else if tool.starts_with("mcp__") {
             SpanKind::Mcp
@@ -252,8 +258,10 @@ mod tests {
 
     #[test]
     fn the_hash_ignores_timestamps_and_durations() {
-        let first = "test result: ok. 5 passed; 0 failed; finished in 1.42s\n2026-10-09T11:08:30Z done";
-        let second = "test result: ok. 5 passed; 0 failed; finished in 3.91s\n2026-10-09T11:59:02Z done";
+        let first =
+            "test result: ok. 5 passed; 0 failed; finished in 1.42s\n2026-10-09T11:08:30Z done";
+        let second =
+            "test result: ok. 5 passed; 0 failed; finished in 3.91s\n2026-10-09T11:59:02Z done";
         assert_eq!(output_hash(first), output_hash(second));
         assert_eq!(output_hash("Done (21ms)"), output_hash("Done (4.10 s)"));
         assert_eq!(output_hash("Progress 12%"), output_hash("Progress 97%"));
@@ -277,7 +285,13 @@ mod tests {
     fn a_shell_span_with_no_payload_exit_code_infers_one_for_a_test_command() {
         let tests = runner::Tests::builtin();
         let mut span = Span::start("s1", "t1", "Bash", "npm test", 1_000);
-        span.finish("Tests:       2 failed, 3 passed, 5 total", "", None, 2_000, &tests);
+        span.finish(
+            "Tests:       2 failed, 3 passed, 5 total",
+            "",
+            None,
+            2_000,
+            &tests,
+        );
         assert_eq!(span.exit_code, Some(1));
         assert!(span.exit_code_inferred);
         assert_eq!(span.ended_at, Some(2_000));

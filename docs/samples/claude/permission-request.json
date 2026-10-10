@@ -1,0 +1,14 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. Every field here is a guess; see README.md, \"PermissionRequest\".",
+  "session_id": "6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471",
+  "transcript_path": "C:\\Users\\ana\\.claude\\projects\\C--Users-ana-code-shop\\6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471.jsonl",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "hook_event_name": "PermissionRequest",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_01A09q90qw90lkasdjl",
+  "tool_input": {
+    "command": "git reset --hard HEAD~1",
+    "description": "Drop the last commit"
+  }
+}

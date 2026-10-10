@@ -4,7 +4,8 @@
 //
 //   mewndo-core --socket <pipe name or socket path> --log-dir <the app's log folder> [--desk <folder>]
 //
-// With --desk it also serves the Agent Desk pipe, protocol v2 (desk.rs), from that folder.
+// With --desk it also serves the Agent Desk pipe, protocol v2 (desk.rs), from that folder; --data is v0's data
+// folder, whose hook server makes the desk's save points (default: the same folder the hook scripts find).
 //
 // It prints "ready" once it is listening, and stops when asked to, or when its stdin closes (the app is gone),
 // so it never outlives the app.
@@ -12,6 +13,8 @@ mod agents;
 mod cloud_link;
 mod decide;
 mod desk;
+mod desk_agents;
+mod engine_client;
 mod feed;
 mod ledger;
 mod log;
@@ -38,16 +41,18 @@ struct Args {
     socket: String,
     log_dir: PathBuf,
     desk: Option<PathBuf>,
+    data: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let (mut socket, mut log_dir, mut desk) = (None, None, None);
+    let (mut socket, mut log_dir, mut desk, mut data) = (None, None, None, None);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--socket" => socket = args.next(),
             "--log-dir" => log_dir = args.next().map(PathBuf::from),
             "--desk" => desk = args.next().map(PathBuf::from),
+            "--data" => data = args.next().map(PathBuf::from),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -56,9 +61,10 @@ fn parse_args() -> Result<Args, String> {
             socket,
             log_dir,
             desk,
+            data,
         }),
         _ => Err(
-            "usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder> [--desk <folder>]"
+            "usage: mewndo-core --socket <pipe name or socket path> --log-dir <folder> [--desk <folder>] [--data <v0 data folder>]"
                 .into(),
         ),
     }
@@ -151,11 +157,15 @@ fn main() -> ExitCode {
         }
     };
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    // More than one thread: a slow stretch of v1 work (the engine's start-up sync) must not hold up the desk pipe,
+    // where an agent is waiting on every hook.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .expect("tokio runtime");
-    match runtime.block_on(serve(&args.socket, desk, log.clone())) {
+    let data = args.data.unwrap_or_else(default_data_dir);
+    match runtime.block_on(serve(&args.socket, desk, data, log.clone())) {
         Ok(()) => {
             log.info("mewndo-core stopped");
             ExitCode::SUCCESS
@@ -168,7 +178,12 @@ fn main() -> ExitCode {
     }
 }
 
-async fn serve(address: &str, desk: Option<desk::Instance>, log: Arc<Log>) -> std::io::Result<()> {
+async fn serve(
+    address: &str,
+    desk: Option<desk::Instance>,
+    data: PathBuf,
+    log: Arc<Log>,
+) -> std::io::Result<()> {
     let info = Arc::new(Info::new());
     let (stop, stopped) = watch::channel(false);
 
@@ -179,7 +194,7 @@ async fn serve(address: &str, desk: Option<desk::Instance>, log: Arc<Log>) -> st
         let _ = parent_gone.send(true);
     });
 
-    let desk = desk.map(|d| tokio::spawn(desk::serve(d, log.clone(), stopped.clone())));
+    let desk = desk.map(|d| tokio::spawn(desk::serve(d, data, log.clone(), stopped.clone())));
     let result = listen(address, &log, info, stop.clone(), stopped).await;
     let _ = stop.send(true);
     if let Some(desk) = desk {

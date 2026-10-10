@@ -1,0 +1,5 @@
+{
+  "name": "mewndo",
+  "version": "0.1.0",
+  "description": "Mewndo watches Claude Code: a card on the dock for anything that needs permission, a save point before risky work, and a Receipt when the turn ends. Answer from the card or in the terminal - whichever answers first wins. If Mewndo is not running, Claude Code carries on as if it were not installed."
+}

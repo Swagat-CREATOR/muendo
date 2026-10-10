@@ -1,0 +1,44 @@
+# mewndo-hook: the hook forwarder (spec §33.10 Part B). Every single agent action runs this binary -- every
+# PreToolUse, every shell command, every turn end -- so the whole crate is std only with no async runtime:
+# §38.1 picks Rust here because the process starts in a few ms where a Node script takes 50 or more, and a
+# runtime would add thread spawns and a reactor to a program that makes exactly one connection.
+#
+# It owns no state and no policy. It moves one hook payload to the core and the core's answer back, and when
+# the core is not there it answers from the cached deny list alone (§33.10 B5, §38.4 "Fail open").
+[package]
+name = "mewndo-hook"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The v2 wire format and every §38.5 body type. Nothing in this crate writes a frame or a message by hand, so
+# the forwarder and the core can never disagree about the protocol (§32.5 rule 1).
+mewndo-proto.workspace = true
+# `hook.request.payload` is the agent's own JSON, passed through untouched: Value is exactly right and no
+# `serde` derive is needed anywhere in this crate.
+serde_json.workspace = true
+
+# Deliberately absent (and they must stay absent): tokio -- one blocking connection needs no reactor;
+# windows-sys -- the single Win32 call here (WaitNamedPipeW) is five lines of `unsafe extern` in pipe.rs, and
+# a dependency with no feature flags set would not export it anyway; mewndo-router -- the forwarder is a
+# separate process that must refuse the same paths *without* loading the router (rules.rs says so in its own
+# comment on `deny_cache_json`), which is why the protect matcher is duplicated in failopen.rs.
+
+# --------------------------------------------------------------------------------------------------------------
+# OWNER OF core/Cargo.toml: §33.10 B6's release profile cannot live in this file. Cargo reads `[profile.*]`
+# only from a workspace root and warns "profiles for the non root package will be ignored" otherwise, and this
+# crate may not edit core/Cargo.toml. Please add these five lines to core/Cargo.toml verbatim:
+#
+#     [profile.release]
+#     opt-level = 3           # the forwarder is on the critical path of every agent action
+#     lto = "fat"             # one binary, no dynamic plugins: cross-crate inlining is free speed
+#     codegen-units = 1       # slower to build, faster and smaller to run; this binary is tiny
+#     panic = "abort"         # no unwind tables to carry; main.rs's panic hook exits 0 before the abort
+#     strip = true            # no symbols to ship, so the .exe stays small enough to copy into a plugin
+#
+# They apply to every crate in the workspace, which is what the spec asks for -- the core wants the same
+# settings. One caveat worth knowing before you paste: `panic = "abort"` makes `catch_unwind` useless
+# workspace-wide, so the fail-open guard in this crate is a `std::panic::set_hook` that exits 0 (it runs
+# before the abort), not a catch. Nothing else here depends on unwinding.
+# --------------------------------------------------------------------------------------------------------------

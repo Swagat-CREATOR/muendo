@@ -240,7 +240,11 @@ mod tests {
         let diffs = Diffs::new(&engine);
         assert!(diffs.for_trace("t1", Some("sp1"), 1).is_err());
         assert!(diffs.for_trace("t1", Some("sp1"), 1).is_err());
-        assert_eq!(engine.calls(), 1, "a failing engine is not retried per claim");
+        assert_eq!(
+            engine.calls(),
+            1,
+            "a failing engine is not retried per claim"
+        );
     }
 
     #[test]

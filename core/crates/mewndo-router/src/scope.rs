@@ -117,8 +117,20 @@ fn tails<'a>(haystack: &'a str, phrase: &str) -> Vec<&'a str> {
 /// an allowed entry of "the" would forbid everything.
 fn path_tokens(clause: &str) -> Vec<String> {
     const FILLER: [&str; 14] = [
-        "the", "a", "an", "any", "my", "our", "folder", "folders", "directory", "directories", "dir", "and",
-        "or", "files",
+        "the",
+        "a",
+        "an",
+        "any",
+        "my",
+        "our",
+        "folder",
+        "folders",
+        "directory",
+        "directories",
+        "dir",
+        "and",
+        "or",
+        "files",
     ];
     let mut out = Vec::new();
     for raw in clause.split(|c: char| c.is_whitespace() || c == ',' || c == '`' || c == '"') {
@@ -140,7 +152,8 @@ fn path_tokens(clause: &str) -> Vec<String> {
     }
     // "don't touch db because ..." -> keep "db". The heuristic: stop at the first stop-word after a token.
     const STOP: [&str; 12] = [
-        "because", "since", "unless", "it", "they", "that", "which", "when", "but", "so", "under", "without",
+        "because", "since", "unless", "it", "they", "that", "which", "when", "but", "so", "under",
+        "without",
     ];
     if let Some(cut) = out.iter().position(|w| STOP.contains(&w.as_str())) {
         out.truncate(cut);
@@ -178,7 +191,10 @@ mod tests {
 
         let only = Scope::from_brief("Work only in api/. Do not modify config/.", &cwd());
         assert_eq!(only.allowed, vec!["c:/work/shop/api".to_string()]);
-        assert!(only.outside("c:/work/shop/src/x.ts"), "outside the only-in folder");
+        assert!(
+            only.outside("c:/work/shop/src/x.ts"),
+            "outside the only-in folder"
+        );
         assert!(only.outside("c:/work/shop/config/a.json"));
         assert!(!only.outside("c:/work/shop/api/date.ts"));
     }

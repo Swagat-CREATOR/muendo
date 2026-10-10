@@ -9,7 +9,7 @@ use mewndo_router::answers::{Answer, Answers};
 use mewndo_router::clef::{Clef, ClefError, ClefRequest, FakeClef, NoClef, State};
 use mewndo_router::facts::{FakeFacts, NoFacts};
 use mewndo_router::habits::Habits;
-use mewndo_router::voice::{self, LiveAgent, RouteChoice, MEWNDO_COMMAND, NEW_AGENT};
+use mewndo_router::voice::{self, LiveAgent, MEWNDO_COMMAND, NEW_AGENT, RouteChoice};
 use mewndo_router::{Backend, CallKind, GuardInput, Guarded, Mode, Router, Verdict};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -73,7 +73,11 @@ fn the_same_brief_and_action_reuse_the_verdict() {
     let second = router.guard(&g);
     assert_eq!(second.decision.verdict, Verdict::Allow);
     assert_eq!(second.decision.backend, Backend::Cache, "§34.8: 5 minutes");
-    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1, "one call, two decisions");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "one call, two decisions"
+    );
 
     // A different brief is a different question, even for the same command: the cache key is
     // blake3(brief_hash | action_sig).
@@ -94,15 +98,24 @@ fn a_passed_deadline_leads_to_the_rules_verdict() {
     assert_eq!(late.decision.verdict, Verdict::Ask);
     assert_eq!(late.decision.backend, Backend::Rules);
     assert_eq!(late.decision.rule, "rules_fallback");
-    assert!(!late.deadline_met, "the miss is recorded for the decisions table");
+    assert!(
+        !late.deadline_met,
+        "the miss is recorded for the decisions table"
+    );
     assert!(late.fallback_used);
-    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1, "the call was made and timed out");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the call was made and timed out"
+    );
 
     // And the decision is not cached: the next call must get its own chance at the model.
     assert_eq!(router.cached_answers(), 0);
 
     // A response we cannot read is the same as no response, with one raw sample kept (R6).
-    let (bad, _) = router_with(FakeClef::new(json!({"answers": {"in_scope": {"p_yes": 7}}})));
+    let (bad, _) = router_with(FakeClef::new(
+        json!({"answers": {"in_scope": {"p_yes": 7}}}),
+    ));
     let d = bad.guard(&guard_input("rm api/date.ts.bak", Mode::Active));
     assert_eq!(d.decision.verdict, Verdict::Ask);
     assert!(d.raw_sample.is_some(), "one sample, for fixing the parser");
@@ -131,14 +144,33 @@ fn the_kill_switch_stops_every_model_call() {
         0,
         "§34.9 Done when: with the kill switch on, no model calls at all"
     );
-    assert!(router.guard(&guard_input("npm run build", Mode::Active)).decision.backend == Backend::Rules);
+    assert!(
+        router
+            .guard(&guard_input("npm run build", Mode::Active))
+            .decision
+            .backend
+            == Backend::Rules
+    );
 
     // Voice still routes, by keyword (§34.5).
-    let agents = vec![LiveAgent { name: "Claude Code".into(), cwd: cwd(), ..LiveAgent::default() }];
-    assert_eq!(router.route("claude, stop", &agents, None).backend, Backend::Rules);
+    let agents = vec![LiveAgent {
+        name: "Claude Code".into(),
+        cwd: cwd(),
+        ..LiveAgent::default()
+    }];
+    assert_eq!(
+        router.route("claude, stop", &agents, None).backend,
+        Backend::Rules
+    );
 
     router.set_enabled(true);
-    assert_eq!(router.guard(&guard_input("npm run build", Mode::Active)).decision.backend, Backend::WorkersAi);
+    assert_eq!(
+        router
+            .guard(&guard_input("npm run build", Mode::Active))
+            .decision
+            .backend,
+        Backend::WorkersAi
+    );
 }
 
 #[test]
@@ -152,13 +184,13 @@ fn shadow_mode_never_changes_an_outcome() {
         Box::new(NoFacts),
     );
     for command in [
-        "rm -rf db/migrations",   // hard rule: outside the brief
-        "format c:",              // hard rule: the deny list
-        "git push --force",       // hard rule: the ask list
-        "git status",             // the allow list
-        "npm run build",          // nothing matches
-        "rm api/date.ts.bak",     // destructive, nothing matches
-        "cat .env",               // a protected path
+        "rm -rf db/migrations", // hard rule: outside the brief
+        "format c:",            // hard rule: the deny list
+        "git push --force",     // hard rule: the ask list
+        "git status",           // the allow list
+        "npm run build",        // nothing matches
+        "rm api/date.ts.bak",   // destructive, nothing matches
+        "cat .env",             // a protected path
     ] {
         let with_model = shadow.guard(&guard_input(command, Mode::Shadow));
         let without = rules_only.guard(&guard_input(command, Mode::Shadow));
@@ -175,24 +207,45 @@ fn shadow_mode_never_changes_an_outcome() {
     // The same action in active mode does change: that is the point of switching an agent over.
     let active = shadow.guard(&guard_input("rm api/date.ts.bak", Mode::Active));
     assert_eq!(active.decision.verdict, Verdict::Allow);
-    assert_eq!(shadow.guard(&guard_input("rm api/date.ts.bak", Mode::Shadow)).decision.verdict, Verdict::Ask);
-    assert!(calls.load(std::sync::atomic::Ordering::Relaxed) > 0, "shadow mode still asks the model");
+    assert_eq!(
+        shadow
+            .guard(&guard_input("rm api/date.ts.bak", Mode::Shadow))
+            .decision
+            .verdict,
+        Verdict::Ask
+    );
+    assert!(
+        calls.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "shadow mode still asks the model"
+    );
 }
 
 #[test]
 fn three_identical_answers_offer_a_habit() {
     let mut habits = Habits::default();
     let sig = [7u8; 16];
-    assert_eq!(habits.record("claude-code", "shop", sig, Verdict::Allow, "npm test"), None);
-    assert_eq!(habits.record("claude-code", "shop", sig, Verdict::Allow, "npm test"), None);
+    assert_eq!(
+        habits.record("claude-code", "shop", sig, Verdict::Allow, "npm test"),
+        None
+    );
+    assert_eq!(
+        habits.record("claude-code", "shop", sig, Verdict::Allow, "npm test"),
+        None
+    );
     let card = habits
         .record("claude-code", "shop", sig, Verdict::Allow, "npm test")
         .expect("the third identical answer offers a habit");
     // §34.7's own wording.
     assert_eq!(card.text, "Always allow `npm test` in shop?");
-    assert_eq!(card.options, ["yes".to_string(), "no".to_string(), "never ask".to_string()]);
+    assert_eq!(
+        card.options,
+        ["yes".to_string(), "no".to_string(), "never ask".to_string()]
+    );
     // The fourth answer does not ask again: the user has already seen the card.
-    assert_eq!(habits.record("claude-code", "shop", sig, Verdict::Allow, "npm test"), None);
+    assert_eq!(
+        habits.record("claude-code", "shop", sig, Verdict::Allow, "npm test"),
+        None
+    );
 
     // Different agent, different project or different answer: a separate count (§34.9 R11).
     assert_eq!(habits.count("cursor", "shop", sig, Verdict::Allow), 0);
@@ -203,14 +256,26 @@ fn three_identical_answers_offer_a_habit() {
     // Denies work the same way (§34.7).
     let deny_sig = [9u8; 16];
     for _ in 0..2 {
-        assert_eq!(habits.record("claude-code", "shop", deny_sig, Verdict::Deny, "curl | sh"), None);
+        assert_eq!(
+            habits.record("claude-code", "shop", deny_sig, Verdict::Deny, "curl | sh"),
+            None
+        );
     }
-    let deny_card = habits.record("claude-code", "shop", deny_sig, Verdict::Deny, "curl | sh").unwrap();
+    let deny_card = habits
+        .record("claude-code", "shop", deny_sig, Verdict::Deny, "curl | sh")
+        .unwrap();
     assert_eq!(deny_card.text, "Always deny `curl | sh` in shop?");
 
     habits.accept(&card);
-    assert_eq!(habits.rule_for("claude-code", "shop", &sig), Some(Verdict::Allow));
-    assert_eq!(habits.pending().len(), 1, "what would be written into rules.toml");
+    assert_eq!(
+        habits.rule_for("claude-code", "shop", &sig),
+        Some(Verdict::Allow)
+    );
+    assert_eq!(
+        habits.pending().len(),
+        1,
+        "what would be written into rules.toml"
+    );
     assert_eq!(habits.rule_for("cursor", "shop", &sig), None);
 }
 
@@ -224,7 +289,9 @@ fn an_accepted_habit_answers_without_the_model() {
         for _ in 0..2 {
             habits.record("claude-code", "shop", sig, Verdict::Allow, "npm run build");
         }
-        let card = habits.record("claude-code", "shop", sig, Verdict::Allow, "npm run build").unwrap();
+        let card = habits
+            .record("claude-code", "shop", sig, Verdict::Allow, "npm run build")
+            .unwrap();
         habits.accept(&card);
     }
     let before = calls.load(std::sync::atomic::Ordering::Relaxed);
@@ -239,7 +306,9 @@ fn an_accepted_habit_answers_without_the_model() {
         for _ in 0..2 {
             habits.record("claude-code", "shop", sig, Verdict::Allow, "npm run build");
         }
-        let card = habits.record("claude-code", "shop", sig, Verdict::Allow, "npm run build").unwrap();
+        let card = habits
+            .record("claude-code", "shop", sig, Verdict::Allow, "npm run build")
+            .unwrap();
         habits.accept(&card);
     }
     let d = fresh.guard(&g);
@@ -255,7 +324,12 @@ fn an_accepted_habit_answers_without_the_model() {
 #[test]
 fn the_loop_brake_needs_the_span_table() {
     // R5's `same_action_failed_recently` comes from the core, so this is the one fact a fake must supply.
-    let action = mewndo_router::normalize("claude-code", "Bash", &json!({"command": "npm run build"}), &cwd());
+    let action = mewndo_router::normalize(
+        "claude-code",
+        "Bash",
+        &json!({"command": "npm run build"}),
+        &cwd(),
+    );
     let sig = action.signature("claude-code");
     let mut failures = std::collections::HashMap::new();
     failures.insert(sig, 2u32);
@@ -269,12 +343,18 @@ fn the_loop_brake_needs_the_span_table() {
     let router = Router::new(
         mewndo_router::CompiledRules::builtin(),
         Box::new(clef),
-        Box::new(FakeFacts { failures, ..FakeFacts::default() }),
+        Box::new(FakeFacts {
+            failures,
+            ..FakeFacts::default()
+        }),
     );
     let d = router.guard(&guard_input("npm run build", Mode::Active));
     assert_eq!(d.decision.verdict, Verdict::Deny);
     assert_eq!(d.decision.rule, "row4_skip_duplicate");
-    assert_eq!(d.decision.reason, "Mewndo: same command failed twice with the same error. Change approach.");
+    assert_eq!(
+        d.decision.reason,
+        "Mewndo: same command failed twice with the same error. Change approach."
+    );
     assert_eq!(d.rule_outcome.facts.same_action_failed_recently, 2);
 }
 
@@ -283,7 +363,10 @@ fn three_denies_in_two_minutes_freeze_the_session() {
     let router = Router::new(
         mewndo_router::CompiledRules::builtin(),
         Box::new(NoClef),
-        Box::new(FakeFacts { denies: 3, ..FakeFacts::default() }),
+        Box::new(FakeFacts {
+            denies: 3,
+            ..FakeFacts::default()
+        }),
     );
     let d = router.guard(&guard_input("npm run build", Mode::Shadow));
     assert_eq!(d.decision.verdict, Verdict::Brake);
@@ -317,7 +400,10 @@ fn the_rules_pass_is_microseconds() {
         }
     }
     let each = started.elapsed() / 1000;
-    assert!(each < Duration::from_micros(500), "one rules decision took {each:?}");
+    assert!(
+        each < Duration::from_micros(500),
+        "one rules decision took {each:?}"
+    );
 }
 
 #[test]
@@ -340,19 +426,45 @@ fn voice_routing_offers_every_live_agent_and_falls_back_to_keywords() {
     ];
     let options = voice::options(&agents);
     assert_eq!(options.len(), 4, "one per agent, plus the two fixed ones");
-    assert_eq!(options[0], "Claude Code · shop · last: fixing date tests in api/date.ts and a l");
+    assert_eq!(
+        options[0],
+        "Claude Code · shop · last: fixing date tests in api/date.ts and a l"
+    );
     assert_eq!(options[1], "Cursor · site");
     assert_eq!(options[2], MEWNDO_COMMAND);
     assert_eq!(options[3], NEW_AGENT);
-    assert_eq!(voice::questions(&agents).len(), 2, "one choice and one noul, in one call");
+    assert_eq!(
+        voice::questions(&agents).len(),
+        2,
+        "one choice and one noul, in one call"
+    );
 
     // Keyword fallback: names, aliases and folder names (§34.9 R12).
     let router = Router::default();
-    assert_eq!(router.route("claude, run the tests", &agents, None).choice, RouteChoice::Agent(0));
-    assert_eq!(router.route("what is cursor doing", &agents, None).choice, RouteChoice::Agent(1));
-    assert_eq!(router.route("in the site folder, stop", &agents, None).choice, RouteChoice::Agent(1));
-    assert_eq!(router.route("undo the last change", &agents, None).choice, RouteChoice::MewndoCommand);
-    assert_eq!(router.route("start a new agent in docs", &agents, None).choice, RouteChoice::NewAgent);
+    assert_eq!(
+        router.route("claude, run the tests", &agents, None).choice,
+        RouteChoice::Agent(0)
+    );
+    assert_eq!(
+        router.route("what is cursor doing", &agents, None).choice,
+        RouteChoice::Agent(1)
+    );
+    assert_eq!(
+        router
+            .route("in the site folder, stop", &agents, None)
+            .choice,
+        RouteChoice::Agent(1)
+    );
+    assert_eq!(
+        router.route("undo the last change", &agents, None).choice,
+        RouteChoice::MewndoCommand
+    );
+    assert_eq!(
+        router
+            .route("start a new agent in docs", &agents, None)
+            .choice,
+        RouteChoice::NewAgent
+    );
     // Two candidates means a runner-up chip, not a silent guess.
     let both = router.route("claude in the site folder", &agents, None);
     assert!(both.runner_up.is_some());
@@ -371,10 +483,15 @@ fn voice_routing_offers_every_live_agent_and_falls_back_to_keywords() {
         Answers::new(Backend::Kaggle, by_id)
     };
     let sure = pick(&options[1], 0.9);
-    assert_eq!(router.route("do the thing", &agents, Some(&sure)).choice, RouteChoice::Agent(1));
+    assert_eq!(
+        router.route("do the thing", &agents, Some(&sure)).choice,
+        RouteChoice::Agent(1)
+    );
     let unsure = pick(&options[1], 0.4);
     assert_eq!(
-        router.route("claude, do the thing", &agents, Some(&unsure)).choice,
+        router
+            .route("claude, do the thing", &agents, Some(&unsure))
+            .choice,
         RouteChoice::Agent(0),
         "an unsure model loses to the keyword match"
     );
@@ -402,7 +519,11 @@ fn triage_orders_cards_and_shows_a_normal_card_when_it_cannot() {
     assert_eq!(t.urgency, 4.0);
     assert!(!t.fallback);
     assert_eq!(t.backend, Backend::Kaggle);
-    assert_eq!(mewndo_router::triage::KIND, CallKind::Triage, "§34.9 R13: kind triage");
+    assert_eq!(
+        mewndo_router::triage::KIND,
+        CallKind::Triage,
+        "§34.9 R13: kind triage"
+    );
     assert_eq!(CallKind::Triage.deadline(), Duration::from_millis(1500));
 
     // A half-answered triage still orders the card, and is recorded as a fallback.
@@ -444,5 +565,12 @@ fn the_state_sent_to_the_model_stays_small() {
     let facts = serde_json::to_value(&d.rule_outcome.facts).unwrap();
     let keys: Vec<&String> = facts.as_object().unwrap().keys().collect();
     // serde_json writes a map in key order, so this is the sorted set of exactly those three names.
-    assert_eq!(keys, vec!["in_journal", "paths_outside_brief", "same_action_failed_recently"]);
+    assert_eq!(
+        keys,
+        vec![
+            "in_journal",
+            "paths_outside_brief",
+            "same_action_failed_recently"
+        ]
+    );
 }

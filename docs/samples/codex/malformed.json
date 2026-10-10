@@ -1,0 +1,9 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. The malformed case: a payload Mewndo cannot read. The handler must produce no output, exit 0, and not panic. Not a real Codex payload and not meant to be one.",
+  "type": "agent-turn-complete",
+  "last-assistant-message": {
+    "not": "a string"
+  },
+  "tool_name": 17,
+  "tool_input": ["an", "array", "where", "an", "object", "belongs"]
+}

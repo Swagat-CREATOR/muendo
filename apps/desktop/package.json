@@ -13,13 +13,15 @@
     "reliability": "node scripts/reliability.js",
     "responsiveness": "node scripts/responsiveness.js",
     "bench": "node scripts/bench.js",
-    "dist": "electron-builder --win --x64"
+    "dist": "node build/stage-binaries.js && electron-builder --win --x64",
+    "dist:check": "node build/stage-binaries.js --check"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
-    "chokidar": "^4.0.3"
+    "chokidar": "^4.0.3",
+    "koffi": "^2.14.1"
   },
   "devDependencies": {
     "electron": "44.5.1",
@@ -41,11 +43,21 @@
       {
         "from": "../../core/target/release/mewndo-core.exe",
         "to": "mewndo-core.exe"
+      },
+      {
+        "from": "../../core/target/release/mewndo-hook.exe",
+        "to": "mewndo-hook.exe"
+      },
+      {
+        "from": "../../integrations/claude-code",
+        "to": "claude-code"
       }
     ],
     "asarUnpack": [
       "bin/**"
     ],
+    "publish": null,
+    "forceCodeSigning": false,
     "win": {
       "target": "nsis",
       "icon": "build/icon.ico"

@@ -36,7 +36,10 @@ impl<T: Clone> Default for TtlCache<T> {
 
 impl<T: Clone> TtlCache<T> {
     pub fn new(ttl: Duration) -> TtlCache<T> {
-        TtlCache { ttl, entries: Mutex::new(HashMap::new()) }
+        TtlCache {
+            ttl,
+            entries: Mutex::new(HashMap::new()),
+        }
     }
 
     /// `now` is passed in rather than read, so a test can prove the entry expires without sleeping for five

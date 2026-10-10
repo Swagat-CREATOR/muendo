@@ -13,7 +13,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const DEADLINE: Duration = Duration::from_secs(30); // a save point in a big folder can take a while
 
@@ -130,56 +129,16 @@ impl Mewndo {
     }
 
     async fn ask(&self, tool: &str, args: Value) -> Result<String, String> {
-        let not_running = |why: String| {
-            format!(
-                "Mewndo isn't running or can't be reached ({why}). Ask the user to open Mewndo."
-            )
-        };
-        let config: Value = std::fs::read_to_string(self.data_dir.join("hook.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .ok_or_else(|| not_running("no hook.json".into()))?;
-        let port = config["port"]
-            .as_u64()
-            .ok_or_else(|| not_running("no port".into()))?;
-        let token = config["token"]
-            .as_str()
-            .ok_or_else(|| not_running("no token".into()))?;
-        let body = json!({ "args": args, "cwd": self.cwd }).to_string();
-        let agent = if ["claude", "codex", "cursor"].contains(&self.agent.as_str()) {
-            &self.agent
-        } else {
-            "claude"
-        };
-        let request = format!(
-            "POST /mcp/{tool}?agent={agent} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nx-mewndo-token: {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let exchange = async {
-            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port as u16)).await?;
-            stream.write_all(request.as_bytes()).await?;
-            let mut response = Vec::new();
-            stream.read_to_end(&mut response).await?;
-            Ok::<_, std::io::Error>(response)
-        };
-        let response = tokio::time::timeout(DEADLINE, exchange)
+        crate::engine_client::post_mcp(&self.data_dir, tool, &self.agent, &self.cwd, args, DEADLINE)
             .await
-            .map_err(|_| "Mewndo took too long to answer.".to_string())?
-            .map_err(|e| not_running(e.to_string()))?;
-        let text = String::from_utf8_lossy(&response);
-        let (head, body) = text
-            .split_once("\r\n\r\n")
-            .ok_or_else(|| not_running("bad answer".into()))?;
-        let reply: Value =
-            serde_json::from_str(body).map_err(|_| not_running("bad answer".into()))?;
-        if head.starts_with("HTTP/1.1 200") {
-            Ok(serde_json::to_string_pretty(&reply).unwrap_or_default())
-        } else {
-            Err(reply["error"]
-                .as_str()
-                .unwrap_or("Mewndo refused the request.")
-                .to_string())
-        }
+            .map(|reply| serde_json::to_string_pretty(&reply).unwrap_or_default())
+            .map_err(|why| {
+                if why.contains("isn't running") || why.contains("can't be reached") {
+                    format!("Mewndo isn't running or can't be reached ({why}). Ask the user to open Mewndo.")
+                } else {
+                    why
+                }
+            })
     }
 }
 

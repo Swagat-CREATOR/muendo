@@ -18,7 +18,60 @@ Nothing else is connected. The Gmail, Drive and Notion workers, the hosted MCP a
 `cloud/` with local tests, but nothing there has been deployed as far as this repository shows, so Mewndo can't
 undo anything in email, Drive, Notion or OneDrive today, and it doesn't check any email an agent sends. The Agent
 Inbox, Clef Router, Receipts, guarded computer use and Show Me (spec §32 to §38) aren't built. Builds are
-unsigned: there's no code-signing certificate yet, so there are no signed auto-updates either.
+unsigned and there are no auto-updates: see [Installing and updates](#installing-and-updates).
+
+## Installing and updates
+
+`npm run dist` from the repository root builds `mewndo-core.exe` and `mewndo-hook.exe` in release, copies the
+forwarder into the Claude Code plugin, and then runs `electron-builder` to make one Windows installer that
+carries all of it:
+
+| What | Where it lands |
+|---|---|
+| The Electron app | `%LOCALAPPDATA%\Programs\Mewndo\Mewndo.exe` |
+| `mewndo-core.exe`, the always-on service | `…\Mewndo\resources\` |
+| `mewndo-hook.exe`, the hook forwarder | `…\Mewndo\resources\`, and again inside the plugin folder |
+| The Claude Code plugin | `…\Mewndo\resources\claude-code\` |
+
+It's a per-user install, so there's no UAC prompt and no Windows service. **Starting the core at login** means
+the installer adds one `HKCU\…\CurrentVersion\Run` entry that starts `Mewndo.exe --hidden`, and the app starts
+the core as a child process. So the core is as alive as the app: if the app is killed, the core stops with it
+and nothing restarts it until the next sign-in. The Settings toggle owns that entry afterwards, and an update
+never turns it back on if you turned it off.
+
+`node apps/desktop/build/stage-binaries.js --check` verifies the whole packaging config — the binaries, the
+plugin, the icon, the installer script — without building anything.
+
+### Builds are unsigned
+
+There's no code-signing certificate, so nothing Mewndo ships is signed, and **signed auto-updates don't exist**:
+no update feed is configured, and a new version means downloading and running the installer again. Three things
+that costs you:
+
+- **SmartScreen stops the installer the first time.** Windows shows "Windows protected your PC" and hides the
+  Run button behind **More info → Run anyway**. That isn't a warning about Mewndo specifically; an unsigned
+  installer nobody has downloaded yet has no reputation, and there's no way to earn one without a certificate.
+- **Defender scans a new, unknown binary harder on its first runs.** `docs/benchmarks.md` measured unsigned
+  builds at **about 2× slower** under Defender than signed, packaged ones, and the 5,000-file restore there
+  (28.65 s against a 5 s target) was already Defender-bound. Expect the first restore after an install to be
+  the slowest one.
+- **No automatic updates, so a fix doesn't reach you on its own.** Nothing checks for a new version.
+
+With a certificate, four things change and nothing else: `electron-builder` signs the installer and both
+`.exe`s, SmartScreen stops asking once the signature has some download history, `electron-updater` plus a
+`publish` target can be switched on for signed auto-updates, and the Defender penalty above goes away.
+`apps/desktop/package.json` deliberately sets `"publish": null` and no signing identity, and
+`stage-binaries.js` fails the build if either appears, so nothing here can quietly start claiming to be signed.
+A certificate costs money, and `docs/v1-build-prompts.md`'s "needs money, approvals or a company account" table
+puts it before public launch, not in this sprint. Nothing has been bought and no paid service has been added.
+
+### Not verified
+
+`electron-builder` has never run in this repository: making an NSIS installer needs Windows tooling that the
+development machine hasn't got, so **no installer has been produced and none has been installed**. What is
+checked is the configuration and its inputs, by the `--check` command above. Everything the installer itself
+does — the Run entry, the shortcut, the uninstall questions, the folder layout in the table — is read off
+`apps/desktop/build/installer.nsh` and electron-builder's documented NSIS behaviour, not observed.
 
 ## How fast
 

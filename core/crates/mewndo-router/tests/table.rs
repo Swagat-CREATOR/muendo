@@ -12,8 +12,8 @@
 // model, and that shadow mode changes the outcome back to the rules'.
 
 use mewndo_router::answers::{Answer, Answers};
-use mewndo_router::facts::RuleOutcome;
 use mewndo_router::decide::decide;
+use mewndo_router::facts::RuleOutcome;
 use mewndo_router::{Backend, ChoiceVerdict, Mode, Verdict};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -78,17 +78,28 @@ fn run(file: &str) -> Fixture {
         assert_eq!(d.backend, backend, "{what}: backend");
     }
     if let Some(c) = f.expect.confidence {
-        assert!((d.confidence - c).abs() < 1e-9, "{what}: confidence {} != {c}", d.confidence);
+        assert!(
+            (d.confidence - c).abs() < 1e-9,
+            "{what}: confidence {} != {c}",
+            d.confidence
+        );
     }
     if let Some(text) = &f.expect.reason_contains {
-        assert!(d.reason.contains(text.as_str()), "{what}: reason is {:?}", d.reason);
+        assert!(
+            d.reason.contains(text.as_str()),
+            "{what}: reason is {:?}",
+            d.reason
+        );
     }
     if let Some(shadow) = f.expect.shadow {
         assert_eq!(d.shadow, shadow, "{what}: shadow flag");
     }
     // The model's verdict is recorded whatever happens, in both modes: the Agents tab's agreement rate is
     // the only thing that lets a user decide when to switch an agent to active (§34.6).
-    assert_eq!(d.model_verdict, f.expect.model_verdict, "{what}: recorded model verdict");
+    assert_eq!(
+        d.model_verdict, f.expect.model_verdict,
+        "{what}: recorded model verdict"
+    );
     f
 }
 
@@ -158,7 +169,10 @@ fn every_fixture_in_the_folder_passes() {
         run(path.file_name().unwrap().to_str().unwrap());
         found += 1;
     }
-    assert!(found >= 14, "expected the seven rows plus the extras, found {found}");
+    assert!(
+        found >= 14,
+        "expected the seven rows plus the extras, found {found}"
+    );
 }
 
 /// The thresholds are boundaries, and a boundary is where an off-by-one lives. §34.4 says "confidence >= 0.8"
@@ -166,11 +180,19 @@ fn every_fixture_in_the_folder_passes() {
 /// 0.3 does not ask, 0.5 gets no save point and 0.6 is confident enough.
 #[test]
 fn the_thresholds_are_exactly_where_the_table_puts_them() {
-    let rules = RuleOutcome { destructive: true, ..RuleOutcome::default() };
+    let rules = RuleOutcome {
+        destructive: true,
+        ..RuleOutcome::default()
+    };
     let answers = |in_scope: f64, irreversible: f64, choice: ChoiceVerdict, confidence: f64| {
         let mut by_id = BTreeMap::new();
         by_id.insert("in_scope".to_string(), Answer::Noul { p_yes: in_scope });
-        by_id.insert("irreversible".to_string(), Answer::Noul { p_yes: irreversible });
+        by_id.insert(
+            "irreversible".to_string(),
+            Answer::Noul {
+                p_yes: irreversible,
+            },
+        );
         by_id.insert(
             "verdict".to_string(),
             Answer::Choice {
@@ -183,16 +205,44 @@ fn the_thresholds_are_exactly_where_the_table_puts_them() {
     };
     let v = |a: &Answers| decide(&rules, Some(a), Mode::Active, None).verdict;
 
-    assert_eq!(v(&answers(0.9, 0.0, ChoiceVerdict::Brake, 0.8)), Verdict::Brake, ">= 0.8");
-    assert_ne!(v(&answers(0.9, 0.0, ChoiceVerdict::Brake, 0.79)), Verdict::Brake, "< 0.8 is not a brake");
-    assert_eq!(v(&answers(0.29, 0.0, ChoiceVerdict::Allow, 0.9)), Verdict::Ask, "< 0.3");
-    assert_ne!(v(&answers(0.3, 0.0, ChoiceVerdict::Allow, 0.9)), Verdict::Ask, "0.3 is in scope");
+    assert_eq!(
+        v(&answers(0.9, 0.0, ChoiceVerdict::Brake, 0.8)),
+        Verdict::Brake,
+        ">= 0.8"
+    );
+    assert_ne!(
+        v(&answers(0.9, 0.0, ChoiceVerdict::Brake, 0.79)),
+        Verdict::Brake,
+        "< 0.8 is not a brake"
+    );
+    assert_eq!(
+        v(&answers(0.29, 0.0, ChoiceVerdict::Allow, 0.9)),
+        Verdict::Ask,
+        "< 0.3"
+    );
+    assert_ne!(
+        v(&answers(0.3, 0.0, ChoiceVerdict::Allow, 0.9)),
+        Verdict::Ask,
+        "0.3 is in scope"
+    );
     assert_eq!(
         v(&answers(0.9, 0.51, ChoiceVerdict::Allow, 0.9)),
         Verdict::SavepointThenAllow,
         "> 0.5"
     );
-    assert_eq!(v(&answers(0.9, 0.5, ChoiceVerdict::Allow, 0.9)), Verdict::Allow, "0.5 exactly is not");
-    assert_eq!(v(&answers(0.9, 0.0, ChoiceVerdict::Allow, 0.59)), Verdict::Ask, "< 0.6");
-    assert_eq!(v(&answers(0.9, 0.0, ChoiceVerdict::Allow, 0.6)), Verdict::Allow, "0.6 is sure enough");
+    assert_eq!(
+        v(&answers(0.9, 0.5, ChoiceVerdict::Allow, 0.9)),
+        Verdict::Allow,
+        "0.5 exactly is not"
+    );
+    assert_eq!(
+        v(&answers(0.9, 0.0, ChoiceVerdict::Allow, 0.59)),
+        Verdict::Ask,
+        "< 0.6"
+    );
+    assert_eq!(
+        v(&answers(0.9, 0.0, ChoiceVerdict::Allow, 0.6)),
+        Verdict::Allow,
+        "0.6 is sure enough"
+    );
 }

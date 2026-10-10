@@ -1,0 +1,8 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. The loop-guard case: Claude is already running because a previous Stop hook blocked. See README.md.",
+  "session_id": "6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471",
+  "transcript_path": "C:\\Users\\ana\\.claude\\projects\\C--Users-ana-code-shop\\6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471.jsonl",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "hook_event_name": "Stop",
+  "stop_hook_active": true
+}

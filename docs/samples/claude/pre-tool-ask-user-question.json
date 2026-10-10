@@ -1,0 +1,28 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No live Claude Code was available. See README.md.",
+  "session_id": "6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471",
+  "transcript_path": "C:\\Users\\ana\\.claude\\projects\\C--Users-ana-code-shop\\6f1b9c27-0f7e-4a3d-9c2a-1e55a0d2b471.jsonl",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "default",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "The date parser has two callers with different formats. Which should I make canonical?",
+        "header": "Date format",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "ISO 8601 (recommended)",
+            "description": "Keep 2026-10-09 and convert the checkout page's dd/mm/yyyy at the edge."
+          },
+          {
+            "label": "dd/mm/yyyy",
+            "description": "Match the checkout page and convert everywhere else."
+          }
+        ]
+      }
+    ]
+  }
+}

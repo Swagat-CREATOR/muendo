@@ -1,0 +1,18 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. No Codex CLI was available. Every field name is a guess; see README.md, \"post-tool.json\".",
+  "session_id": "0199b3d2-7c41-7e8a-b2d5-5f1c9a0e4477",
+  "hook_event_name": "PostToolUse",
+  "cwd": "C:\\Users\\ana\\code\\shop",
+  "tool_name": "shell",
+  "tool_use_id": "call_8Hk2PqvS1mLbT0wA",
+  "tool_input": {
+    "command": ["bash", "-lc", "npm test -- checkout"],
+    "workdir": "C:\\Users\\ana\\code\\shop"
+  },
+  "tool_response": {
+    "exit_code": 1,
+    "stdout": "> shop@1.4.0 test\n> node --test test/checkout\n\nTAP version 13\nnot ok 1 - parses ISO dates\n# tests 7\n# pass 6\n# fail 1\n",
+    "stderr": "",
+    "duration_ms": 4120
+  }
+}

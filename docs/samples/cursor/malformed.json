@@ -1,0 +1,7 @@
+{
+  "_mewndo_sample": "HAND-WRITTEN, UNVERIFIED. The malformed case: a payload Mewndo cannot read. The handler must produce no output, exit 0, and not panic — and in particular must NOT print {\"permission\":\"allow\"}. Not a real Cursor payload and not meant to be one.",
+  "hook_event_name": "beforeShellExecution",
+  "conversation_id": ["not", "a", "string"],
+  "command": {"argv": ["rm", "-rf", "/"]},
+  "cwd": null
+}

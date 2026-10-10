@@ -124,7 +124,8 @@ impl Clef for FakeClef {
         request: &ClefRequest,
         deadline: Duration,
     ) -> Result<(Backend, BTreeMap<String, Answer>), ClefError> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.latency > deadline {
             return Err(ClefError::Deadline);
         }
