@@ -201,3 +201,12 @@ dialog::backdrop { background: rgba(21, 23, 26, 0.28); }
 .ib-actions { display: flex; gap: 8px; }
 .ib-cat { --cat-size: 96px; }
 .sk-cat { --cat-size: 96px; --pose: url(../../assets/cat/cat-sit.svg); } /* resolves against design/base.css */
+
+/* High contrast (design spec §14): system colours; nothing important depends on colour or hover alone. */
+@media (forced-colors: active) {
+  .nav-item[aria-current="page"], .set-nav-item[aria-current="page"] { outline: 2px solid Highlight; }
+  .banner, .fr-card, .content, .ib-card, .cx-card, .ag-row, .checklist { border: 1px solid CanvasText; forced-color-adjust: auto; }
+  .tl-actions { opacity: 1; }
+  .progress i, .storage-bar i { background: Highlight; }
+  .cat > i, .tl-avatar.mewndo { background: CanvasText; }
+}

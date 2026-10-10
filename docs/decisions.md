@@ -534,3 +534,17 @@ Connections came with D8.
 
 **What it can't do yet:** no "last save point" per folder in the list, no per-folder Pause (Pause is for all
 folders, for an hour); Show Me itself.
+
+## App and tray icons, high contrast (design D12, 10 Oct 2026)
+
+`scripts/make-icons.js` (run with Electron) draws the icons from the cat (design spec §4.3): the app icon is the face
+in ink on a milk squircle with a mint dot, using the small face at 16 and 24 px; `build/icon.ico` holds 16, 24, 32,
+48, 64 and 256 px PNG layers and `build/icon.png` is 256 px. Windows use `app/assets/icon/app-256.png`. The tray shows
+the face alone, milk on a dark taskbar and ink on a light one (it follows `nativeTheme`), with a mint dot while
+protecting, coral when an agent is braked, and none when paused or nothing is protected; 16 px plus @2x files.
+
+High contrast: the shell, cards, banner and checklist get system-colour borders, the current page is outlined in
+Highlight, and the Timeline's hover actions are always shown.
+
+**What it can't do yet:** the tray has no amber "needs you" dot (the desk doesn't tell the tray yet); run from source,
+Windows shows Electron's own taskbar icon; no full screen-reader audit has been done yet.

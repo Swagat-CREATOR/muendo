@@ -7,6 +7,7 @@ const fsp = require('node:fs/promises');
 const crypto = require('node:crypto');
 const {
   app, BrowserWindow, Tray, Menu, ipcMain, dialog, Notification, nativeImage, shell, utilityProcess, globalShortcut, clipboard, screen,
+  nativeTheme,
 } = require('electron');
 const { buildBrief, briefLabel, DEFAULT_SAFETY_RULES } = require('../engine/brief'); // plain text only, no engine work
 const { createLog } = require('../engine/log'); // async file appends only, no engine work
@@ -293,17 +294,14 @@ function applyOpenAtLogin() {
   app.setLoginItemSettings({ openAtLogin: settings.openAtLogin, openAsHidden: true, args: ['--hidden'], name: 'Mewndo' });
 }
 
-// A plain ring-and-dot icon drawn in code, so there is no image file to ship yet. Design comes later.
-function icon() {
-  const size = 32;
-  const px = Buffer.alloc(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const d = Math.hypot(x - 15.5, y - 15.5);
-      if ((d < 14 && d > 9) || d < 5) px.set([0x9c, 0x6b, 0x1f, 0xff], (y * size + x) * 4); // BGRA: dark teal
-    }
-  }
-  return nativeImage.createFromBuffer(px, { width: size, height: size });
+// The app icon and the tray icons (design spec §4.3), drawn from the cat by scripts/make-icons.js.
+const ICONS = path.join(__dirname, 'assets', 'icon');
+const icon = () => nativeImage.createFromPath(path.join(ICONS, 'app-256.png'));
+// The tray: the face alone, milk on a dark taskbar and ink on a light one, with a dot for protected (mint), needs you
+// (amber) or stopped (coral). Windows picks the @2x file at 150 % and up.
+function trayIcon(state) {
+  const theme = (nativeTheme.shouldUseDarkColorsForSystemIntegratedUI ?? nativeTheme.shouldUseDarkColors) ? 'dark' : 'light';
+  return nativeImage.createFromPath(path.join(ICONS, `tray-${theme}-${state}.png`));
 }
 
 // The title bar (design spec §7.1): Windows draws real minimize, maximize and close buttons over our own 40 px bar,
@@ -1027,6 +1025,8 @@ async function updateTray() {
   tray.setToolTip(until ? `Mewndo: paused until ${new Date(until).toLocaleTimeString()}` : 'Mewndo: protecting your folders');
   const run = (fn) => () => fn().catch((e) => notify('Mewndo', e.message));
   const braked = await call('braked').catch(() => []);
+  const folders = await call('folders').catch(() => []);
+  tray.setImage(trayIcon(braked.length ? 'stopped' : until || !folders.length ? 'idle' : 'protected'));
   tray.setContextMenu(Menu.buildFromTemplate([
     ...braked.map((b) => ({ label: `Resume ${b.agent}`, click: run(() => call('resumeAgent', b.agent)) })),
     ...(braked.length ? [{ type: 'separator' }] : []),
@@ -1432,7 +1432,8 @@ if (process.argv.includes('--remove-claude-hooks')) {
     }
     app.on('will-quit', () => globalShortcut.unregisterAll());
 
-    tray = new Tray(icon().resize({ width: 16, height: 16 }));
+    tray = new Tray(trayIcon('idle'));
+    nativeTheme.on('updated', () => updateTray()); // the taskbar went light or dark
     tray.on('click', showWindow);
     updateTray();
     startBar();
