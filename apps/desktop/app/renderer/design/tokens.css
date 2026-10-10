@@ -1,0 +1,129 @@
+/* Mewndo design tokens (design spec §3). One file: colour, type, space, radius, motion.
+   Light on :root, dark on [data-theme="dark"], and "System" through prefers-color-scheme unless a theme is
+   forced with data-theme. Floating surfaces (pill, dock, cards, Talk box, panel, toasts) always use the
+   Float set, whatever the app theme. */
+
+:root {
+  /* --- brand (§3.1) --- */
+  --ink-brand: #15171A;
+  --milk: #F4F6F3;
+  --mint: #34D6B6;
+  --mint-ink: #08725F;
+  --whisker: #DDE2DC;
+
+  /* --- float set (§3.1), the same in both themes --- */
+  --float-bg: rgba(18, 20, 22, 0.96);
+  --float-raised: #1C1F22;
+  --float-border: rgba(238, 241, 236, 0.08);
+  --float-ink: #EEF1EC;
+  --float-ink-2: #A7ADA8;
+  --float-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  --float-keycap: #22403A;
+  --float-working: #78A8FF;
+  --float-needs: #F2B04A;
+  --float-stopped: #F27A70;
+  --float-done: #34D6B6;
+  --float-edited: #A7ADA8;
+  --float-mint-soft: #173A33;
+  --float-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 40%);
+
+  /* --- type (§3.2): use with the `font` shorthand --- */
+  --font-display: "Fraunces", Georgia, serif;
+  --font-ui: "Figtree", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+  --display-axes: "SOFT" 100, "WONK" 0, "opsz" 72;
+  --t-display: 420 34px/42px var(--font-display);
+  --t-title: 420 28px/34px var(--font-display);
+  --t-number: 420 30px/34px var(--font-display);
+  --t-h2: 600 16px/22px var(--font-ui);
+  --t-body: 400 14px/21px var(--font-ui);
+  --t-small: 500 12.5px/18px var(--font-ui);
+  --t-mono: 450 12.5px/18px var(--font-mono);
+
+  /* --- space, size, radius (§3.3); a 4 px grid --- */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+  --r-window: 12px;
+  --r-card: 18px;
+  --r-row: 10px;
+  --r-button: 10px;
+  --r-chip: 8px;
+  --r-pill: 999px;
+
+  /* --- motion (§3.4) --- */
+  --m-quick: 120ms cubic-bezier(0.2, 0, 0, 1);
+  --m-open: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --m-close: 140ms cubic-bezier(0.4, 0, 1, 1);
+  /* A spring with stiffness 420 and damping 32 (ratio 0.78, 2 % overshoot), sampled into linear(). */
+  --m-spring-ease: linear(0, 0.0501, 0.1665, 0.3109, 0.4582, 0.5938, 0.71, 0.8042, 0.8771, 0.9308, 0.9684, 0.9932,
+    1.0082, 1.0163, 1.0194, 1.0195, 1.0177, 1.0151, 1.0121, 1.0093, 1.0068, 1.0047, 1.0031, 1.0019, 1);
+  --m-spring: 406ms var(--m-spring-ease);
+}
+
+/* Light: the default, or forced on any element (the design test page shows both themes side by side). */
+:root, [data-theme="light"] {
+  /* --- status: meaning only, always with a shape or words (§3.6) --- */
+  --working: #275FC4;   --working-soft: #E3ECFB;
+  --needs: #8A5605;     --needs-soft: #FBEFD9;
+  --stopped: #B5332D;   --stopped-soft: #FBE4E2;
+  --done: #08725F;      --done-soft: #DDF5EE;
+  --edited: #565C58;    --edited-soft: #E7EBE6;
+
+  /* --- light theme --- */
+  --bg: #F4F6F3;
+  --sidebar: #ECEFEB;
+  --surface: #FBFCFA;
+  --surface-2: #E7EBE6;
+  --border: #DDE2DC;
+  --ink: #15171A;
+  --ink-2: #565C58;
+  --ink-3: #6B716C;
+  --focus: #08725F;
+  --keycap-bg: #DDF5EE;
+  --cat: #15171A;              /* the cat's fill; cut-outs show the surface behind */
+  color-scheme: light;
+
+}
+
+/* Dark, chosen explicitly on the root or on any element. */
+[data-theme="dark"] {
+  --bg: #121416;
+  --sidebar: #0D0F10;
+  --surface: #1A1D1F;
+  --surface-2: #23272A;
+  --border: #2C3134;
+  --ink: #EEF1EC;
+  --ink-2: #A7ADA8;
+  --ink-3: #80867F;
+  --focus: #34D6B6;
+  --keycap-bg: #173A33;
+  --working: #78A8FF;   --working-soft: #1A2740;
+  --needs: #F2B04A;     --needs-soft: #3A2C12;
+  --stopped: #F27A70;   --stopped-soft: #3D1E1C;
+  --done: #34D6B6;      --done-soft: #173A33;
+  --edited: #A7ADA8;    --edited-soft: #23272A;
+  --cat: #EEF1EC;       /* milk, so the cat never disappears into a dark surface (§4.2) */
+  color-scheme: dark;
+}
+
+/* Dark through "System", unless light is forced. Same values as above. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121416;
+    --sidebar: #0D0F10;
+    --surface: #1A1D1F;
+    --surface-2: #23272A;
+    --border: #2C3134;
+    --ink: #EEF1EC;
+    --ink-2: #A7ADA8;
+    --ink-3: #80867F;
+    --focus: #34D6B6;
+    --keycap-bg: #173A33;
+    --working: #78A8FF;   --working-soft: #1A2740;
+    --needs: #F2B04A;     --needs-soft: #3A2C12;
+    --stopped: #F27A70;   --stopped-soft: #3D1E1C;
+    --done: #34D6B6;      --done-soft: #173A33;
+    --edited: #A7ADA8;    --edited-soft: #23272A;
+    --cat: #EEF1EC;
+    color-scheme: dark;
+  }
+}

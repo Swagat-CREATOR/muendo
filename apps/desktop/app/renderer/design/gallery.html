@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>Mewndo design tokens</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="base.css">
+<style>
+  body { padding: 0; background: #888; }
+  .theme { padding: var(--s-8); background: var(--bg); color: var(--ink); }
+  .theme h1 { margin: 0 0 var(--s-6); }
+  section { margin-bottom: var(--s-8); }
+  .label { color: var(--ink-2); margin-bottom: var(--s-2); }
+  .row { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: center; }
+  .swatch { width: 132px; border-radius: var(--r-row); border: 1px solid var(--border); overflow: hidden; background: var(--surface); }
+  .swatch b { display: block; height: 44px; }
+  .swatch span { display: block; padding: 6px 8px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); padding: var(--s-5); }
+  .status { display: inline-flex; gap: var(--s-2); align-items: center; padding: 6px 10px; border-radius: var(--r-chip); }
+  .float { background: var(--float-bg); color: var(--float-ink); border: 1px solid var(--float-border);
+    box-shadow: var(--float-shadow); border-radius: var(--r-card); padding: var(--s-5); }
+  .float .muted { color: var(--float-ink-2); }
+  .cats .cell { display: grid; justify-items: center; gap: var(--s-1); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; }
+  .motion b { display: block; width: 24px; height: 24px; border-radius: 6px; background: var(--mint-ink); }
+  .motion:hover b { transform: translateX(160px); }
+</style>
+</head>
+<body>
+<div class="grid2">
+  <div class="theme" data-theme="light" id="light"></div>
+  <div class="theme" data-theme="dark" id="dark"></div>
+</div>
+<script src="cat.js"></script>
+<script src="gallery.js"></script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+/* Mewndo base (design spec §3, §14): bundled fonts, resets, the focus ring, reduced motion, forced colours, and
+   the few shared pieces every window uses (keycaps, status rings, the cat). Load after tokens.css. Fonts are
+   bundled (SIL Open Font License, see fonts/LICENSE-*.txt), so nothing loads from the internet. */
+
+@font-face {
+  font-family: "Fraunces";
+  src: url("fonts/fraunces-latin-full-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Figtree";
+  src: url("fonts/figtree-latin-wght-normal.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font: var(--t-body);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+img, svg { display: block; }
+
+/* Serif titles with Fraunces' soft axis up (§3.2). */
+.display, .title, .number { font-variation-settings: var(--display-axes); }
+.display { font: var(--t-display); }
+.title { font: var(--t-title); }
+.number { font: var(--t-number); font-variant-numeric: tabular-nums; }
+.h2 { font: var(--t-h2); }
+.small { font: var(--t-small); }
+.mono { font: var(--t-mono); }
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Visible focus everywhere, never removed (§14). */
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* --- keycaps (§8.1): mint soft fill, a pressable bottom edge --- */
+.keycap {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; padding: 4px 8px;
+  font: 600 12.5px/1 var(--font-ui);
+  border-radius: var(--r-chip);
+  background: var(--keycap-bg);
+  border: 1px solid rgba(8, 114, 95, 0.4);
+  border-bottom-width: 2px;
+  color: var(--ink);
+}
+.float .keycap { background: var(--float-keycap); border-color: rgba(52, 214, 182, 0.35); color: var(--float-ink); }
+
+/* --- status ring (§3.6): colour plus a shape, so it never depends on colour alone --- */
+.ring {
+  --ring: var(--border);
+  position: relative; display: inline-block; flex: none;
+  width: var(--ring-size, 20px); height: var(--ring-size, 20px);
+  border-radius: 50%;
+  border: 2px solid var(--ring);
+}
+.ring::after {            /* the shape badge */
+  position: absolute; right: -4px; bottom: -4px;
+  width: 10px; height: 10px; border-radius: 50%;
+  display: grid; place-items: center;
+  font: 700 8px/1 var(--font-ui); color: var(--surface);
+  background: var(--ring);
+}
+.ring.working { --ring: var(--working); border-right-color: transparent; animation: ring-turn 1.2s linear infinite; }
+.ring.needs { --ring: var(--needs); }
+.ring.needs::after { content: "!"; }
+.ring.done { --ring: var(--done); }
+.ring.done::after { content: "✓"; }
+.ring.stopped { --ring: var(--stopped); }
+.ring.stopped::after { content: ""; border-radius: 2px; width: 8px; height: 8px; }
+.float .ring.working { --ring: var(--float-working); }
+.float .ring.needs { --ring: var(--float-needs); }
+.float .ring.done { --ring: var(--float-done); }
+.float .ring.stopped { --ring: var(--float-stopped); }
+.float .ring::after { color: #121416; }
+@keyframes ring-turn { to { transform: rotate(360deg); } }
+
+/* --- the cat (§4): a mask, so the fill is a token and the cut-outs show the surface behind --- */
+.cat {
+  position: relative; display: inline-block; flex: none;
+  width: var(--cat-size, 96px); height: var(--cat-size, 96px);
+}
+.cat > i {
+  position: absolute; inset: 0;
+  background: var(--cat);
+  -webkit-mask: var(--pose) center / contain no-repeat;
+  mask: var(--pose) center / contain no-repeat;
+  transition: opacity var(--m-open);
+}
+.cat > i.out { opacity: 0; }
+.float .cat { --cat: var(--float-ink); }
+
+/* Reduced motion (§3.4): short opacity fades only; the spinner becomes a still ring with a dot. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 80ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .ring.working { border-right-color: var(--ring); }
+  .ring.working::after { content: ""; width: 6px; height: 6px; right: 5px; bottom: 5px; }
+}
+
+/* High contrast (§14): fall back to the system's colours. */
+@media (forced-colors: active) {
+  .ring, .keycap { border-color: CanvasText; forced-color-adjust: auto; }
+  .ring::after { background: CanvasText; color: Canvas; }
+  .cat > i { background: CanvasText; }
+}
