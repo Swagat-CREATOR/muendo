@@ -572,6 +572,7 @@ function go(name) {
   for (const s of document.querySelectorAll('.screen')) s.hidden = s.dataset.screen !== name;
   if (name === 'timeline') setTimeout(loadTimeline); // after the script has run: loadTimeline is defined below
   if (name === 'agents') setTimeout(loadAgents);
+  if (name === 'inbox') setTimeout(loadInbox);
   if (name === 'connections') setTimeout(renderConnections);
   for (const b of document.querySelectorAll('#nav .nav-item')) {
     if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
@@ -791,6 +792,83 @@ const loadAgents = guard(async () => {
   }));
 });
 $('ag-connect').onclick = (e) => { e.preventDefault(); $('connect').scrollIntoView({ behavior: 'smooth' }); };
+
+// --- Inbox (design spec §8.2): every open card, the same actions and keys as the floating cards ----------------
+// What it can't do yet: no answered history (cards leave once the agent has its answer).
+
+const KIND_WORDS = {
+  question: ['needs', 'Waiting for your answer'], permission: ['needs', 'Wants to run a command'], done: ['done', 'Finished'],
+  drift: ['stopped', 'Went outside its brief'], receipt: ['stopped', "Says it's done; the evidence disagrees"],
+};
+let inbox = [];
+let inboxSel = null;
+const loadInbox = guard(async () => {
+  const v = await api.inboxView();
+  inbox = v.cards;
+  const open = inbox.filter((c) => c.state === 'open' || c.state === 'answering').length;
+  $('inbox-count').hidden = !open;
+  $('inbox-count').textContent = String(open);
+  if (!inbox.some((c) => c.id === inboxSel)) inboxSel = inbox[0]?.id ?? null;
+  if (screen === 'inbox') renderInbox(v.connected);
+});
+function renderInbox(connected = true) {
+  $('ib-empty').hidden = inbox.length > 0;
+  $('ib-empty-text').textContent = connected ? 'Nothing needs you. When an agent asks something, it shows up here and beside the dock.'
+    : "The Agent Desk isn't running, so cards can't show up yet.";
+  document.querySelector('.ib-cat').style.setProperty('--pose', `url("${new URL('../assets/cat/cat-loaf.svg', document.baseURI).href}")`);
+  const keep = document.activeElement?.closest?.('.ib-card')?.dataset.id;
+  fill($('ib-list'), ...inbox.map((c) => {
+    const [ring, words] = KIND_WORDS[c.kind] ?? KIND_WORDS.question;
+    const answered = c.state !== 'open';
+    const card = h('div', { class: `ib-card${c.id === inboxSel ? ' selected' : ''}${answered ? ' answered' : ''}`, role: 'listitem', 'data-id': c.id,
+      onmousedown: () => { inboxSel = c.id; } },
+      h('div', { class: 'ib-head' }, MewLogos.img(c.agent, 20), h('b', {}, c.agent ?? 'Agent'),
+        h('span', { class: `ring ${ring}` }), h('span', { class: `ib-words ${ring}` }, words), h('span', { class: 'muted' }, `· ${clock(c.at)}`)),
+      c.lines.filter(Boolean).length ? h('div', { class: 'ib-said' }, c.lines.filter(Boolean).join('\n')) : null,
+      c.kind === 'permission' ? h('div', { class: 'ib-command mono' }, c.title) : c.title ? h('div', { class: 'ib-ask' }, c.title) : null,
+      c.options.length ? h('div', { class: 'ib-options' }, ...c.options.slice(0, 9).map((label, i) => h('button', {
+        class: `ib-option${c.chosen === i ? ' chosen' : ''}`, disabled: answered,
+        onclick: guard(() => api.inboxClick('answer', c.id, i)),
+      }, h('span', { class: 'keycap' }, String(i + 1)), h('span', {}, label), c.chosen === i ? h('span', { class: 'ib-check' }, '✓') : null))) : null,
+      c.state === 'answering' ? h('div', { class: 'ib-foot' }, h('span', { class: 'ib-sent' }, 'Answer sent'), h('span', { class: 'keycap' }, 'Esc'), ' to take back',
+        h('button', { onclick: guard(() => api.inboxClick('take-back', c.id)) }, 'Take back')) : null,
+      c.state === 'answering' ? h('div', { class: 'ib-grace' }) : null,
+      c.state === 'sent' || c.state === 'released' ? h('div', { class: 'ib-foot' }, h('span', { class: 'ib-sent' }, 'Sent · Undo after this')) : null,
+      !answered && ['question', 'permission', 'done'].includes(c.kind) ? h('form', { class: 'ib-reply', onsubmit: guard(async (e) => {
+        e.preventDefault();
+        const t = e.target.elements.reply.value.trim();
+        if (t) await api.inboxText(c.id, t);
+      }) }, h('input', { name: 'reply', placeholder: c.kind === 'permission' ? 'Add a reason…' : c.kind === 'done' ? `Reply to ${c.agent ?? 'the agent'}…` : 'Type your answer…' }),
+      h('button', { class: 'primary' }, 'Send')) : null,
+      ['done', 'receipt'].includes(c.kind) ? h('div', { class: 'ib-actions' },
+        h('button', { onclick: guard(() => api.inboxClick('undo', c.id)) }, h('span', { class: 'keycap' }, 'U'), ' Undo this turn'),
+        h('button', { onclick: guard(() => api.inboxClick('dismiss', c.id)) }, h('span', { class: 'keycap' }, 'E'), c.kind === 'done' ? ' Clear' : ' Ignore')) : null);
+    const bar = card.querySelector('.ib-grace');
+    // The answer is released when the grace bar has drained, here or in the floating cards, whichever ends first.
+    if (bar) bar.style.animationDuration = `${c.graceMs}ms`; // CSSOM: the page's CSP allows no style attributes
+    if (bar) bar.addEventListener('animationend', () => guard(() => api.inboxGraceEnd(c.id))(), { once: true });
+    return card;
+  }));
+  if (keep) document.querySelector(`.ib-card[data-id="${CSS.escape(keep)}"] input`)?.focus();
+}
+api.on('inbox-changed', () => loadInbox());
+setTimeout(loadInbox); // for the sidebar count
+// The same keys as the floating cards (§33.2), while the Inbox screen is showing and you're not typing.
+document.addEventListener('keydown', (e) => {
+  if (screen !== 'inbox' || e.ctrlKey || e.altKey || e.metaKey || e.target.closest('input, textarea, select, dialog')) return;
+  const i = inbox.findIndex((c) => c.id === inboxSel);
+  const c = inbox[i];
+  const k = e.key.toLowerCase();
+  if (k === 'j' || k === 'k') { inboxSel = inbox[Math.max(0, Math.min(inbox.length - 1, i + (k === 'j' ? 1 : -1)))]?.id ?? null; renderInbox(); }
+  else if (!c) return;
+  else if (/^[1-9]$/.test(k) && c.state === 'open' && c.options[Number(k) - 1] != null) guard(() => api.inboxClick('answer', c.id, Number(k) - 1))();
+  else if (k === ' ') document.querySelector(`.ib-card[data-id="${CSS.escape(c.id)}"] input`)?.focus();
+  else if (k === 'e' && ['done', 'receipt'].includes(c.kind)) guard(() => api.inboxClick('dismiss', c.id))();
+  else if (k === 'u' && ['done', 'receipt'].includes(c.kind)) guard(() => api.inboxClick('undo', c.id))();
+  else if (k === 'escape' && c.state === 'answering') guard(() => api.inboxClick('take-back', c.id))();
+  else return;
+  e.preventDefault();
+});
 
 // --- Connections (design spec §8.5) ----------------------------------------------------------------------------
 // What it can't do yet: no account can be connected; the cards say so instead of offering a button that does nothing.

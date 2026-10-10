@@ -511,3 +511,16 @@ page under Data and privacy; the restore engine choice and Reset under Advanced.
 
 Sections for things that don't exist yet (Connections, Computer use, Habits, Notifications, Account, Labs, the Inbox
 keys and grace period, Clef) say so in one line instead of showing controls that do nothing.
+
+## Inbox screen (design D10, 10 Oct 2026)
+
+The main window's Inbox lists every card the Agent Desk holds, drawn like the floating cards on the light window:
+logo, agent, status in words, the agent's lines, the question or command, numbered options, a reply box, and Undo /
+Clear on Done and Receipt cards. It uses the desk's own actions (`answer`, `dismiss`, `undo`, `take-back`, typed
+replies), so an answer from the window is the same answer as one from the floating cards; the same keys work while
+the screen shows (J / K, 1 to 9, Space, E, U, Esc). The grace bar runs here too, and the answer is released when
+either bar drains first (a second release is ignored). The sidebar shows the open count. The window hears every
+redraw of the card stack (`inbox-changed`).
+
+**What it can't do yet:** no answered history; the dock panel still has two tabs (Agents, Connections), not
+Inbox and Skills; checked in the real app only with an empty Inbox, not with a live card.

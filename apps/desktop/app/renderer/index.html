@@ -101,9 +101,12 @@
       <p class="lead">Your agents, today's numbers and recent changes will live here. For now, <a href="#" data-go="folders">Protected folders</a> has your save points and restores.</p>
     </section>
     <section class="screen" data-screen="inbox" hidden>
-      <h1 class="display">Inbox</h1>
-      <p class="lead">Cards from your agents open beside the dock. Press Ctrl+Shift+F11 to answer them with the keyboard.</p>
-      <p class="muted">What it can't do yet: show every open card and the answered history in this window.</p>
+      <div class="tl-head"><h1 class="display">Inbox</h1><span class="muted small">J / K to move · 1–9 to answer · Space to reply · E to clear · Esc to take back</span></div>
+      <div id="ib-list" class="ib-list" role="list"></div>
+      <div id="ib-empty" class="tl-empty" hidden>
+        <span class="cat ib-cat" aria-hidden="true"><i></i></span>
+        <p id="ib-empty-text">Nothing needs you. When an agent asks something, it shows up here and beside the dock.</p>
+      </div>
     </section>
     <section class="screen" data-screen="agents" hidden>
       <div class="tl-head">

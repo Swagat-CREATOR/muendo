@@ -15,6 +15,7 @@ const { createCoreClient } = require('./desk/core-client');
 const { createDeskWindows } = require('./desk/windows');
 const { createFocus } = require('./desk/focus');
 const { createDesk } = require('./desk/desk');
+const { describe: describeCard } = require('./desk/cards');
 const { createBar } = require('./bar');
 const { place, beside } = require('./dock-place');
 const { DEFAULTS: SHORTCUT_DEFAULTS, pickShortcut } = require('./shortcuts');
@@ -264,8 +265,13 @@ function startDesk() {
   deskWindows = createDeskWindows({ log, on });
   placeDeskWindows();
   screen.on('display-metrics-changed', placeDeskWindows);
+  // The main window's Inbox screen hears every redraw of the card stack too.
+  const ui = Object.create(deskWindows, { send: { value(name, channel, payload) {
+    if (name === 'cards') send('inbox-changed');
+    return deskWindows.send(name, channel, payload);
+  } } });
   desk = createDesk({
-    client, ui: deskWindows, focus: createFocus({ log }), log,
+    client, ui, focus: createFocus({ log }), log,
     commands: deskCommand,
     problem: (message) => notify('Mewndo', message),
     onBudget: (on) => {
@@ -1056,6 +1062,17 @@ const handlers = {
     const [folders, braked] = await Promise.all([call('folders'), call('braked').catch(() => [])]);
     return (await panelData(folders, new Set((braked ?? []).map((x) => x.agent)))).agents;
   },
+  // The Inbox screen (design spec §8.2): every open card, answered with the same actions as the floating cards.
+  inboxView() {
+    if (!desk) return { cards: [], connected: false };
+    const names = new Map(desk.agents().map((a) => [a.agentId, a.name]));
+    return { cards: desk.cards().list().map((c) => ({ ...describeCard(c), agent: names.get(c.agentId) ?? null })), connected: true };
+  },
+  inboxClick(action, cardId, arg) {
+    if (['answer', 'dismiss', 'undo', 'take-back'].includes(action)) desk?.handlers.click(action, str(cardId, 'card'), arg);
+  },
+  inboxGraceEnd(cardId) { desk?.handlers.graceEnd(str(cardId, 'card')); },
+  inboxText(cardId, text) { desk?.handlers.text(str(cardId, 'card'), str(text, 'reply'), 'key'); },
   async brakeAgent(name) {
     await call('brake', str(name, 'agent'), { reason: 'you braked it from the Agents screen' });
   },

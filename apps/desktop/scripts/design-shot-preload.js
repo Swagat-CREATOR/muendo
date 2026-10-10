@@ -19,6 +19,7 @@ const stubs = {
     state: () => (last ? Promise.resolve(last) : new Promise((resolve) => ipcRenderer.once('mewndo:state', (_e, s) => { last = s; resolve(s); }))),
     savePoints: async (root) => last?.savePointsByRoot?.[root] ?? [], // shots of the Timeline
     agentsView: async () => last?.agentsView ?? [],
+    inboxView: async () => ({ cards: last?.inbox ?? [], connected: true }),
     on: () => noop,
   },
 };

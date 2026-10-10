@@ -2,11 +2,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const call = (name) => (...args) => ipcRenderer.invoke(name, ...args);
-const EVENTS = new Set(['state-changed', 'progress', 'savepoints-changed', 'restores-changed', 'retry', 'toast', 'show-diff']);
+const EVENTS = new Set(['state-changed', 'progress', 'savepoints-changed', 'restores-changed', 'retry', 'toast', 'show-diff', 'inbox-changed']);
 
 contextBridge.exposeInMainWorld('mewndo', {
   state: call('state'),
   agentsView: call('agentsView'),
+  inboxView: call('inboxView'),
+  inboxClick: call('inboxClick'),
+  inboxGraceEnd: call('inboxGraceEnd'),
+  inboxText: call('inboxText'),
   brakeAgent: call('brakeAgent'),
   resumeAgent: call('resumeAgent'),
   chooseFolders: call('chooseFolders'),

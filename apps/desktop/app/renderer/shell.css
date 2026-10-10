@@ -170,3 +170,33 @@ dialog::backdrop { background: rgba(21, 23, 26, 0.28); }
 .cx-head { display: flex; align-items: center; gap: 12px; }
 .cx-name { flex: 1; font-weight: 600; }
 .cx-card p { margin: 10px 0 0; color: var(--ink-2); font: var(--t-small); }
+
+/* Inbox (design spec §8.2): the floating cards' anatomy on the light window. */
+.ib-list { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; max-width: 720px; }
+.ib-card { position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 16px;
+  border: 1px solid var(--border); background: var(--surface); }
+.ib-card.selected { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.ib-head { display: flex; align-items: center; gap: 8px; }
+.ib-head .ring { --ring-size: 14px; }
+.ib-head .ring::after { display: none; }
+.ib-words { font: var(--t-small); font-weight: 600; }
+.ib-words.needs { color: #8A5A00; } .ib-words.done { color: var(--focus); } .ib-words.stopped { color: #B3261E; }
+.ib-said { align-self: flex-start; max-width: 560px; padding: 8px 12px; border-radius: 14px 14px 14px 4px; background: var(--surface-2); white-space: pre-line; }
+.ib-ask { font: 600 15px/21px var(--font-ui); }
+.ib-command { padding: 10px 12px; border-radius: 10px; background: var(--surface-2); font: var(--t-mono); }
+.ib-options { display: flex; flex-direction: column; gap: 6px; }
+.ib-option { display: flex; align-items: center; gap: 10px; min-height: 36px; text-align: left; }
+.ib-option.chosen { background: var(--done-soft); border-color: var(--focus); }
+.answered .ib-option:not(.chosen) { opacity: 0.4; }
+.ib-check { margin-left: auto; color: var(--focus); }
+.ib-reply { display: flex; gap: 8px; }
+.ib-reply input { flex: 1; border-radius: 999px; padding: 8px 14px; }
+.ib-foot { display: flex; align-items: center; gap: 6px; font: var(--t-small); color: var(--ink-2); }
+.ib-foot button { margin-left: auto; }
+.ib-sent { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); margin-right: auto; }
+.ib-sent::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--done); }
+.ib-grace { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--done); transform-origin: left;
+  animation: drain linear forwards; }
+@keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.ib-actions { display: flex; gap: 8px; }
+.ib-cat { --cat-size: 96px; }
