@@ -205,6 +205,7 @@ const INBOX_KEY = 'Control+Shift+F11'; // §33.3; not configurable yet
 const TALK_KEY = 'Control+Shift+F12'; // §33.5
 let desk = null;
 let deskWindows = null;
+let rulesOnly = false; // the gateway says today's model budget is out (budget.state)
 
 function placeDeskWindows() {
   const { workArea } = screen.getPrimaryDisplay();
@@ -263,6 +264,12 @@ function startDesk() {
     client, ui: deskWindows, focus: createFocus({ log }), log,
     commands: deskCommand,
     problem: (message) => notify('Mewndo', message),
+    onBudget: (on) => {
+      if (on === rulesOnly) return;
+      rulesOnly = on;
+      log.info(on ? 'The decision model is out of budget for today: rules only' : 'The decision model is back');
+      refreshBar();
+    },
   });
   desk.start();
   if (!tryRegister(INBOX_KEY, () => desk.openInbox())) log.warn(`The Inbox key ${INBOX_KEY} is taken by another app`);
@@ -577,6 +584,7 @@ function refreshBar() {
       shortcuts: { undo: prettyShortcut(shortcutFor('undo')), brief: prettyShortcut(shortcutFor('brief')) },
       card: driftCard, holds, ask: ask && { id: ask.id, heard: ask.heard, text: ask.text, choices: ask.choices.map((c) => c.label) },
       voice: speech?.available === true, panel: panelOpen ? await panelData(folders ?? [], brakedNames) : null,
+      rulesOnly,
     });
   }, 30);
 }

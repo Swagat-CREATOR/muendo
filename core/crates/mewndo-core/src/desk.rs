@@ -417,6 +417,10 @@ async fn connection<S: AsyncRead + AsyncWrite + Send + 'static>(stream: S, desk:
         for card in desk.agents.open_cards().await {
             let _ = out.send(reply(&ulid::Ulid::new().to_string(), &card));
         }
+        let budget = desk.agents.budget_state();
+        if budget.rules_only {
+            let _ = out.send(reply(&ulid::Ulid::new().to_string(), &budget));
+        }
     }
 
     let events = (role == Role::App).then(|| {

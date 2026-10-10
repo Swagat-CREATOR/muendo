@@ -480,7 +480,7 @@ fn voice_routing_offers_every_live_agent_and_falls_back_to_keywords() {
                 confidence,
             },
         );
-        Answers::new(Backend::Kaggle, by_id)
+        Answers::new(Backend::WorkersAi, by_id)
     };
     let sure = pick(&options[1], 0.9);
     assert_eq!(
@@ -513,12 +513,12 @@ fn triage_orders_cards_and_shows_a_normal_card_when_it_cannot() {
     let mut by_id = BTreeMap::new();
     by_id.insert("needs_user".to_string(), Answer::Noul { p_yes: 0.2 });
     by_id.insert("urgency".to_string(), Answer::Score { value: 4.0 });
-    let answers = Answers::new(Backend::Kaggle, by_id);
+    let answers = Answers::new(Backend::WorkersAi, by_id);
     let t = router.triage(Some(&answers));
     assert!(!t.needs_user);
     assert_eq!(t.urgency, 4.0);
     assert!(!t.fallback);
-    assert_eq!(t.backend, Backend::Kaggle);
+    assert_eq!(t.backend, Backend::WorkersAi);
     assert_eq!(
         mewndo_router::triage::KIND,
         CallKind::Triage,
@@ -529,7 +529,7 @@ fn triage_orders_cards_and_shows_a_normal_card_when_it_cannot() {
     // A half-answered triage still orders the card, and is recorded as a fallback.
     let mut partial = BTreeMap::new();
     partial.insert("urgency".to_string(), Answer::Score { value: 5.0 });
-    let half = router.triage(Some(&Answers::new(Backend::Kaggle, partial)));
+    let half = router.triage(Some(&Answers::new(Backend::WorkersAi, partial)));
     assert!(half.needs_user && half.fallback);
 }
 
@@ -573,4 +573,88 @@ fn the_state_sent_to_the_model_stays_small() {
             "same_action_failed_recently"
         ]
     );
+}
+
+// --- the gateway's replies (cloud/gateway) and "Rules only mode" ----------------------------------------------
+
+/// A Clef that answers with a canned gateway reply body, read through `clef::read_reply` as the core's transport
+/// does.
+struct GatewayReply(std::sync::Mutex<Vec<serde_json::Value>>);
+
+impl Clef for GatewayReply {
+    fn ask(
+        &self,
+        request: &ClefRequest,
+        _deadline: Duration,
+    ) -> Result<(Backend, BTreeMap<String, Answer>), ClefError> {
+        let body = self.0.lock().unwrap().remove(0);
+        mewndo_router::clef::read_reply(&request.questions, &body)
+    }
+}
+
+fn model_reply() -> serde_json::Value {
+    json!({"answers": {
+        "in_scope": {"p_yes": 0.97}, "irreversible": {"p_yes": 0.05}, "secrets": {"p_yes": 0.0},
+        "risk": {"value": 1}, "verdict": {"choice": "allow", "probabilities": {"allow": 0.93, "ask_user": 0.07},
+        "confidence": 0.93}
+    }, "backend": "workers_ai", "ms": 40, "rules_only": false})
+}
+
+#[test]
+fn a_budget_out_reply_turns_on_rules_only_and_the_next_model_answer_turns_it_off() {
+    let replies = vec![
+        json!({"fallback": true, "reason": "total_cap", "rules_only": true}),
+        json!({"fallback": true, "reason": "device_cap", "rules_only": false}),
+        model_reply(),
+    ];
+    let router = Router::new(
+        mewndo_router::CompiledRules::builtin(),
+        Box::new(GatewayReply(std::sync::Mutex::new(replies))),
+        Box::new(NoFacts),
+    );
+    assert!(!router.rules_only());
+    let out = router.guard(&guard_input("npm run build", Mode::Active));
+    assert!(out.fallback_used, "the rules decided");
+    assert!(router.rules_only(), "the gateway said the day is out");
+    router.guard(&guard_input("npm run lint", Mode::Active));
+    assert!(
+        router.rules_only(),
+        "another kind of fallback says nothing about the day"
+    );
+    let answered = router.guard(&guard_input("npm run test:unit", Mode::Active));
+    assert!(!answered.fallback_used);
+    assert!(
+        !router.rules_only(),
+        "a model answer means the budget is back"
+    );
+}
+
+#[test]
+fn read_reply_reads_each_kind_of_gateway_answer() {
+    use mewndo_router::clef::read_reply;
+    let qs = mewndo_router::answers::guard_questions();
+    let (backend, answers) = read_reply(&qs, &model_reply()).unwrap();
+    assert_eq!(backend, Backend::WorkersAi);
+    assert_eq!(answers.len(), qs.len());
+    let mut cached = model_reply();
+    cached["backend"] = json!("cache");
+    assert_eq!(read_reply(&qs, &cached).unwrap().0, Backend::Cache);
+    assert_eq!(
+        read_reply(
+            &qs,
+            &json!({"fallback": true, "reason": "budget_low_keywords", "rules_only": false})
+        ),
+        Err(ClefError::Unavailable("budget_low_keywords".into()))
+    );
+    assert_eq!(
+        read_reply(
+            &qs,
+            &json!({"fallback": true, "reason": "total_cap", "rules_only": true})
+        ),
+        Err(ClefError::RulesOnly("total_cap".into()))
+    );
+    assert!(matches!(
+        read_reply(&qs, &json!({"answers": {}})),
+        Err(ClefError::Shape(_))
+    ));
 }

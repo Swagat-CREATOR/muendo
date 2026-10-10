@@ -1,16 +1,17 @@
 'use strict'
 // Cloudflare Worker: mewndo-cloud, the gateway module (spec §37.1, §37.6 K1-K5).
-// Testers' PCs hold no Cloudflare key: they send an invite token, and the Worker
-// calls Workers AI through its own binding or the Kaggle tunnel it has on record.
+// Testers' PCs hold no Cloudflare key: they send a device token, and the Worker
+// calls Workers AI through its own binding. Every call goes: answer cache, then
+// Workers AI, then {fallback:true} for the device's rules.
 //
 // Routes
 //   GET  /health            liveness, and what §34.9 R6 pre-connects to
 //   POST /v1/decide         one System One decision (§34.3 in, §34.9 R6 out)
-//   POST /invite/redeem     an invite code for a bearer token (§37.5)
-//   POST /admin/invites     mint codes          (x-admin-secret)
-//   POST /admin/revoke      revoke a token      (x-admin-secret)
-//   GET  /admin/status      usage, Kaggle state, latency medians (x-admin-secret)
-//   POST /internal/backend  Kaggle register and heartbeat (GATEWAY_SECRET)
+//   POST /invite/redeem     a judge code for a device token (§37.5)
+//   POST /admin/invites     mint judge codes    (x-admin-secret)
+//   POST /admin/revoke      revoke a device     (x-admin-secret)
+//   GET  /admin/status      today's budget, reset time, usage per code and device (x-admin-secret)
+//   POST /admin/settings    change the budget settings table (x-admin-secret)
 //   POST /mcp               hosted MCP for cloud agents (§37.6 K6)
 //   GET  /hub               the desktop's WebSocket link (§37.6 K7)
 //
@@ -48,7 +49,7 @@ async function route(request, env, ctx) {
     case 'POST /admin/invites': return adminInvites(request, env)
     case 'POST /admin/revoke': return adminRevoke(request, env)
     case 'GET /admin/status': return adminStatus(request, env)
-    case 'POST /internal/backend': return internalBackend(request, env)
+    case 'POST /admin/settings': return adminSettings(request, env)
     case 'POST /mcp': return mcp(request, env)
     case 'GET /hub': return hub(request, env)
     default: return json({ error: 'not found' }, 404)
@@ -126,7 +127,7 @@ async function decide(request, env, ctx) {
   // same tester under the same brief, never across testers (§34.8: brief hash + signature).
   const scope = await sha256Hex(sortedJson([token, req.state.brief ?? null]))
 
-  // Auth, cache, budget and backend in one Durable Object round trip (§37.6 speed rules).
+  // Auth, cache and budget in one Durable Object round trip (§37.6 speed rules).
   const decision = await state(env, 'authPrepare', {
     token,
     sig,
@@ -135,33 +136,33 @@ async function decide(request, env, ctx) {
     estNeurons,
     deadlineMs: Number.isFinite(deadlineHeader) ? deadlineHeader : undefined,
   })
-  const who = { tester: decision.tester }
+  const who = { tester: decision.tester, device: decision.device }
+  // On every answer: the dock shows "Rules only mode" while this is true (§37.2).
+  const rulesOnly = decision.rules_only === true
 
   if (decision.route === 'cache') {
     log({ at: 'decide', kind, backend: 'cache', ms: 0, tester: who.tester })
-    return json({ answers: decision.answers, backend: 'cache', ms: 0, cached: true })
+    return json({ answers: decision.answers, backend: 'cache', ms: 0, cached: true, rules_only: rulesOnly })
   }
   if (decision.route === 'fallback') {
     log({ at: 'decide', kind, backend: 'fallback', reason: decision.reason, ms: 0, tester: who.tester })
-    return json({ fallback: true, reason: decision.reason })
+    return json({ fallback: true, reason: decision.reason, rules_only: rulesOnly })
   }
 
   const started = Date.now()
   let raw
   try {
-    raw = decision.route === 'kaggle'
-      ? await askKaggle(decision.url, req, env.GATEWAY_SECRET, decision.deadlineMs)
-      : await askWorkersAi(env, req, decision.deadlineMs)
+    raw = await askWorkersAi(env, req, decision.deadlineMs)
   } catch (e) {
     const ms = Date.now() - started
     // A call that never reached the model gives its reservation back (§37.6 K4.3).
     // One that did (a missed deadline keeps running; unreadable output was still
     // generated) keeps it, or the meter would undercount toward the hard stop.
     ctx.waitUntil(state(env, 'settle', {
-      tester: who.tester, reserved: decision.reserve, actualNeurons: e?.spent ? null : 0, backend: decision.route, ms,
+      ...who, reserved: decision.reserve, actualNeurons: e?.spent ? null : 0, backend: decision.route, ms,
     }).catch(() => {}))
     log({ at: 'decide', kind, backend: decision.route, ms, error: String(e && e.message) })
-    return json({ fallback: true, reason: `${decision.route}_error`, ms })
+    return json({ fallback: true, reason: `${decision.route}_error`, ms, rules_only: rulesOnly })
   }
   const ms = Date.now() - started
 
@@ -172,15 +173,15 @@ async function decide(request, env, ctx) {
     ctx.waitUntil(Promise.all([
       state(env, 'saveSample', { backend: decision.route, raw: JSON.stringify(raw), reason: parsed.reason }),
       // The model ran, so its neurons stay counted.
-      state(env, 'settle', { tester: who.tester, reserved: decision.reserve, backend: decision.route, ms }),
+      state(env, 'settle', { ...who, reserved: decision.reserve, backend: decision.route, ms }),
     ]).catch(() => {}))
     log({ at: 'decide', kind, backend: decision.route, ms, unknown_shape: parsed.reason })
-    return json({ fallback: true, reason: 'unknown_answer_shape', ms })
+    return json({ fallback: true, reason: 'unknown_answer_shape', ms, rules_only: rulesOnly })
   }
 
   // Caching and the neuron correction never hold up the answer (§37.6 K4.5).
   ctx.waitUntil(state(env, 'settle', {
-    tester: who.tester,
+    ...who,
     sig,
     scope,
     answers: parsed.answers,
@@ -190,7 +191,7 @@ async function decide(request, env, ctx) {
     actualNeurons: usedNeurons(raw),
   }).catch(() => {}))
   log({ at: 'decide', kind, backend: decision.route, ms, tester: who.tester })
-  return json({ answers: parsed.answers, backend: decision.route, ms })
+  return json({ answers: parsed.answers, backend: decision.route, ms, rules_only: rulesOnly })
 }
 
 // The one place the Workers AI call shape lives. §32.5 rule 3 lists the exact
@@ -225,20 +226,7 @@ function spent(e) {
   return err
 }
 
-// §37.6 K4.4 / K10.7: the notebook's FastAPI shim behind a quick tunnel.
-async function askKaggle(url, req, secret, deadlineMs) {
-  if (!secret) throw new Error('no GATEWAY_SECRET')
-  const res = await fetch(`${url}/v1/systemone`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
-    body: JSON.stringify(req),
-    signal: AbortSignal.timeout(deadlineMs),
-  })
-  if (!res.ok) throw new Error(`kaggle ${res.status}`)
-  return res.json()
-}
-
-// A backend that reports its own neuron use lets the reservation be corrected;
+// A model answer that reports its own neuron use lets the reservation be corrected;
 // none is known to, so this is almost always null and the estimate stands.
 function usedNeurons(raw) {
   const n = Number(raw?.usage?.neurons ?? raw?.neurons)
@@ -280,6 +268,13 @@ async function adminStatus(request, env) {
   return json(await state(env, 'status', {}))
 }
 
+// Body: the settings to change, e.g. {"device_cap": 1500}. Answers with the whole table.
+async function adminSettings(request, env) {
+  requireAdmin(request, env)
+  const body = await readJson(request)
+  return json(await state(env, 'setSettings', { changes: body }))
+}
+
 function requireAdmin(request, env) {
   const secret = env.ADMIN_SECRET
   if (!secret) throw { status: 500, message: 'ADMIN_SECRET is not set' }
@@ -287,17 +282,9 @@ function requireAdmin(request, env) {
   if (given !== secret) throw { status: 401, message: 'unauthorized' }
 }
 
-// --- K5: the Kaggle backend record -------------------------------------------
-async function internalBackend(request, env) {
-  if (!env.GATEWAY_SECRET) throw { status: 500, message: 'GATEWAY_SECRET is not set' }
-  if (bearer(request) !== env.GATEWAY_SECRET) throw { status: 401, message: 'unauthorized' }
-  const body = await readJson(request)
-  return json(await state(env, 'reportBackend', body))
-}
-
 // --- plumbing -----------------------------------------------------------------
-// One Durable Object, near India, holds invites, budget, cache and the backend
-// record, so a decision costs one round trip (§37.6 K2, speed rules).
+// One Durable Object, near India, holds codes, devices, budget, settings and cache,
+// so a decision costs one round trip (§37.6 K2, speed rules).
 async function state(env, method, args) {
   if (!env.STATE) throw { status: 500, message: 'STATE binding is missing' }
   const stub = env.STATE.get(env.STATE.idFromName('global'), { locationHint: 'apac' })
@@ -350,7 +337,8 @@ function log(fields) {
 // The Durable Object. Its methods are the ones on State; the allow-list keeps a
 // stray request from reaching anything else on the class.
 const STATE_METHODS = new Set([
-  'auth', 'prepare', 'authPrepare', 'settle', 'saveSample', 'createInvites', 'redeem', 'revoke', 'reportBackend', 'status',
+  'auth', 'prepare', 'authPrepare', 'settle', 'saveSample', 'createInvites', 'redeem', 'revoke', 'status',
+  'setSettings',
 ])
 
 export class StateDO {

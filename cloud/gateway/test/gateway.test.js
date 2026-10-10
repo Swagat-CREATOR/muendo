@@ -3,15 +3,17 @@ import assert from 'node:assert'
 import * as g from '../src/gateway.js'
 
 const NOW = Date.UTC(2026, 9, 9, 12, 0, 0) // 9 Oct 2026, noon UTC
-const TUNNEL = 'https://glad-stone-tiger.trycloudflare.com'
-const kaggle = (over = {}) => ({ url: TUNNEL, p50_ms: 250, last_beat: NOW - 10_000, ...over })
+const S = g.DEFAULT_SETTINGS
+const CAP = S.total_cap
 
 function planWith(over = {}) {
   return g.plan({
-    kind: 'guard', now: NOW, cache: null, usage: { total: 0, tester: 0 },
-    backend: null, estNeurons: 7, ...over,
+    kind: 'guard', now: NOW, cache: null, usage: { total: 0, code: 0, device: 0 }, estNeurons: 7, ...over,
   })
 }
+
+// Usage with `share` of the day's cap already spent.
+const spent = (share) => ({ total: Math.round(share * CAP), code: 0, device: 0 })
 
 // --- §34.3 request contract ---------------------------------------------------
 
@@ -73,82 +75,112 @@ test('estimateNeurons follows §37.2: ceil(bytes/4) tokens at 8182 per million',
   assert.equal(g.estimateNeurons(3200), 7) // 800 tokens, the §34.3 budget
   assert.equal(g.estimateNeurons(0), 1) // never free: a reservation always moves the meter
   // §37.2 claims the 9,000-neuron cap covers roughly 1,500 decisions a day.
-  assert.ok(g.TOTAL_CAP / g.estimateNeurons(3200) > 1200)
+  assert.ok(CAP / g.estimateNeurons(3200) > 1200)
 })
 
-// --- §37.3 route order --------------------------------------------------------
+// --- the route: answer cache, then Workers AI, then rules ----------------------
 
-test('a tight kind calls Workers AI first, even with a fast Kaggle up', () => {
-  for (const kind of ['guard', 'voice']) {
-    const p = planWith({ kind, backend: kaggle() })
+test('every kind calls Workers AI when the budget is fine, and reserves what it needs', () => {
+  for (const kind of Object.keys(g.KINDS)) {
+    const p = planWith({ kind })
     assert.equal(p.route, 'workers_ai', kind)
-    assert.equal(p.reserve, 7)
+    assert.equal(p.reserve, 7, kind)
+    assert.equal(p.rules_only, false, kind)
   }
 })
 
-test('a loose kind calls Kaggle first, which saves free neurons', () => {
-  for (const kind of ['triage', 'receipt', 'showme']) {
-    const p = planWith({ kind, backend: kaggle({ p50_ms: 1200 }) })
-    assert.equal(p.route, 'kaggle', kind)
-    assert.equal(p.url, TUNNEL)
-    assert.equal(p.reserve, 0, 'a Kaggle call reserves no neurons')
+test('nothing in the plan points anywhere but the cache, Workers AI or the rules', () => {
+  const routes = new Set()
+  for (const kind of Object.keys(g.KINDS)) {
+    for (const share of [0, 0.5, 0.85, 0.96, 1]) {
+      routes.add(planWith({ kind, usage: spent(share) }).route)
+      routes.add(planWith({ kind, usage: spent(share), cache: { answers: {}, expires: NOW + 1 } }).route)
+    }
+  }
+  assert.deepEqual([...routes].sort(), ['cache', 'fallback', 'workers_ai'])
+})
+
+// --- budget priorities ---------------------------------------------------------
+
+test('under 20% left, receipts, triage and showme use rules only and voice uses keywords', () => {
+  const low = spent(0.85) // 15% left
+  for (const kind of ['receipt', 'triage', 'showme']) {
+    const p = planWith({ kind, usage: low })
+    assert.deepEqual([p.route, p.reason, p.reserve], ['fallback', 'budget_low_rules', 0], kind)
+  }
+  const voice = planWith({ kind: 'voice', usage: low })
+  assert.deepEqual([voice.route, voice.reason], ['fallback', 'budget_low_keywords'])
+})
+
+test('Guard keeps the model when the budget is low, until 95% of the day is used', () => {
+  assert.equal(planWith({ usage: spent(0.85) }).route, 'workers_ai', 'low but not out')
+  assert.equal(planWith({ usage: spent(0.94) }).route, 'workers_ai', 'just under 95%')
+  const out = planWith({ usage: { total: Math.ceil(0.95 * CAP) - 3, code: 0, device: 0 } }) // 3 left, 7 needed
+  assert.deepEqual([out.route, out.reason], ['fallback', 'total_cap'])
+  assert.equal(out.reserve, 0, 'a fallback spends nothing')
+})
+
+test('the edge of "low" is exactly 20% left', () => {
+  assert.equal(planWith({ kind: 'receipt', usage: spent(0.8) }).route, 'workers_ai', '20% left is not under 20%')
+  assert.equal(planWith({ kind: 'receipt', usage: { total: 0.8 * CAP + 1, code: 0, device: 0 } }).route, 'fallback')
+})
+
+test('rules_only is on every plan from 95% used, so the dock can say Rules only mode', () => {
+  assert.equal(planWith({ usage: spent(0.94) }).rules_only, false)
+  for (const kind of Object.keys(g.KINDS)) {
+    const p = planWith({ kind, usage: spent(0.95) })
+    assert.deepEqual([p.route, p.rules_only], ['fallback', true], kind)
+  }
+  const cached = planWith({ usage: spent(0.97), cache: { answers: {}, expires: NOW + 1 } })
+  assert.deepEqual([cached.route, cached.rules_only], ['cache', true], 'a cached answer still says the day is out')
+})
+
+test('the priorities follow the settings table', () => {
+  const settings = { ...S, low_budget_share: 0.5, guard_until_used: 0.6 }
+  assert.equal(g.plan({ kind: 'receipt', now: NOW, usage: spent(0.55), estNeurons: 7, settings }).route, 'fallback')
+  assert.equal(g.plan({ kind: 'guard', now: NOW, usage: spent(0.55), estNeurons: 7, settings }).route, 'workers_ai')
+  assert.equal(g.plan({ kind: 'guard', now: NOW, usage: spent(0.65), estNeurons: 7, settings }).route, 'fallback')
+})
+
+// --- per device and per judge code ---------------------------------------------
+
+test('a device at its cap falls back while its code and the day are fine', () => {
+  const p = planWith({ usage: { total: 100, code: 100, device: S.device_cap - 3 } })
+  assert.deepEqual([p.route, p.reason], ['fallback', 'device_cap'])
+})
+
+test('a judge code at its cap stops all of its devices', () => {
+  const p = planWith({ usage: { total: 100, code: S.code_cap - 3, device: 0 } })
+  assert.deepEqual([p.route, p.reason], ['fallback', 'code_cap'])
+})
+
+test('one device or code at its cap does not stop another', () => {
+  assert.equal(planWith({ usage: { total: S.device_cap, code: 0, device: 0 } }).route, 'workers_ai')
+})
+
+// --- the settings table ---------------------------------------------------------
+
+test('validateSettings merges over the defaults and refuses nonsense', () => {
+  assert.deepEqual(g.validateSettings({}), S)
+  assert.equal(g.validateSettings({ device_cap: 1500 }).device_cap, 1500)
+  for (const bad of [
+    { nope: 1 }, { device_cap: -1 }, { device_cap: 1.5 }, { low_budget_share: 2 }, { guard_until_used: 'x' },
+    { devices_per_code: 0 }, { max_codes: 0 },
+  ]) {
+    assert.throws(() => g.validateSettings(bad), (e) => e.status === 400, JSON.stringify(bad))
   }
 })
 
-test('a loose kind falls back to Workers AI when Kaggle is down', () => {
-  const p = planWith({ kind: 'receipt', backend: null })
-  assert.equal(p.route, 'workers_ai')
-})
-
-test('a tight deadline refuses a Kaggle whose measured median does not fit', () => {
-  const slow = planWith({ kind: 'guard', backend: kaggle({ p50_ms: 1200 }), usage: { total: g.TOTAL_CAP, tester: 0 } })
-  assert.equal(slow.route, 'fallback')
-  assert.match(slow.reason, /kaggle_too_slow/)
-  const fast = planWith({ kind: 'guard', backend: kaggle({ p50_ms: 250 }), usage: { total: g.TOTAL_CAP, tester: 0 } })
-  assert.equal(fast.route, 'kaggle')
-})
-
-test('Kaggle is dropped once its heartbeat is over 180 s old (§37.4)', () => {
-  const fresh = planWith({ kind: 'receipt', backend: kaggle({ last_beat: NOW - (g.BACKEND_STALE_MS - 1000) }) })
-  assert.equal(fresh.route, 'kaggle')
-  const stale = planWith({ kind: 'receipt', backend: kaggle({ last_beat: NOW - (g.BACKEND_STALE_MS + 1000) }) })
-  assert.equal(stale.route, 'workers_ai')
-  const staleAndBroke = planWith({
-    kind: 'receipt', backend: kaggle({ last_beat: NOW - (g.BACKEND_STALE_MS + 1000) }),
-    usage: { total: g.TOTAL_CAP, tester: 0 },
-  })
-  assert.equal(staleAndBroke.route, 'fallback')
-  assert.match(staleAndBroke.reason, /kaggle_down/)
-})
-
-// --- §37.2 caps ---------------------------------------------------------------
-
-test('the 9,000-neuron total cap sends guard calls to Kaggle, then to rules', () => {
-  const usage = { total: g.TOTAL_CAP - 3, tester: 0 } // 3 left, 7 needed
-  assert.equal(planWith({ usage, backend: kaggle() }).route, 'kaggle')
-  const rules = planWith({ usage, backend: null })
-  assert.equal(rules.route, 'fallback')
-  assert.equal(rules.reason, 'total_cap+kaggle_down')
-  assert.equal(rules.reserve, 0, 'a fallback spends nothing')
-})
-
-test('a tester over the 1,200-neuron soft cap goes to Kaggle, then to rules', () => {
-  const usage = { total: 10, tester: g.TESTER_CAP - 3 }
-  assert.equal(planWith({ usage, backend: kaggle() }).route, 'kaggle')
-  const rules = planWith({ usage, backend: null })
-  assert.equal(rules.route, 'fallback')
-  assert.equal(rules.reason, 'tester_cap+kaggle_down')
-})
-
-test('one tester at the cap does not stop another tester', () => {
-  assert.equal(planWith({ usage: { total: 1200, tester: 0 } }).route, 'workers_ai')
+test('the day resets at the next 00:00 UTC', () => {
+  assert.equal(new Date(g.resetAt(NOW)).toISOString(), '2026-10-10T00:00:00.000Z')
+  assert.equal(new Date(g.resetAt(Date.UTC(2026, 11, 31, 23, 59))).toISOString(), '2027-01-01T00:00:00.000Z')
 })
 
 // --- §34.8 cache and deadlines ------------------------------------------------
 
-test('a live cache entry wins over every backend and spends nothing', () => {
+test('a live cache entry wins over the model and the budget, and spends nothing', () => {
   const answers = { in_scope: { p_yes: 0.9 } }
-  const p = planWith({ cache: { answers, expires: NOW + 1 }, backend: kaggle() })
+  const p = planWith({ kind: 'receipt', cache: { answers, expires: NOW + 1 }, usage: spent(0.9) })
   assert.equal(p.route, 'cache')
   assert.deepEqual(p.answers, answers)
   assert.equal(p.reserve, 0)
@@ -167,7 +199,8 @@ test('the deadline header can tighten a kind\'s deadline but never extend it', (
 test('an unknown kind is treated as the tightest one, never the loosest', () => {
   assert.equal(g.kindOf('nonsense'), 'guard')
   assert.equal(g.kindOf(null), 'guard')
-  assert.equal(planWith({ kind: 'nonsense', backend: kaggle({ p50_ms: 1200 }) }).route, 'workers_ai')
+  // Low budget: an unknown kind keeps the model like Guard does, rather than being dropped like a receipt.
+  assert.equal(planWith({ kind: 'nonsense', usage: spent(0.9) }).route, 'workers_ai')
 })
 
 // --- §34.9 R6 answer shape ----------------------------------------------------
@@ -238,16 +271,7 @@ test('a missing or unparsable answer is a fallback, not a guess', () => {
   assert.equal(g.parseClefAnswers([QUESTIONS[0]], { in_scope: { p_yes: 'maybe' } }).ok, false)
 })
 
-// --- K5 backend report, tokens and codes --------------------------------------
-
-test('validateBackendReport takes an https tunnel and refuses anything else', () => {
-  const ok = g.validateBackendReport({ url: `${TUNNEL}/`, p50_ms: 812.6 })
-  assert.equal(ok.url, TUNNEL)
-  assert.equal(ok.p50_ms, 813)
-  for (const body of [null, {}, { url: 'http://x.trycloudflare.com', p50_ms: 1 }, { url: 'not a url', p50_ms: 1 }, { url: TUNNEL, p50_ms: -1 }, { url: TUNNEL }]) {
-    assert.throws(() => g.validateBackendReport(body), (e) => e.status === 400, JSON.stringify(body))
-  }
-})
+// --- tokens and codes ---------------------------------------------------------
 
 test('an invite code has no characters a tester could mistype', () => {
   const code = g.newInviteCode(new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]))

@@ -54,6 +54,34 @@ pub enum ClefError {
     Unavailable(String),
     /// A response we could not read. One raw sample is kept for fixing the parser (§34.9 R6).
     Shape(Fallback),
+    /// The gateway fell back and says today's model budget is out (`rules_only`): the rules decide, and the
+    /// dock shows "Rules only mode" until a model answer comes back.
+    RulesOnly(String),
+}
+
+/// Reads a `POST /v1/decide` reply from the gateway (cloud/gateway): the answers, or why there are none.
+/// `{"fallback": true, "reason": …, "rules_only": true}` is the day's budget running out; any other fallback
+/// (a device or code cap, a low-budget priority, a model error) is `Unavailable` with the gateway's reason,
+/// which a voice caller reads as "use keyword matching" when it is `budget_low_keywords`.
+pub fn read_reply(
+    questions: &[Question],
+    body: &Value,
+) -> Result<(Backend, BTreeMap<String, Answer>), ClefError> {
+    let reason = body["reason"].as_str().unwrap_or("fallback").to_string();
+    if body["fallback"].as_bool() == Some(true) {
+        return Err(if body["rules_only"].as_bool() == Some(true) {
+            ClefError::RulesOnly(reason)
+        } else {
+            ClefError::Unavailable(reason)
+        });
+    }
+    let backend = match body["backend"].as_str() {
+        Some("cache") => Backend::Cache,
+        _ => Backend::WorkersAi,
+    };
+    parse_answers(questions, &body["answers"])
+        .map(|answers| (backend, answers))
+        .map_err(ClefError::Shape)
 }
 
 /// The model transport. Blocking on purpose: the hook that calls it is already blocked waiting for an

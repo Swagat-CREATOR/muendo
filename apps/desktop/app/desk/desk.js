@@ -20,7 +20,7 @@ const { decide, deliver, chipLabels } = require('./routing');
 // onAgents(agents): the dock and the layout follow the agent count (§33.1).
 function createDesk({
   client, ui, focus, log, cards = createCards(),
-  commands = () => {}, problem = () => {}, onAgents = () => {},
+  commands = () => {}, problem = () => {}, onAgents = () => {}, onBudget = () => {},
 } = {}) {
   const agents = new Map(); // agent_id -> the last agent.status for it
   const lanes = new Map(); // lane_id -> agent_id, for Part H's first delivery row
@@ -268,6 +268,8 @@ function createDesk({
         client.on('inbox.release', onRelease),
         client.on('inbox.expired', onRelease),
         client.on('inbox.undo', onUndo),
+        // The gateway's day budget: the dock says "Rules only mode" while the model can't be reached (§37.2).
+        client.on('budget.state', (event) => onBudget(event.body?.rules_only === true)),
         client.on('agent.status', onAgentStatus),
         client.on('route.result', onRoute),
       ];

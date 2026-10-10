@@ -78,14 +78,13 @@ Each Worker's tests run on plain `node --test` and import only Node builtins and
 install and no wrangler; `wrangler` is only for `dev`, `deploy` and `tail`. Nothing in `cloud/` has been deployed,
 so no resolved wrangler version has ever actually run against Cloudflare.
 
-## Python and Kaggle
+## Python
 
-Nothing is pinned, because there is no notebook yet. `notebooks/` holds `README.md` ("Nothing here yet") and
-`evalset/guard20.json`, a hand-written set of 20 Guard cases for the Kaggle backend's smoke test; the file itself
-records that its expected answers are human expectations, not recorded model answers. There is no `.ipynb` and no
-`.py` in the repository's own files (outside installed `node_modules/`), and no `requirements.txt`,
-`pyproject.toml` or `environment.yml`. Spec §32.5 rule 4 asks for the notebook's default Python and a pinned
-`requirements.txt`; neither has been written. The Python that checks `.github/workflows/ci.yml` parses
+Nothing is pinned, because there is no notebook. `notebooks/` holds `README.md` and `evalset/guard20.json`, a
+hand-written set of 20 Guard cases; the file itself records that its expected answers are human expectations, not
+recorded model answers. The Kaggle server notebook was removed on 10 Oct 2026 (the gateway uses Workers AI only).
+There is no `.ipynb` and no `.py` in the repository's own files (outside installed `node_modules/`), and no
+`requirements.txt`, `pyproject.toml` or `environment.yml`. The Python that checks `.github/workflows/ci.yml` parses
 (`python3 -c "import yaml, ..."`) is whatever the machine running it has, and is not pinned either.
 
 ## GitHub Actions

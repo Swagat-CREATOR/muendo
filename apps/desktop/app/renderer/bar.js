@@ -60,6 +60,7 @@ function render() {
   renderAsk();
   renderChips();
   renderPanel();
+  $('rules-only').hidden = !state.rulesOnly;
   $('mic').disabled = !state.voice;
   $('mic').setAttribute('aria-label', state.voice ? 'Hold to talk' : 'Voice commands need Windows');
   if (state.shortcuts) {

@@ -16,7 +16,7 @@ binding = "AI"
 DECIDE_MODEL = "@cf/cloudflare/clef-flash"
 
 # One Durable Object for invites, tokens, the daily neuron budget, the 5-minute
-# answer cache and the Kaggle backend record (§37.6 K2). Free plan: SQLite class.
+# answer cache and the budget settings table (§37.6 K2). Free plan: SQLite class.
 [[durable_objects.bindings]]
 name = "STATE"
 class_name = "StateDO"
@@ -37,4 +37,3 @@ new_sqlite_classes = ["HubDO"]
 
 # Secrets (NOT stored here):
 #   wrangler secret put ADMIN_SECRET      mints and revokes invites
-#   wrangler secret put GATEWAY_SECRET    shared with the Kaggle notebook (§37.4)

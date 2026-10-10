@@ -5,10 +5,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert'
 import worker from '../src/index.js'
-import { fakeEnv, fakeCtx, ADMIN_SECRET, GATEWAY_SECRET } from './fake-do.js'
+import { fakeEnv, fakeCtx, ADMIN_SECRET } from './fake-do.js'
 import * as g from '../src/gateway.js'
 
-const TUNNEL = 'https://glad-stone-tiger.trycloudflare.com'
 
 // The §34.3 guard request, cut to the questions §34.4 branches on.
 const GUARD_BODY = {
@@ -58,7 +57,7 @@ async function withTester(env, ctx, name = 'Priya') {
   assert.equal(mint.status, 200, JSON.stringify(mint.body))
   const redeemed = await call(env, ctx, 'POST', '/invite/redeem', { body: { code: mint.body.codes[0], name } })
   assert.equal(redeemed.status, 200, JSON.stringify(redeemed.body))
-  return { token: redeemed.body.token, tester: redeemed.body.tester }
+  return { token: redeemed.body.token, tester: redeemed.body.tester, device: redeemed.body.device }
 }
 
 const decide = (env, ctx, token, over = {}) => call(env, ctx, 'POST', '/v1/decide', {
@@ -145,7 +144,7 @@ test('a model error becomes a fallback and gives the neurons back', async () => 
   await ctx.settled()
   const usage = env.storage.map.get(`usage:${g.utcDay(Date.now())}`)
   assert.equal(usage.total, 0)
-  assert.equal(usage.testers[tester], 0)
+  assert.equal(usage.codes[tester], 0)
   assert.equal(env.storage.map.has('cache:sig-d'), false)
 })
 
@@ -175,49 +174,70 @@ test('a deadline the model misses becomes a fallback', async () => {
   assert.equal(body.reason, 'workers_ai_error')
 })
 
-test('a loose kind is served by the registered Kaggle tunnel', async (t) => {
-  const env = fakeEnv({ ai: () => { throw new Error('Workers AI must not be asked for a loose call') } })
+test('receipts, triage and showme go to Workers AI too: there is no other backend', async () => {
+  for (const kind of ['receipt', 'triage', 'showme', 'voice']) {
+    const env = fakeEnv({ ai: asTextModel })
+    const ctx = fakeCtx()
+    const { token } = await withTester(env, ctx)
+    const { body } = await decide(env, ctx, token, { headers: { 'x-mewndo-kind': kind, 'x-mewndo-sig': `k-${kind}` } })
+    assert.equal(body.backend, 'workers_ai', kind)
+    assert.equal(env.calls.length, 1, kind)
+  }
+})
+
+test('the Kaggle routes are gone', async () => {
+  const env = fakeEnv()
+  const ctx = fakeCtx()
+  const res = await call(env, ctx, 'POST', '/internal/backend', { body: { url: 'https://x.trycloudflare.com', p50_ms: 1 } })
+  assert.equal(res.status, 404)
+})
+
+test('with the day nearly spent, a receipt gets rules only and a guard still gets the model', async () => {
+  const env = fakeEnv({ ai: asTextModel })
   const ctx = fakeCtx()
   const { token } = await withTester(env, ctx)
-  const registered = await call(env, ctx, 'POST', '/internal/backend', {
-    headers: { authorization: `Bearer ${GATEWAY_SECRET}` }, body: { url: TUNNEL, p50_ms: 900 },
-  })
-  assert.equal(registered.status, 200)
+  const day = g.utcDay(Date.now())
+  await env.storage.put({ [`usage:${day}`]: { day, total: Math.round(0.9 * g.DEFAULT_SETTINGS.total_cap), codes: {}, devices: {} } })
+  const receipt = await decide(env, ctx, token, { headers: { 'x-mewndo-kind': 'receipt', 'x-mewndo-sig': 'r1' } })
+  assert.deepEqual([receipt.body.fallback, receipt.body.reason, receipt.body.rules_only], [true, 'budget_low_rules', false])
+  const voice = await decide(env, ctx, token, { headers: { 'x-mewndo-kind': 'voice', 'x-mewndo-sig': 'v1' } })
+  assert.equal(voice.body.reason, 'budget_low_keywords', 'the device falls back to keyword matching')
+  const guard = await decide(env, ctx, token, { headers: { 'x-mewndo-kind': 'guard', 'x-mewndo-sig': 'g1' } })
+  assert.deepEqual([guard.body.backend, guard.body.rules_only], ['workers_ai', false])
+  assert.equal(env.calls.length, 1, 'only the guard reached the model')
+})
 
-  const seen = []
-  const real = globalThis.fetch
-  globalThis.fetch = async (url, init) => {
-    seen.push({ url: String(url), init })
-    return new Response(JSON.stringify({ answers: ANSWERS }), { headers: { 'content-type': 'application/json' } })
-  }
-  t.after(() => { globalThis.fetch = real })
-
-  const { body } = await decide(env, ctx, token, { headers: { 'x-mewndo-kind': 'receipt', 'x-mewndo-sig': 'sig-g' } })
-  assert.equal(body.backend, 'kaggle')
-  assert.equal(body.answers.verdict.choice, 'deny')
-  assert.equal(seen[0].url, `${TUNNEL}/v1/systemone`)
-  assert.equal(seen[0].init.headers.authorization, `Bearer ${GATEWAY_SECRET}`)
+test('past 95% every answer says rules_only, which the dock shows as Rules only mode', async () => {
+  const env = fakeEnv({ ai: asTextModel })
+  const ctx = fakeCtx()
+  const { token } = await withTester(env, ctx)
+  const day = g.utcDay(Date.now())
+  await env.storage.put({ [`usage:${day}`]: { day, total: g.DEFAULT_SETTINGS.total_cap, codes: {}, devices: {} } })
+  const { body } = await decide(env, ctx, token, { headers: { 'x-mewndo-kind': 'guard', 'x-mewndo-sig': 'g2' } })
+  assert.deepEqual([body.fallback, body.reason, body.rules_only], [true, 'total_cap', true])
   assert.equal(env.calls.length, 0)
 })
 
-test('/internal/backend needs the gateway secret, and /admin/status then shows Kaggle', async () => {
-  const env = fakeEnv()
+test('/admin/status shows the remaining budget and the reset time; /admin/settings changes the table', async () => {
+  const env = fakeEnv({ ai: asTextModel })
   const ctx = fakeCtx()
-  assert.equal((await call(env, ctx, 'POST', '/internal/backend', { body: { url: TUNNEL, p50_ms: 1 } })).status, 401)
-  assert.equal((await call(env, ctx, 'POST', '/internal/backend', {
-    headers: { authorization: 'Bearer wrong' }, body: { url: TUNNEL, p50_ms: 1 },
-  })).status, 401)
-  assert.equal((await call(env, ctx, 'POST', '/internal/backend', {
-    headers: { authorization: `Bearer ${GATEWAY_SECRET}` }, body: { url: 'http://insecure', p50_ms: 1 },
-  })).status, 400)
+  const { token } = await withTester(env, ctx)
+  await decide(env, ctx, token, { headers: { 'x-mewndo-sig': 's1' } })
+  const admin = { 'x-admin-secret': ADMIN_SECRET }
+  const status = await call(env, ctx, 'GET', '/admin/status', { headers: admin })
+  const b = status.body.budget
+  assert.equal(b.total_cap, g.DEFAULT_SETTINGS.total_cap)
+  assert.equal(b.remaining, b.total_cap - b.used)
+  assert.ok(b.used > 0)
+  assert.match(b.resets_at, /T00:00:00\.000Z$/)
+  assert.ok(b.resets_in_minutes > 0 && b.resets_in_minutes <= 24 * 60)
 
-  await call(env, ctx, 'POST', '/internal/backend', {
-    headers: { authorization: `Bearer ${GATEWAY_SECRET}` }, body: { url: TUNNEL, p50_ms: 870 },
-  })
-  const status = await call(env, ctx, 'GET', '/admin/status', { headers: { 'x-admin-secret': ADMIN_SECRET } })
-  assert.equal(status.body.kaggle.alive, true)
-  assert.equal(status.body.kaggle.p50_ms, 870)
-  assert.equal(status.body.neurons.total_cap, g.TOTAL_CAP)
+  assert.equal((await call(env, ctx, 'POST', '/admin/settings', { body: { device_cap: 1 } })).status, 401)
+  const changed = await call(env, ctx, 'POST', '/admin/settings', { headers: admin, body: { device_cap: 1, code_cap: 50 } })
+  assert.deepEqual([changed.body.device_cap, changed.body.code_cap], [1, 50])
+  assert.equal((await call(env, ctx, 'POST', '/admin/settings', { headers: admin, body: { nope: 1 } })).status, 400)
+  const capped = await decide(env, ctx, token, { headers: { 'x-mewndo-sig': 's2' } })
+  assert.deepEqual([capped.body.fallback, capped.body.reason], [true, 'device_cap'])
 })
 
 test('a malformed or oversized body is refused before any model call', async () => {
@@ -245,14 +265,14 @@ test('without a signature header the gateway hashes the request, so repeats stil
   assert.equal((await decide(env, ctx, token, { body: other })).body.backend, 'workers_ai')
 })
 
-test('one tester cannot spend another tester\'s share', async () => {
+test('one judge code cannot spend another code\'s share', async () => {
   const env = fakeEnv({ ai: asTextModel })
   const ctx = fakeCtx()
   const a = await withTester(env, ctx, 'Priya')
   const b = await withTester(env, ctx, 'Sam')
-  await env.storage.put({
-    [`usage:${g.utcDay(Date.now())}`]: { total: g.TESTER_CAP, testers: { [a.tester]: g.TESTER_CAP } },
-  })
+  const day = g.utcDay(Date.now())
+  const cap = g.DEFAULT_SETTINGS.code_cap
+  await env.storage.put({ [`usage:${day}`]: { day, total: cap, codes: { [a.tester]: cap }, devices: {} } })
   assert.equal((await decide(env, ctx, a.token, { headers: { 'x-mewndo-sig': 'x1' } })).body.fallback, true)
   assert.equal((await decide(env, ctx, b.token, { headers: { 'x-mewndo-sig': 'x2' } })).body.backend, 'workers_ai')
 })
@@ -273,7 +293,7 @@ test('a model that answered in an unknown shape or past the deadline keeps its n
     await ctx.settled()
     const usage = env.storage.map.get(`usage:${g.utcDay(Date.now())}`)
     assert.ok(usage.total > 0, `${body.reason}: neurons stay counted`)
-    assert.equal(usage.testers[tester], usage.total)
+    assert.equal(usage.codes[tester], usage.total)
   }
 })
 

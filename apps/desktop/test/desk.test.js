@@ -482,3 +482,12 @@ test("the core's inbox.undo goes to main's confirmation with the save point; one
   client.emit('inbox.undo', { card_id: 'c2', savepoint_id: null });
   assert.ok(problems.some((p) => /no save point/.test(p)), JSON.stringify(problems));
 });
+
+test("the core's budget.state reaches the dock as Rules only mode, on and off", () => {
+  const seen = [];
+  const { client } = makeDesk({ desk: { onBudget: (on) => seen.push(on) } });
+  client.emit('budget.state', { rules_only: true });
+  client.emit('budget.state', { rules_only: false });
+  client.emit('budget.state', {});
+  assert.deepStrictEqual(seen, [true, false, false]);
+});

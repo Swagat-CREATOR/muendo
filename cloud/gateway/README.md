@@ -1,19 +1,19 @@
 # mewndo-cloud (gateway)
 
-Mewndo's decision gateway for the public demo (spec §37). Up to 7 testers send
-one System One request per risky agent step; the gateway answers from cache,
-Workers AI or the Kaggle backend, or says `{"fallback":true}` so the device's own
-rules decide (§34.8). No tester's PC holds a Cloudflare key.
+Mewndo's decision gateway for the public demo (spec §37). Judges send one System
+One request per risky agent step; the gateway answers from its cache or Workers
+AI, or says `{"fallback":true}` so the device's own rules decide (§34.8). No
+judge's PC holds a Cloudflare key. There is no Kaggle backend any more.
 
 | Route | Auth | Does |
 |---|---|---|
 | `GET /health` | none | liveness; what the core pre-connects to (§34.9 R6) |
-| `POST /v1/decide` | `Bearer <invite token>` | one decision (§34.3 in, §34.9 R6 out) |
-| `POST /invite/redeem` | none | `{code}` → a bearer token (§37.5) |
-| `POST /admin/invites` | `x-admin-secret` | mint up to 7 codes |
-| `POST /admin/revoke` | `x-admin-secret` | revoke a token |
-| `GET /admin/status` | `x-admin-secret` | usage per tester, Kaggle state, latency medians |
-| `POST /internal/backend` | `Bearer <GATEWAY_SECRET>` | Kaggle register and heartbeat (§37.4) |
+| `POST /v1/decide` | `Bearer <device token>` | one decision (§34.3 in, §34.9 R6 out) |
+| `POST /invite/redeem` | none | `{code}` → a token for one more device on that judge code (§37.5) |
+| `POST /admin/invites` | `x-admin-secret` | mint judge codes, up to `max_codes` |
+| `POST /admin/revoke` | `x-admin-secret` | revoke one device's token |
+| `GET /admin/status` | `x-admin-secret` | today's used and remaining budget, the reset time, the settings, usage per code and device |
+| `POST /admin/settings` | `x-admin-secret` | change the settings table, e.g. `{"device_cap": 1500}` |
 | `POST /mcp` | `Bearer <invite token>` or `?token=` | hosted MCP for cloud agents (§37.6 K6) |
 | `GET /hub` | `Bearer <invite token>` or `?token=` | the desktop's WebSocket link (§37.6 K7) |
 
@@ -22,15 +22,31 @@ Request headers on `/v1/decide`: `x-mewndo-kind` (`guard`, `voice`, `triage`,
 and `x-mewndo-deadline-ms`. An unknown kind is treated as `guard`, and the
 deadline header can only tighten the kind's own deadline, never extend it.
 
-**Route order** (§37.3): `guard` and `voice` go cache → Workers AI → Kaggle (only
-if its measured median fits the deadline) → fallback. `triage`, `receipt` and
-`showme` go cache → Kaggle → Workers AI → fallback, which saves free neurons for
-the calls an agent is actually waiting on.
+**Route** for every kind: answer cache → Workers AI → fallback (the device's rules).
 
-**Budget** (§37.2): the free plan gives 10,000 neurons a day, reset 00:00 UTC.
-The gateway stops using Workers AI at 9,000 and gives each tester 1,200. A call
-is estimated at `ceil(bytes/4)` tokens × 8,182 per million, reserved before the
-call and corrected after if the backend reports its real use.
+**Budget** (§37.2): the free plan gives 10,000 neurons a day, reset 00:00 UTC. A
+call is estimated at `ceil(bytes/4)` tokens × 8,182 per million, reserved before
+the call and corrected after if the model reports its real use. Every number is
+in one settings table (`DEFAULT_SETTINGS` in `src/gateway.js`, overrides stored in
+`StateDO` through `POST /admin/settings`):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `total_cap` | 9,000 | the day's budget, short of the 10,000 hard stop |
+| `device_cap` | 1,200 | per device per day |
+| `code_cap` | 2,400 | per judge code, across all its devices, per day |
+| `devices_per_code` | 3 | how many devices one judge code can be redeemed on |
+| `max_codes` | 7 | how many judge codes may exist |
+| `low_budget_share` | 0.2 | under this share of `total_cap` left, the priorities below start |
+| `guard_until_used` | 0.95 | Guard keeps the model until this share is used |
+
+**Priorities when the day runs low.** With under 20% left, `receipt`, `triage`
+and `showme` answer `{"fallback":true,"reason":"budget_low_rules"}` (rules only)
+and `voice` answers `reason: "budget_low_keywords"` (the device's keyword
+matching). Guard keeps the model until 95% is used; past that every call falls
+back with `reason: "total_cap"`. Every `/v1/decide` answer carries
+`"rules_only": true|false`, and the desktop shows "Rules only mode" on the dock
+while it is true.
 
 ## Hosted MCP and hub (K6, K7)
 
@@ -61,14 +77,13 @@ why the query string is accepted.
 cd cloud/gateway
 npm install
 npx wrangler login
-npx wrangler secret put ADMIN_SECRET        # long random; mints and revokes invites
-npx wrangler secret put GATEWAY_SECRET      # long random; shared with the Kaggle notebook
+npx wrangler secret put ADMIN_SECRET        # long random; mints codes, revokes devices, changes settings
 npx wrangler deploy                         # prints the Worker URL
 curl -s -X POST https://<worker>/admin/invites -H "x-admin-secret: $ADMIN_SECRET"
 ```
 
 Give the Worker URL to the core's Router client (§34.9 R6) and a code to each
-tester. `GET /admin/status` shows where the day's neurons went.
+judge. `GET /admin/status` shows where the day's neurons went and when they reset.
 
 ## Local tests (no account needed)
 
@@ -76,10 +91,10 @@ tester. `GET /admin/status` shows where the day's neurons went.
 cd cloud/gateway && npm test      # or npm run test:cloud from the repo root
 ```
 
-58 tests: the §34.3 request contract, the neuron estimate, every §37.3 route and
-§37.2 cap, the 5-minute cache, the 180-second Kaggle staleness rule, invites and
-revocation, and the whole Worker driven through `/v1/decide` with the runtime
-faked (`test/fake-do.js`).
+The §34.3 request contract, the neuron estimate, the route, the budget
+priorities, the device and code caps, the settings table, the 5-minute cache,
+judge codes with several devices and revocation, and the whole Worker driven
+through `/v1/decide` with the runtime faked (`test/fake-do.js`).
 
 ## Honest limits
 
@@ -92,14 +107,11 @@ faked (`test/fake-do.js`).
   and one raw sample is kept (`/admin/status` → `unknown_answer_sample`) to fix
   the parser against something real. Correcting that one function is the whole
   change once the schema is known.
-- **One backend attempt per request.** §37.6 K4.2 asks for one `StateDO` round
-  trip, so the route is chosen once. If the chosen backend then fails, the answer
-  is `fallback` rather than a second attempt that would blow the deadline. A
-  backend that stays down is routed around on the next call: a stopped notebook
-  drops out after 180 s without a heartbeat.
+- **One model attempt per request.** If Workers AI fails, the answer is
+  `fallback` rather than a retry that would blow the deadline.
 - **The deadline stops the waiting, not the call.** Whether `env.AI.run` accepts
   an `AbortSignal` is unverified, so a slow model call is abandoned by the Worker
-  but may keep running. `fetch` to Kaggle is aborted properly.
+  but may keep running, and its neurons stay counted.
 - **No neuron count from Workers AI.** The reservation is an estimate; re-measure
   on a real account before trusting `/admin/status`.
 - **The hub's WebSocket is untested over a real socket.** The tests drive `HubDO`
@@ -122,8 +134,8 @@ faked (`test/fake-do.js`).
   constraint §37.6 names is "nothing in Workers KV", which this satisfies. The
   key-value API is faked in 25 lines, so every budget, cache and invite path is
   covered by `node --test` without a Workers runtime; the SQL API is not.
-  §37.6 K2's five tables map to key prefixes `invite:`, `token:`, `usage:`,
-  `cache:` and `backend:`.
+  §37.6 K2's tables map to key prefixes `invite:`, `token:`, `usage:` and
+  `cache:`, plus one `settings` key.
 - **The MCP is hand-rolled JSON-RPC, not the Agents SDK `McpAgent`.** `McpAgent`
   plus `@modelcontextprotocol/sdk` plus `zod` is three dependencies and cannot run
   under plain `node --test`; `src/mcp.js` is about 90 lines for the three methods a

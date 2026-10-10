@@ -126,11 +126,14 @@ Started on that date, and nothing in the app calls any of it yet:
   receipt, and the check that an agent's summary matches what it really did does not run anywhere a user can see.
 - **The Clef Router** (`core/crates/mewndo-router`, spec §34): being written as this was read, and its own tests
   were not all passing at the time. Guard decisions are still made by the rules in `core/src/policy.rs`.
-- **The Kaggle decision backend** (`notebooks/clef-kaggle-server.ipynb`, spec §37.4): written and never run. No
-  Kaggle session, no GPU, and the way clef-flash is loaded and scored is explicitly unverified.
+- **The decision gateway's day budget** (`cloud/gateway`, spec §37.2): when the free Workers AI neurons run low,
+  Receipts and triage use rules only and voice routing uses keyword matching; past 95% even Guard does, and the
+  dock says "Rules only mode". The gateway is not deployed, so this has only run in tests.
 - **A standalone ledger verifier** (`tools/ledger-verify`, spec §30.2): see the Flight Recorder note below.
 
-Not built at all: the Agent Inbox and side dock, guarded computer use and Show Me (spec §33, §36). Whoever lands
+The Agent Inbox (spec §33) is built and was checked in the real app on Windows with a Claude-format permission
+request: a card, answered with the Inbox key, the answer back to the hook, focus back to the user's app. No live
+Claude Code or Codex session has driven it yet. Not built at all: guarded computer use and Show Me (spec §36). Whoever lands
 one of these owns the matching change to this page: spec §31.7 makes keeping it level with §28.10 part of the
 work, and nothing may be claimed here that isn't measured.
 

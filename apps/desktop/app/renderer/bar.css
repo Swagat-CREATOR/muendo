@@ -115,3 +115,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 .foot { margin: 8px 4px 0; color: #777; font-size: 11px; }
 .empty { color: #8f8f8f; padding: 14px 8px; }
 @media (prefers-reduced-motion: reduce) { .box, .state.Working::before, .bubble.active, .wave i { animation: none; } }
+
+/* The gateway's day budget is out: rules only until midnight UTC (§37.2). Small, not an alarm. */
+.rules-only { font-size: 11px; line-height: 1; padding: 3px 6px; margin: 0 4px; border-radius: 999px;
+  color: #f5b14c; border: 1px solid rgba(245, 177, 76, 0.45); white-space: nowrap; }

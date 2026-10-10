@@ -1,9 +1,9 @@
 // R13: Inbox triage (spec §34.5, §34.9 R13). A notification or a permission request arrives; this decides
 // whether it needs the user and how urgent it is, so the Inbox can order its cards.
 //
-// One `noul` and one `score`, sent as kind `triage`, which the gateway routes to Kaggle first (§37.3):
-// nobody is blocked waiting for it, so it should not spend free Workers AI neurons. Deadline 1.5 s; past it
-// the message is "shown as a normal card" (§34.5), which is what the fallback below produces.
+// One `noul` and one `score`, sent as kind `triage`. Nobody is blocked waiting for it, so when the day's
+// neurons run low the gateway answers it with rules only and keeps the model for Guard. Deadline 1.5 s; past
+// it the message is "shown as a normal card" (§34.5), which is what the fallback below produces.
 
 use crate::answers::{Answers, Question};
 use crate::{Backend, CallKind};

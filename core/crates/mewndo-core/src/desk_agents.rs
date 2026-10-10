@@ -17,8 +17,8 @@ use crate::log::Log;
 use crate::writer::Writer;
 use mewndo_inbox::{CardWriter, Config, Event, HabitRecorder, Inbox};
 use mewndo_proto::{
-    AgentStatus, Body, Envelope, Frame, HookRequest, HookResponse, InboxAnswer, InboxExpired,
-    InboxUndo, ReceiptResult, RouteResult, SpanCreated,
+    AgentStatus, Body, BudgetState, Envelope, Frame, HookRequest, HookResponse, InboxAnswer,
+    InboxExpired, InboxUndo, ReceiptResult, RouteResult, SpanCreated,
 };
 use mewndo_router::Router;
 use mewndo_router::voice::{LiveAgent, RouteChoice};
@@ -96,6 +96,9 @@ impl HabitRecorder for SharedHabits {
 }
 
 pub struct Agents {
+    publisher: Publisher,
+    /// What the apps were last told about the day's model budget (`budget.state`).
+    rules_only: std::sync::atomic::AtomicBool,
     inbox: Inbox,
     router: Arc<Router>,
     engine: Arc<V0Engine>,
@@ -115,7 +118,22 @@ impl Agents {
     ) -> Agents {
         // Built-in rules and no model yet: every agent starts in shadow mode (§34.6), so the model is only ever
         // advice, and the gateway (§37) is reached through mewndo-router's Clef client once it is configured.
-        let router = Arc::new(Router::default());
+        Agents::start_with(
+            Arc::new(Router::default()),
+            data_dir,
+            writer,
+            publisher,
+            log,
+        )
+    }
+
+    pub fn start_with(
+        router: Arc<Router>,
+        data_dir: PathBuf,
+        writer: Arc<Writer>,
+        publisher: Publisher,
+        log: Arc<Log>,
+    ) -> Agents {
         let engine = V0Engine::new(data_dir);
         let inbox = Inbox::start(
             Config {
@@ -133,10 +151,12 @@ impl Agents {
         let mut deps = claude::Deps::new(inbox.clone(), router.clone());
         deps.engine = engine.clone();
         deps.events = Arc::new(AppEvents {
-            publisher,
+            publisher: publisher.clone(),
             live: live.clone(),
         });
         Agents {
+            publisher,
+            rules_only: Default::default(),
             claude: Claude::new(deps),
             codex: Codex::new(router.clone(), Some(inbox.clone())),
             cursor: Cursor::new(router.clone(), Some(inbox.clone())),
@@ -150,6 +170,31 @@ impl Agents {
     /// One agent hook. An agent this core has no handler for gets silence, which is what it would get with no
     /// Mewndo installed (§32.5 rule 7).
     pub async fn hook(&self, req: &HookRequest) -> HookResponse {
+        let out = self.handle_hook(req).await;
+        // A Guard call may have heard from the gateway that the day's budget is out, or that it is back.
+        self.publish_budget_change();
+        out
+    }
+
+    /// The day's model budget as the apps should show it.
+    pub fn budget_state(&self) -> BudgetState {
+        BudgetState {
+            rules_only: self.router.rules_only(),
+        }
+    }
+
+    fn publish_budget_change(&self) {
+        let now = self.router.rules_only();
+        if self
+            .rules_only
+            .swap(now, std::sync::atomic::Ordering::SeqCst)
+            != now
+        {
+            self.publisher.send(&BudgetState { rules_only: now });
+        }
+    }
+
+    async fn handle_hook(&self, req: &HookRequest) -> HookResponse {
         let cwd = req.cwd.as_deref().unwrap_or_default();
         match req.agent.as_str() {
             "claude" => self.claude.respond(req).await,
@@ -398,6 +443,63 @@ mod tests {
         );
         let out = agents.hook(&hook("gemini", "pre-tool", json!({}))).await;
         assert_eq!((out.stdout.as_str(), out.exit_code), ("", 0));
+    }
+
+    /// A gateway that has run out of today's budget.
+    struct BudgetOut;
+    impl mewndo_router::clef::Clef for BudgetOut {
+        fn ask(
+            &self,
+            _request: &mewndo_router::clef::ClefRequest,
+            _deadline: Duration,
+        ) -> Result<
+            (
+                mewndo_router::Backend,
+                std::collections::BTreeMap<String, mewndo_router::Answer>,
+            ),
+            mewndo_router::clef::ClefError,
+        > {
+            Err(mewndo_router::clef::ClefError::RulesOnly(
+                "total_cap".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_gateway_saying_the_budget_is_out_reaches_the_apps_once() {
+        let d = temp("budget");
+        let log = Arc::new(Log::new(&d.join("logs")));
+        let writer = Arc::new(crate::writer::start(&d.join("desk.db"), log.clone()));
+        let (tx, mut rx) = broadcast::channel(64);
+        let router = Arc::new(Router::new(
+            mewndo_router::CompiledRules::builtin(),
+            Box::new(BudgetOut),
+            Box::new(mewndo_router::facts::NoFacts),
+        ));
+        let agents = Agents::start_with(router, d.join("v0"), writer, Publisher(tx), log);
+        assert!(!agents.budget_state().rules_only);
+        let pre = json!({
+            "session_id": "s1", "cwd": "/work/shop", "hook_event_name": "PreToolUse",
+            "tool_name": "Bash", "tool_input": {"command": "npm run build"}
+        });
+        agents.hook(&hook("claude", "pre-tool", pre.clone())).await;
+        let state: BudgetState = next(&mut rx).await;
+        assert!(state.rules_only);
+        assert!(
+            agents.budget_state().rules_only,
+            "what a newly connected app is sent"
+        );
+        agents.hook(&hook("claude", "pre-tool", pre)).await;
+        while let Ok(bytes) = rx.try_recv() {
+            let Some((Frame::Json(env), _)) = mewndo_proto::decode(&bytes).unwrap() else {
+                continue;
+            };
+            assert_ne!(
+                env.kind,
+                BudgetState::TYPE,
+                "an unchanged state is not sent again"
+            );
+        }
     }
 
     #[tokio::test]

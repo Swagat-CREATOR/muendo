@@ -71,6 +71,8 @@ pub struct Router {
     /// R10. One per Router, and the app holds one Router, which is what "global" means here. Keeping it off
     /// a `static` is what lets two tests disagree about the switch at the same time without flaking.
     enabled: AtomicBool,
+    /// The gateway's last word on the day's budget (`ClefError::RulesOnly`), for the dock's "Rules only mode".
+    rules_only: AtomicBool,
     clef: Box<dyn Clef + Send + Sync>,
     facts: Box<dyn Facts + Send + Sync>,
 }
@@ -96,6 +98,7 @@ impl Router {
             habits: Mutex::new(Habits::default()),
             cache: TtlCache::default(),
             enabled: AtomicBool::new(true),
+            rules_only: AtomicBool::new(false),
             clef,
             facts,
         }
@@ -109,6 +112,11 @@ impl Router {
 
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// True after the gateway said today's model budget is out, until the next model answer.
+    pub fn rules_only(&self) -> bool {
+        self.rules_only.load(Ordering::SeqCst)
     }
 
     /// §34.9's `router.guard(action)`.
@@ -162,10 +170,15 @@ impl Router {
                 let request = self.guard_request(g, &action, &rule_outcome, &sig);
                 match self.clef.ask(&request, deadline) {
                     Ok((backend, by_id)) => {
+                        self.rules_only.store(false, Ordering::SeqCst);
                         (Some(Answers::new(backend, by_id)), true, false, None, true)
                     }
                     Err(ClefError::Deadline) => (None, false, true, None, false),
                     Err(ClefError::Unavailable(_)) => (None, true, true, None, false),
+                    Err(ClefError::RulesOnly(_)) => {
+                        self.rules_only.store(true, Ordering::SeqCst);
+                        (None, true, true, None, false)
+                    }
                     Err(ClefError::Shape(f)) => (None, true, true, Some(f.raw_sample), false),
                 }
             };

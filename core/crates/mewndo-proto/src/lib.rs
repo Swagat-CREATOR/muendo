@@ -269,6 +269,13 @@ pub struct InboxExpired {
     pub card_id: String,
 }
 
+/// core -> app: the gateway said today's model budget is out (`rules_only`), or that it is back. The dock shows
+/// "Rules only mode" while it is true. Not in §38.5's table; added with the gateway's budget priorities.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetState {
+    pub rules_only: bool,
+}
+
 /// app -> core: undo what the agent did after this answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InboxUndo {
@@ -377,7 +384,7 @@ pub struct ComputerResume {
 bodies! {
     Hello = "hello", Ping = "ping", Pong = "pong", ErrorBody = "error",
     HookRequest = "hook.request", HookResponse = "hook.response", AgentStatus = "agent.status",
-    InboxCard = "inbox.card", InboxAnswer = "inbox.answer", InboxRelease = "inbox.release", InboxUndo = "inbox.undo", InboxExpired = "inbox.expired",
+    InboxCard = "inbox.card", InboxAnswer = "inbox.answer", InboxRelease = "inbox.release", InboxUndo = "inbox.undo", InboxExpired = "inbox.expired", BudgetState = "budget.state",
     RouteRequest = "route.request", RouteResult = "route.result", SpanCreated = "span.created",
     ReceiptResult = "receipt.result", CursorMove = "cursor.move", ShowmeState = "showme.state",
     ShowmeStep = "showme.step", ShowmeStart = "showme.start", ShowmeStop = "showme.stop",
@@ -492,6 +499,7 @@ mod tests {
         check(InboxExpired {
             card_id: "c".into(),
         });
+        check(BudgetState { rules_only: true });
         check(RouteRequest {
             text: "tell Claude to update the README".into(),
         });

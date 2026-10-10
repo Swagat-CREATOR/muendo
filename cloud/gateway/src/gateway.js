@@ -1,37 +1,70 @@
 'use strict'
 // Runtime-free gateway logic (spec §37): the §34.3 request contract, the neuron
-// estimate, the §37.3 route order, the §37.2 caps and the §34.9 R6 answer shape.
+// estimate, the route (answer cache, then Workers AI, then the device's rules),
+// the daily budget with its priorities, and the §34.9 R6 answer shape.
 // No Workers runtime and no storage here, so node:test can cover the parts that
 // decide whether a tester's call reaches a model at all, without a deploy.
 //
 // Everything in this file is a pure function. src/index.js wires it to Workers AI,
 // the Durable Object and fetch.
 
-// --- §37.2 budget -------------------------------------------------------------
-// Workers AI gives 10,000 neurons a day on the free plan, reset at 00:00 UTC.
-// Stop at 9,000 so a miscounted call can't tip a tester into a hard stop, and
-// give each of the 7 testers 1,200 so one of them can't eat the whole day.
-const TOTAL_CAP = 9000
-const TESTER_CAP = 1200
+// --- the daily budget (§37.2) -----------------------------------------------------
+// Workers AI gives 10,000 neurons a day on the free plan, reset at 00:00 UTC. Every
+// number the budget runs on is in this one table; StateDO keeps overrides set
+// through POST /admin/settings, so a demo can be retuned without a deploy.
+//   total_cap           stop here, short of the hard stop, so a miscounted call can't tip into it
+//   device_cap          per device (one redeemed token) per day
+//   code_cap            per judge code (an invite code, across all its devices) per day
+//   devices_per_code    how many devices one judge code may be redeemed on
+//   max_codes           how many judge codes may be live at once (what the budget is sized for)
+//   low_budget_share    under this share of total_cap left, triage, receipt and showme calls
+//                       use rules only and voice falls back to keyword matching
+//   guard_until_used    Guard keeps the model until this share of total_cap is used
+const DEFAULT_SETTINGS = Object.freeze({
+  total_cap: 9000,
+  device_cap: 1200,
+  code_cap: 2400,
+  devices_per_code: 3,
+  max_codes: 7,
+  low_budget_share: 0.2,
+  guard_until_used: 0.95,
+})
 const NEURONS_PER_MTOK = 8182 // clef-flash, per 1M input tokens (§37.2)
-const MAX_TESTERS = 7 // §37.5: seven invite codes, which is what the budget is sized for
 
-// --- §34.8 deadlines and §37.3 order ------------------------------------------
-// tight: the agent is blocked while we answer, so Workers AI first and Kaggle only
-// if its measured median fits. loose: nobody is waiting, so Kaggle first, which
-// saves free neurons for the calls that are on the hook path.
+// Merges stored overrides over the defaults, refusing anything that would make the
+// budget meaningless rather than clamping it into something nobody asked for.
+function validateSettings(over = {}) {
+  const out = { ...DEFAULT_SETTINGS }
+  for (const [key, value] of Object.entries(over ?? {})) {
+    if (!(key in DEFAULT_SETTINGS)) throw { status: 400, message: `unknown setting ${key}` }
+    const n = Number(value)
+    const share = key === 'low_budget_share' || key === 'guard_until_used'
+    if (!Number.isFinite(n) || n < 0 || (share ? n > 1 : !Number.isInteger(n))) {
+      throw { status: 400, message: `${key} must be ${share ? 'a share from 0 to 1' : 'a whole number'}` }
+    }
+    out[key] = n
+  }
+  if (out.devices_per_code < 1 || out.max_codes < 1) {
+    throw { status: 400, message: 'devices_per_code and max_codes must be at least 1' }
+  }
+  return out
+}
+
+// --- §34.8 deadlines ------------------------------------------------------------------
+// `low` is what the kind does when the day's budget runs low: `rules` (the device's
+// rules decide), `keywords` (voice: keyword matching on the device), or `model` (Guard
+// keeps the model until guard_until_used). The device reads the fallback reason.
 const KINDS = {
-  guard: { deadline: 300, tight: true },
-  voice: { deadline: 400, tight: true },
-  triage: { deadline: 1500, tight: false },
-  receipt: { deadline: 3000, tight: false },
-  // §37.3 lists showme as loose; §34.8 gives it no deadline, so it borrows receipt's.
-  showme: { deadline: 3000, tight: false },
+  guard: { deadline: 300, low: 'model' },
+  voice: { deadline: 400, low: 'keywords' },
+  triage: { deadline: 1500, low: 'rules' },
+  receipt: { deadline: 3000, low: 'rules' },
+  // §34.8 gives showme no deadline, so it borrows receipt's; it is as deferrable as receipts.
+  showme: { deadline: 3000, low: 'rules' },
 }
 const DEFAULT_KIND = 'guard' // the hook path: the tightest deadline, never the loosest
 
 const CACHE_SECONDS = 300 // §34.8: same brief hash + action signature for 5 minutes
-const BACKEND_STALE_MS = 180_000 // §37.4: three missed 60 s heartbeats and Kaggle is down
 const MAX_QUESTIONS = 64 // §29.5
 const MAX_BODY_BYTES = 32 * 1024 // §34.3 keeps state under 800 tokens; this is a wide guard
 const DEFAULT_SCALE = [1, 2, 3, 4, 5] // §34.3's risk question
@@ -106,50 +139,54 @@ function kindOf(name) {
   return KINDS[name] ? name : DEFAULT_KIND
 }
 
-function backendAlive(backend, now) {
-  if (!backend || !backend.url || !Number.isFinite(backend.last_beat)) return false
-  return now - backend.last_beat < BACKEND_STALE_MS
+// The next 00:00 UTC, when Workers AI's free allowance resets (§37.2).
+function resetAt(now) {
+  const d = new Date(now)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)
 }
 
-// The whole routing decision, as one pure function: cache, then the §37.3 order
-// for this kind, then the device's own rules. `reserve` is the neuron count the
-// caller must hold before calling Workers AI.
+// Where the day's budget stands. `rules_only` is the dock's "Rules only mode": even
+// Guard can no longer reach the model today.
+function budgetState(settings, used) {
+  const cap = settings.total_cap
+  const remaining = Math.max(0, cap - used)
+  return {
+    used,
+    remaining,
+    low: remaining < settings.low_budget_share * cap,
+    rules_only: used >= settings.guard_until_used * cap,
+  }
+}
+
+// The whole routing decision, as one pure function: the answer cache, then Workers AI,
+// then the device's own rules. `reserve` is the neuron count the caller must hold
+// before calling Workers AI.
 //
-//   cache     -> answers are already known
-//   workers_ai-> call the Workers AI binding
-//   kaggle    -> call the registered tunnel URL
-//   fallback  -> answer {fallback:true}; the device's rules decide (§34.8)
-function plan({ kind, now, cache, usage, backend, estNeurons, deadlineMs }) {
+//   cache      -> answers are already known
+//   workers_ai -> call the Workers AI binding
+//   fallback   -> answer {fallback:true, reason}; the device's rules decide (§34.8)
+//
+// Past the caps, or when the day runs low and this kind gives way to Guard, the
+// reason says which; `rules_only` travels on every answer so the dock can say so.
+function plan({ kind, now, cache, usage, estNeurons, deadlineMs, settings = DEFAULT_SETTINGS }) {
   const name = kindOf(kind)
   const spec = KINDS[name]
   const deadline = Number.isFinite(deadlineMs) && deadlineMs > 0 ? Math.min(deadlineMs, spec.deadline) : spec.deadline
-  const base = { kind: name, deadlineMs: deadline, reserve: 0 }
+  const budget = budgetState(settings, usage?.total ?? 0)
+  const base = { kind: name, deadlineMs: deadline, reserve: 0, rules_only: budget.rules_only }
 
   if (cache && Number.isFinite(cache.expires) && cache.expires > now) {
     return { ...base, route: 'cache', answers: cache.answers }
   }
 
-  const totalLeft = TOTAL_CAP - (usage?.total ?? 0)
-  const testerLeft = TESTER_CAP - (usage?.tester ?? 0)
-  const overTotal = estNeurons > totalLeft
-  const overTester = estNeurons > testerLeft
-  const alive = backendAlive(backend, now)
-  // §37.3: on a tight deadline Kaggle is used only if its last measured median fits.
-  const fits = alive && (!spec.tight || (Number.isFinite(backend.p50_ms) && backend.p50_ms <= deadline))
-
-  for (const route of spec.tight ? ['workers_ai', 'kaggle'] : ['kaggle', 'workers_ai']) {
-    if (route === 'workers_ai' && !overTotal && !overTester) {
-      return { ...base, route, reserve: estNeurons }
-    }
-    if (route === 'kaggle' && fits) return { ...base, route, url: backend.url }
-  }
-
-  const why = []
-  if (overTotal) why.push('total_cap')
-  else if (overTester) why.push('tester_cap')
-  if (!alive) why.push('kaggle_down')
-  else if (!fits) why.push('kaggle_too_slow')
-  return { ...base, route: 'fallback', reason: why.join('+') || 'no_backend' }
+  const fallback = (reason) => ({ ...base, route: 'fallback', reason })
+  const after = (usage?.total ?? 0) + estNeurons
+  // Guard keeps the model until guard_until_used; past that, no kind does.
+  if (after > settings.guard_until_used * settings.total_cap) return fallback('total_cap')
+  if (budget.low && spec.low !== 'model') return fallback(spec.low === 'keywords' ? 'budget_low_keywords' : 'budget_low_rules')
+  if (estNeurons > settings.code_cap - (usage?.code ?? 0)) return fallback('code_cap')
+  if (estNeurons > settings.device_cap - (usage?.device ?? 0)) return fallback('device_cap')
+  return { ...base, route: 'workers_ai', reserve: estNeurons }
 }
 
 // A model answer per question, in the §34.9 R6 shape the Rust router parses:
@@ -261,23 +298,6 @@ function newInviteCode(bytes = crypto.getRandomValues(new Uint8Array(8))) {
   return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('')
 }
 
-// §37.6 K5: the notebook registers its quick-tunnel URL and then heartbeats.
-function validateBackendReport(body) {
-  if (!body || typeof body !== 'object') throw { status: 400, message: 'body must be an object' }
-  let url
-  try {
-    url = new URL(String(body.url))
-  } catch {
-    throw { status: 400, message: 'url must be absolute' }
-  }
-  // The tunnel is the only way in to the notebook, and the gateway secret travels
-  // on it, so plain http is refused outright.
-  if (url.protocol !== 'https:') throw { status: 400, message: 'url must be https' }
-  const p50 = Number(body.p50_ms)
-  if (!Number.isFinite(p50) || p50 < 0) throw { status: 400, message: 'p50_ms must be a number of milliseconds' }
-  return { url: url.origin + url.pathname.replace(/\/$/, ''), p50_ms: Math.round(p50) }
-}
-
 function median(values) {
   if (!values || values.length === 0) return null
   const sorted = [...values].sort((a, b) => a - b)
@@ -286,8 +306,8 @@ function median(values) {
 }
 
 export {
-  TOTAL_CAP, TESTER_CAP, NEURONS_PER_MTOK, MAX_TESTERS, KINDS, DEFAULT_KIND,
-  CACHE_SECONDS, BACKEND_STALE_MS, MAX_QUESTIONS, MAX_BODY_BYTES, DEFAULT_SCALE,
-  validateDecideRequest, estimateNeurons, utcDay, kindOf, backendAlive, plan,
-  parseClefAnswers, sortedJson, newToken, newInviteCode, validateBackendReport, median,
+  DEFAULT_SETTINGS, NEURONS_PER_MTOK, KINDS, DEFAULT_KIND,
+  CACHE_SECONDS, MAX_QUESTIONS, MAX_BODY_BYTES, DEFAULT_SCALE,
+  validateDecideRequest, validateSettings, estimateNeurons, utcDay, resetAt, budgetState, kindOf, plan,
+  parseClefAnswers, sortedJson, newToken, newInviteCode, median,
 }

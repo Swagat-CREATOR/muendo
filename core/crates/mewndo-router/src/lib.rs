@@ -123,7 +123,6 @@ pub enum Backend {
     #[default]
     Rules,
     WorkersAi,
-    Kaggle,
     /// A decision from the last 5 minutes for the same brief and action (§34.8).
     Cache,
     /// The user's own standing answer, learned from three identical replies (§34.7).

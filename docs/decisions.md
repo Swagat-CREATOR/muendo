@@ -330,3 +330,24 @@ restores files on its own.
 `POST /savepoint`: the latter makes none when nothing changed since the last one, and an Inbox answer needs one for
 its Undo either way. v0 finds the protected folder from the agent's working folder, which the wrapper remembers
 per agent because the Inbox's release only knows the agent id (`SavepointRequest.cwd`).
+
+## Workers AI only, with a day-budget priority order (10 Oct 2026)
+
+The user dropped Kaggle. The gateway's route for every kind of call is now the answer cache, then Workers AI, then
+`{"fallback": true}` for the device's rules; the backend record, `POST /internal/backend`, the Kaggle route, its
+tests and `notebooks/clef-kaggle-server.ipynb` are gone, and `Backend::Kaggle` left `mewndo-router`.
+
+When the day's free neurons run low (under `low_budget_share` = 20% of `total_cap` left), `receipt`, `triage` and
+`showme` answer with rules only (`reason: budget_low_rules`) and `voice` falls back to the device's keyword matching
+(`budget_low_keywords`); Guard keeps the model until `guard_until_used` = 95% of `total_cap` is used. Every decide
+answer carries `rules_only`, true from 95% on; the Router keeps it (`Router::rules_only`), the core sends
+`budget.state` to the apps when it changes, and the dock shows "Rules only mode".
+
+**Judge codes.** An invite code is a judge code and can be redeemed on up to `devices_per_code` devices, each with
+its own token. Usage is counted per device (`device_cap`) and per code (`code_cap`). Every number lives in one
+settings table, `DEFAULT_SETTINGS` in `cloud/gateway/src/gateway.js`, with overrides stored in `StateDO` through
+`POST /admin/settings`; `GET /admin/status` shows used and remaining budget, the reset time (next 00:00 UTC), the
+table, and usage per code and device.
+
+**What does not reach the dock yet:** the core has no HTTP client for the gateway (the Router's `Clef` is still
+`NoClef`), so `rules_only` is only set by tests until the Clef transport is wired, which needs the deployed Worker.

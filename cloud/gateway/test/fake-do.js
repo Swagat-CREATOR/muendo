@@ -35,7 +35,6 @@ function fakeStorage() {
 }
 
 const ADMIN_SECRET = 'admin-secret'
-const GATEWAY_SECRET = 'kaggle-secret'
 
 // One Durable Object instance behind the STATE binding, plus an AI binding whose
 // answer each test chooses. `ai` is called with (model, input) and may throw.
@@ -58,7 +57,6 @@ function fakeEnv({ ai, storage = fakeStorage(), askWaitMs = 40, ...over } = {}) 
     pushed,
     hubObject,
     ADMIN_SECRET,
-    GATEWAY_SECRET,
     AI: ai
       ? {
         run: async (model, input) => {
@@ -86,4 +84,4 @@ function fakeCtx() {
   return { waitUntil: (p) => pending.push(p), settled: () => Promise.allSettled(pending) }
 }
 
-export { fakeStorage, fakeEnv, fakeCtx, ADMIN_SECRET, GATEWAY_SECRET }
+export { fakeStorage, fakeEnv, fakeCtx, ADMIN_SECRET }
