@@ -1,0 +1,19 @@
+# Cua's cursor motion behind mewndo-overlay's MotionPlanner (spec §36.6 U7). Opt-in and OUTSIDE the workspace
+# (core/Cargo.toml `exclude`): cua-cursor-motion is not on crates.io, and Cargo resolves even an optional git
+# dependency for every build of a workspace, which would make every build and every CI run fetch Cua's 367 MB git
+# database. Here, only `cargo test --manifest-path core/optional/mewndo-cua-motion/Cargo.toml` does.
+[package]
+name = "mewndo-cua-motion"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+mewndo-overlay = { path = "../../crates/mewndo-overlay" }
+# Pinned to the exact commit that was read (docs/decisions.md, "cua-driver" 5). MIT; third_party/cua/.
+cua-cursor-motion = { git = "https://github.com/trycua/cua", rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab" }
+
+[dev-dependencies]
+serde_json = "1.0.145"

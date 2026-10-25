@@ -26,14 +26,17 @@ const PULSE_MS = 60_000;
 const EXACT_SOURCES = new Set(['mcp', 'hooks', 'audit']);
 
 // One change -> who did it and how sure that is.
-//   change:   { accountId, at, source: 'mcp' | 'hooks' | 'audit' | 'poll', agent?, agentId?, what, undoable }
+//   change:   { accountId, at, from?, source: 'mcp' | 'hooks' | 'audit' | 'poll', agent?, agentId?, what, undoable }
+//             from: the earliest the change can have happened, when Mewndo only knows a window (a poll noticed it
+//             at `at`, and the one before at `from` hadn't). Every session overlapping the window counts.
 //   sessions: [{ agentId, agent, from, to }] agent sessions Mewndo knows about; to = null means still running.
 function confidenceOf(change, sessions = []) {
   if (EXACT_SOURCES.has(change.source) && change.agent) {
     const how = { mcp: 'through Mewndo\u2019s MCP tool', hooks: 'through Mewndo\u2019s hooks', audit: 'named in the account\u2019s audit log' }[change.source];
     return { confidence: 'exact', agent: change.agent, agentId: change.agentId ?? null, why: how };
   }
-  const active = sessions.filter((s) => change.at >= s.from && change.at <= (s.to ?? Infinity) + SESSION_SLACK_MS);
+  const start = change.from ?? change.at;
+  const active = sessions.filter((s) => change.at >= s.from && start <= (s.to ?? Infinity) + SESSION_SLACK_MS);
   if (active.length === 1) {
     return { confidence: 'likely', agent: active[0].agent, agentId: active[0].agentId ?? null, why: 'matched by time to a known agent session' };
   }

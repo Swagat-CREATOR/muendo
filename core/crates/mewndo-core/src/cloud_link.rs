@@ -469,6 +469,7 @@ fn status_for(agent: &str, status: &str, last_line: Option<String>) -> AgentStat
         connection: "cloud".into(),
         status: status.to_string(),
         last_line,
+        lane_id: None,
     }
 }
 

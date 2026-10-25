@@ -32,6 +32,8 @@ use std::time::{Duration, SystemTime};
 
 pub const TEMP_SUFFIX: &str = ".mewndo-tmp";
 pub const TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+/// verify_since checks this much further back than asked: file times are coarser than the clock (see there).
+const MTIME_SLACK: Duration = Duration::from_secs(5);
 /// Files up to this size are read once and kept in memory; bigger ones are streamed a second time.
 const SMALL: usize = 1024 * 1024;
 
@@ -702,7 +704,13 @@ impl Store {
 
     /// After an unclean shutdown: re-check every object written at or after `since` and delete the ones whose content
     /// no longer matches its name (e.g. cut short by a power loss). Returns the deleted hashes.
+    /// File times are coarser than the clock that set `since` (Linux stamps files a few ms behind it, FAT and exFAT
+    /// round down to 2 s), so an object written right after `since` can carry an earlier time: everything from
+    /// MTIME_SLACK before it is checked too. A few extra reads, once, after a crash.
     pub fn verify_since(&self, since: SystemTime) -> Result<Vec<String>> {
+        let since = since
+            .checked_sub(MTIME_SLACK)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         let files = self.object_files()?;
         let next = AtomicUsize::new(0);
         let bad = Mutex::new(Vec::new());
@@ -1294,6 +1302,29 @@ mod tests {
             std::slice::from_ref(&bad)
         );
         assert!(store.has(&good).unwrap() && !store.has(&bad).unwrap());
+    }
+
+    #[test]
+    fn verify_since_still_checks_an_object_stamped_a_moment_before_since() {
+        // File times are coarser than the clock: Linux stamps files a few ms behind it, FAT and exFAT round down to
+        // 2 s. An object damaged right after the run began can carry a time from just before it.
+        let d = temp_dir();
+        let store = Store::new(&d.0.join("data"));
+        fs::write(d.0.join("bad.txt"), "bad").unwrap();
+        let bad = store.put(&d.0.join("bad.txt"), None).unwrap();
+        let object = store.find(&bad).unwrap().unwrap().path;
+        fs::write(&object, "cut short").unwrap();
+        let since = SystemTime::now();
+        File::options()
+            .write(true)
+            .open(&object)
+            .unwrap()
+            .set_modified(since - Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            store.verify_since(since).unwrap(),
+            std::slice::from_ref(&bad)
+        );
     }
 
     #[test]

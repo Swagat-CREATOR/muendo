@@ -20,8 +20,8 @@ mewndo-proto.workspace = true
 serde_json.workspace = true
 
 # Deliberately absent (and they must stay absent): tokio -- one blocking connection needs no reactor;
-# windows-sys -- the single Win32 call here (WaitNamedPipeW) is five lines of `unsafe extern` in pipe.rs, and
-# a dependency with no feature flags set would not export it anyway; mewndo-router -- the forwarder is a
+# windows-sys -- the few Win32 calls here (WaitNamedPipeW in pipe.rs, the Toolhelp32 walk in console.rs) are a
+# handful of lines of `unsafe extern`, and a dependency with no feature flags set would not export them anyway; mewndo-router -- the forwarder is a
 # separate process that must refuse the same paths *without* loading the router (rules.rs says so in its own
 # comment on `deny_cache_json`), which is why the protect matcher is duplicated in failopen.rs.
 

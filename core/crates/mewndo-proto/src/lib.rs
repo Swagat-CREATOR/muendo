@@ -204,6 +204,11 @@ pub struct HookRequest {
     pub cwd: Option<String>,
     pub lane_id: Option<String>,
     pub payload: Value,
+    /// The agent's own process, which owns the terminal it runs in: the forwarder walks up from its parent past
+    /// the shells an agent starts a hook with (mewndo-hook's console.rs). Windows only, and only a hint: None
+    /// elsewhere, or when the walk found nothing, and then left out of the JSON so older readers see no change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_pid: Option<u32>,
 }
 
 /// core -> hook: what the forwarder prints, and its exit code.
@@ -222,6 +227,10 @@ pub struct AgentStatus {
     pub connection: String,
     pub status: String,
     pub last_line: Option<String>,
+    /// The lane the agent runs in (§33.7), so the Talk box can type into it. Absent for an agent outside a lane,
+    /// and left out of the JSON then, so a reader from before it existed reads the same message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_id: Option<String>,
 }
 
 /// core -> app: a card to show (§33.2).
@@ -283,6 +292,69 @@ pub struct InboxUndo {
     pub savepoint_id: Option<String>,
 }
 
+/// app -> core: the user is in a Done card's reply box or dictating (`held`, the default), or has left it. While
+/// held, the hook waiting on the card waits up to its own timeout less a margin instead of the short reply window.
+/// Not in §38.5's table; added with agent messages (docs/decisions.md, "Messages to an agent").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InboxHold {
+    pub card_id: String,
+    #[serde(default = "yes")]
+    pub held: bool,
+}
+
+/// app -> core: text for one agent from outside its terminal (a reply typed or spoken in the Talk box, or a Done
+/// card's next step). The core answers `agent.message.result`. Not in §38.5's table (docs/decisions.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub agent_id: String,
+    pub text: String,
+    #[serde(default = "by_key")]
+    pub via: Via,
+}
+
+fn by_key() -> Via {
+    Via::Key
+}
+
+/// What happened to an `agent.message`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delivery {
+    /// The agent's `Stop` hook was waiting: it carries on with the text now.
+    Now,
+    /// The agent is mid-turn: its next `Stop` hook carries it on with the text.
+    Queued,
+    /// Neither: `reason` says why, and what would work instead (a lane).
+    Unsupported,
+    /// The agent is idle at its prompt in a terminal Mewndo's hook reported: the core can type the text there, but
+    /// only once the user has seen `preview` and confirmed with `agent.type {offer_id}`.
+    Confirm,
+    /// The text was typed into the agent's terminal, followed by Enter (the answer to `agent.type`).
+    Typed,
+}
+
+/// core -> app: the answer to `agent.message`, with the request's id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMessageResult {
+    pub agent_id: String,
+    pub delivered: Delivery,
+    pub reason: String,
+    /// With `confirm`: the single-use offer `agent.type` names. Left out of the JSON otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offer_id: Option<String>,
+    /// With `confirm`: exactly what would be typed (the text with newlines and control characters taken out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+/// app -> core: the user confirmed a `confirm` offer: type its text into the agent's terminal. There is no text
+/// here on purpose: the core types only the text it stored and showed. The answer is `agent.message.result`.
+/// Not in §38.5's table (docs/decisions.md, "Typing into an idle agent's terminal").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentType {
+    pub offer_id: String,
+}
+
 /// app -> core: text from the Talk box.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RouteRequest {
@@ -332,6 +404,12 @@ pub struct CursorMove {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShowmeState {
     pub recording: bool,
+    /// Why it is off: how a recording ended, or why one could not start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When a recording ends: every step it made (mewndo-computer skill.rs), so a missed `showme.step` loses nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Value>,
 }
 
 /// core -> app: one recorded step, in the steps.json shape of §36.5.
@@ -354,6 +432,13 @@ pub struct ComputerAction {
     pub tool: String,
     pub args_redacted: Value,
     pub point: Option<Point>,
+    /// Which agent the proxy was started for (`mewndo-core mcp-computer --agent <name>`), for the card's title.
+    #[serde(default)]
+    pub agent: String,
+    /// cua-driver's own agent cursor is still on screen: the proxy could not switch it off (§36.6 U8), so the core's
+    /// overlay draws its label chip beside it and no second arrow. False (the default) when Mewndo's is the only one.
+    #[serde(default)]
+    pub driver_cursor: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -381,15 +466,101 @@ pub struct ComputerResume {
     pub sessions: Vec<String>,
 }
 
+// --- lanes (§33.7, §33.10 Part G) ----------------------------------------------------------------------------------
+// A lane's output is `Frame::Lane` (type 1). These are its control messages. They lived in mewndo-pty until the
+// core served them; they moved here unchanged, plus `lane.attach` and `lane.close` (docs/decisions.md, "Lanes on
+// the desk pipe").
+
+/// app -> core: "start Claude in shop" (§33.7). The core answers with `lane.opened`, or `error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneOpen {
+    /// `claude`, `codex` or `cursor-agent`, as the user would type it.
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// The protected folder the lane runs in.
+    pub cwd: String,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+}
+
+/// core -> app: a lane exists, with what a window needs to draw it. Sent to every app when the lane opens, to an
+/// app that connects while it exists, and after a `lane.attach` replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneOpened {
+    pub lane_id: String,
+    pub program: String,
+    pub cwd: String,
+    pub pid: Option<u32>,
+    pub rows: u16,
+    pub cols: u16,
+    /// False once the agent has ended; the lane stays until `lane.close`, so its last output can be read.
+    #[serde(default = "yes")]
+    pub running: bool,
+    #[serde(default)]
+    pub exit_code: Option<u32>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// app -> core: type this into the lane, at any time (§33.7). The core adds Enter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneReply {
+    pub lane_id: String,
+    pub text: String,
+}
+
+/// app -> core: Ctrl+C (§24).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneBrake {
+    pub lane_id: String,
+}
+
+/// app -> core: an xterm.js `resize` event. The core clamps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneResize {
+    pub lane_id: String,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// app -> core: a window (re)opened. The core sends this connection the lane's replay buffer as lane frames,
+/// then `lane.opened`, so the window can draw from where the lane is now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneAttach {
+    pub lane_id: String,
+}
+
+/// app -> core: end the lane for good: the agent is stopped if it still runs, and its replay buffer goes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneClose {
+    pub lane_id: String,
+}
+
+/// core -> app: the agent ended (`exit_code`), or, with `removed`, the lane itself is gone (`lane.close`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaneClosed {
+    pub lane_id: String,
+    pub exit_code: Option<u32>,
+    #[serde(default)]
+    pub removed: bool,
+}
+
 bodies! {
     Hello = "hello", Ping = "ping", Pong = "pong", ErrorBody = "error",
     HookRequest = "hook.request", HookResponse = "hook.response", AgentStatus = "agent.status",
     InboxCard = "inbox.card", InboxAnswer = "inbox.answer", InboxRelease = "inbox.release", InboxUndo = "inbox.undo", InboxExpired = "inbox.expired", BudgetState = "budget.state",
+    InboxHold = "inbox.hold", AgentMessage = "agent.message", AgentMessageResult = "agent.message.result",
+    AgentType = "agent.type",
     RouteRequest = "route.request", RouteResult = "route.result", SpanCreated = "span.created",
     ReceiptResult = "receipt.result", CursorMove = "cursor.move", ShowmeState = "showme.state",
     ShowmeStep = "showme.step", ShowmeStart = "showme.start", ShowmeStop = "showme.stop",
     ComputerAction = "computer.action", ComputerVerdict = "computer.verdict", ComputerPause = "computer.pause",
     ComputerResume = "computer.resume",
+    LaneOpen = "lane.open", LaneOpened = "lane.opened", LaneReply = "lane.reply", LaneBrake = "lane.brake",
+    LaneResize = "lane.resize", LaneAttach = "lane.attach", LaneClose = "lane.close", LaneClosed = "lane.closed",
 }
 
 #[cfg(test)]
@@ -458,7 +629,19 @@ mod tests {
             cwd: Some(r"C:\work\shop".into()),
             lane_id: None,
             payload: json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+            console_pid: Some(4242),
         });
+        // A forwarder from before console_pid, or one off Windows: no key, and it still parses.
+        let old: HookRequest = serde_json::from_value(json!({"agent": "codex", "event": "notify",
+            "session_id": null, "pid": 7, "cwd": null, "lane_id": null, "payload": {}}))
+        .unwrap();
+        assert_eq!(old.console_pid, None);
+        assert!(
+            serde_json::to_value(&old)
+                .unwrap()
+                .get("console_pid")
+                .is_none()
+        );
         check(HookResponse {
             stdout: "{}".into(),
             exit_code: 0,
@@ -470,7 +653,29 @@ mod tests {
             connection: "hooked".into(),
             status: "working".into(),
             last_line: None,
+            lane_id: Some("01JLANE7QX".into()),
         });
+        // No lane: no `lane_id` key at all, and a message without one still parses.
+        let plain = AgentStatus {
+            agent_id: "a".into(),
+            kind: "codex".into(),
+            name: "Codex".into(),
+            connection: "hooked".into(),
+            status: "idle".into(),
+            last_line: None,
+            lane_id: None,
+        };
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("lane_id")
+                .is_none()
+        );
+        let old: AgentStatus =
+            serde_json::from_value(json!({"agent_id": "a", "kind": "codex", "name": "Codex",
+            "connection": "hooked", "status": "idle", "last_line": null}))
+            .unwrap();
+        assert_eq!(old, plain);
         check(InboxCard {
             id: "c".into(),
             kind: "permission".into(),
@@ -500,6 +705,54 @@ mod tests {
             card_id: "c".into(),
         });
         check(BudgetState { rules_only: true });
+        check(InboxHold {
+            card_id: "c".into(),
+            held: false,
+        });
+        check(AgentMessage {
+            agent_id: "a".into(),
+            text: "also fix the pricing test".into(),
+            via: Via::Voice,
+        });
+        check(AgentMessageResult {
+            agent_id: "a".into(),
+            delivered: Delivery::Queued,
+            reason: "Claude Code is working; it gets this when it next stops.".into(),
+            offer_id: None,
+            preview: None,
+        });
+        check(AgentMessageResult {
+            agent_id: "a".into(),
+            delivered: Delivery::Confirm,
+            reason: "Claude Code is idle at its prompt. Type this into its terminal?".into(),
+            offer_id: Some("01JOFFER".into()),
+            preview: Some("also fix the pricing test".into()),
+        });
+        check(AgentType {
+            offer_id: "01JOFFER".into(),
+        });
+        // An older core's result, with no offer: still parses, and a result with none writes no keys for it.
+        let plain: AgentMessageResult = serde_json::from_value(
+            json!({"agent_id": "a", "delivered": "typed", "reason": "Typed."}),
+        )
+        .unwrap();
+        assert_eq!(plain.delivered, Delivery::Typed);
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("offer_id")
+                .is_none()
+        );
+        // The short forms the app may send: a hold is a hold, and typed text is by key.
+        let hold: InboxHold = serde_json::from_value(json!({"card_id": "c"})).unwrap();
+        assert!(hold.held);
+        let message: AgentMessage =
+            serde_json::from_value(json!({"agent_id": "a", "text": "hi"})).unwrap();
+        assert_eq!(message.via, Via::Key);
+        assert_eq!(
+            serde_json::to_value(Delivery::Unsupported).unwrap(),
+            json!("unsupported")
+        );
         check(RouteRequest {
             text: "tell Claude to update the README".into(),
         });
@@ -524,7 +777,16 @@ mod tests {
             style: "fitts".into(),
             label: "Claude · clicking Send".into(),
         });
-        check(ShowmeState { recording: true });
+        check(ShowmeState {
+            recording: true,
+            reason: None,
+            steps: vec![],
+        });
+        check(ShowmeState {
+            recording: false,
+            reason: Some("you pressed Esc".into()),
+            steps: vec![json!({"kind": "key", "key": "Enter"})],
+        });
         check(ShowmeStep {
             step: json!({"n": 1, "do": "click"}),
         });
@@ -535,7 +797,16 @@ mod tests {
             tool: "click".into(),
             args_redacted: json!({"x": 1}),
             point: Some(p),
+            agent: "claude".into(),
+            driver_cursor: true,
         });
+        // A proxy from before `agent` and `driver_cursor` existed still parses.
+        let old: ComputerAction = serde_json::from_value(
+            json!({"session": "s", "tool": "click", "args_redacted": {}, "point": null}),
+        )
+        .unwrap();
+        assert_eq!(old.agent, "");
+        assert!(!old.driver_cursor);
         check(ComputerVerdict {
             verdict: Verdict::Deny,
             reason: Some("private window".into()),

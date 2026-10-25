@@ -21,7 +21,7 @@ const prefs = (preload) => ({
   backgroundThrottling: false,
 });
 
-// on: { key, click, graceEnd, text, talk, chip, closeTalk, lane } — what the renderers send back. log: the app's log.
+// on: { key, click, graceEnd, text, dictate, hold, talk, chip, closeTalk, lane } — what the renderers send back. log: the app's log.
 function createDeskWindows({ log, on = {} }) {
   const windows = {};
 
@@ -41,8 +41,10 @@ function createDeskWindows({ log, on = {} }) {
   }
 
   // The card stack: 420 px cards beside the dock, toward the middle of the screen (main.js placeDeskWindows).
-  // Focusable, but focused only in answer mode.
-  make('cards', { preload: 'cards-preload.js', html: 'cards.html', focusable: true, title: 'Mewndo: Agent Inbox', bounds: { width: 452, height: 600, x: 0, y: 0 } });
+  // Not focusable until answer mode, like the bar's panel: a click on a card then doesn't activate this window, so
+  // the app the user was in is still the foreground one when desk.js saves it, and gets the keyboard back after.
+  // What it can't do (unverified on Windows): a screen reader can't move into the stack before answer mode.
+  make('cards', { preload: 'cards-preload.js', html: 'cards.html', focusable: false, title: 'Mewndo: Agent Inbox', bounds: { width: 452, height: 600, x: 0, y: 0 } });
   // The Talk box: a 480 px pill beside the dock, toward the middle of the screen.
   make('talk', { preload: 'talk-preload.js', html: 'talk.html', focusable: true, title: 'Mewndo: Talk', bounds: { width: 496, height: 96, x: 0, y: 0 } });
   // Lanes: the list of lanes and one terminal view. A normal window, so it can be resized and moved.
@@ -50,6 +52,7 @@ function createDeskWindows({ log, on = {} }) {
     show: false, width: 900, height: 600, minWidth: 520, minHeight: 320, title: 'Mewndo: lanes', skipTaskbar: false,
     paintWhenInitiallyHidden: true, backgroundColor: '#11131a', webPreferences: prefs('lanes-preload.js'),
   });
+  lanes.setContentProtection(true); // a terminal shows whatever the agent prints, keys included
   lanes.loadFile(path.join(__dirname, '..', 'renderer', 'lanes.html'));
   lanes.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   lanes.webContents.on('will-navigate', (e) => e.preventDefault());
@@ -64,6 +67,13 @@ function createDeskWindows({ log, on = {} }) {
   ipcMain.on('desk:click', (e, action, cardId, arg) => { if (from(e.sender) === 'cards') on.click?.(String(action ?? ''), cardId ? String(cardId) : null, arg); });
   ipcMain.on('desk:grace-end', (e, cardId) => { if (from(e.sender) === 'cards') on.graceEnd?.(String(cardId ?? '')); });
   ipcMain.on('desk:text', (e, cardId, text, via) => { if (from(e.sender) === 'cards') on.text?.(String(cardId ?? ''), String(text ?? ''), via === 'voice' ? 'voice' : 'key'); });
+  // The card's own mic (cards.js): the recording, or null when nothing usable was recorded; and inbox.hold.
+  ipcMain.on('desk:dictate', (e, cardId, wav) => {
+    if (from(e.sender) !== 'cards') return;
+    const ok = wav instanceof Uint8Array && wav.length < 20 * 1024 * 1024;
+    on.dictate?.(String(cardId ?? ''), ok ? Buffer.from(wav) : null);
+  });
+  ipcMain.on('desk:hold', (e, cardId) => { if (from(e.sender) === 'cards') on.hold?.(String(cardId ?? '')); });
   ipcMain.on('talk:submit', (e, text) => { if (from(e.sender) === 'talk') on.talk?.(String(text ?? '')); });
   ipcMain.on('talk:chip', (e, n) => { if (from(e.sender) === 'talk') on.chip?.(Number(n)); });
   ipcMain.on('talk:close', (e) => { if (from(e.sender) === 'talk') on.closeTalk?.(); });
@@ -84,6 +94,7 @@ function createDeskWindows({ log, on = {} }) {
       if (!alive('cards')) return;
       const w = windows.cards;
       if (focus) {
+        w.setFocusable(true);
         w.show();
         w.focus();
       } else if (!w.isVisible()) {
@@ -91,14 +102,26 @@ function createDeskWindows({ log, on = {} }) {
       }
       w.setAlwaysOnTop(true, 'screen-saver');
     },
-    hideCards() { if (alive('cards') && windows.cards.isVisible()) windows.cards.hide(); },
+    hideCards() {
+      if (!alive('cards')) return;
+      if (windows.cards.isVisible()) windows.cards.hide();
+      windows.cards.setFocusable(false);
+    },
+    // Answer mode is over but cards are still showing: the next click on one must not activate the window.
+    unfocusCards() { if (alive('cards')) windows.cards.setFocusable(false); },
     cardsVisible: () => alive('cards') && windows.cards.isVisible(),
 
-    showTalk() {
+    // focus: false for words said to the dock's mic: they show in the box while the user keeps their app.
+    showTalk({ focus = true, to = null } = {}) {
       if (!alive('talk')) return;
+      if (!focus) {
+        if (!windows.talk.isVisible()) windows.talk.showInactive();
+        windows.talk.setAlwaysOnTop(true, 'screen-saver');
+        return;
+      }
       windows.talk.show();
       windows.talk.focus();
-      send('talk', 'talk:open', {});
+      send('talk', 'talk:open', { to });
     },
     hideTalk() { if (alive('talk') && windows.talk.isVisible()) windows.talk.hide(); },
 
@@ -110,7 +133,7 @@ function createDeskWindows({ log, on = {} }) {
     },
 
     destroy() {
-      for (const channel of ['desk:key', 'desk:click', 'desk:grace-end', 'desk:text', 'talk:submit', 'talk:chip', 'talk:close', 'lanes:action']) {
+      for (const channel of ['desk:key', 'desk:click', 'desk:grace-end', 'desk:text', 'desk:dictate', 'desk:hold', 'talk:submit', 'talk:chip', 'talk:close', 'lanes:action']) {
         ipcMain.removeAllListeners(channel);
       }
       for (const w of Object.values(windows)) if (!w.isDestroyed()) { w.removeAllListeners('close'); w.destroy(); }

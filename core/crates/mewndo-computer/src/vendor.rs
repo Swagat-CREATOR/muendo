@@ -73,6 +73,110 @@ impl Arch {
     }
 }
 
+impl Arch {
+    /// The build this program was compiled for: arm64 on an ARM Windows build, x86_64 otherwise.
+    pub fn current() -> Arch {
+        if cfg!(target_arch = "aarch64") {
+            Arch::Arm64
+        } else {
+            Arch::X86_64
+        }
+    }
+
+    /// The asset's size in bytes, read from the release's own download (10 October 2026, Content-Length and the
+    /// bytes themselves, which hashed to `sha256()` above). The app shows it before asking to download.
+    pub fn size(self) -> u64 {
+        match self {
+            Arch::X86_64 => 31_316_916,
+            Arch::Arm64 => 29_456_947,
+        }
+    }
+
+    /// The folder inside the zip that holds everything (`cua-driver-rs-0.34.0-windows-x86_64/`).
+    pub fn folder(self) -> String {
+        format!("cua-driver-rs-{VERSION}-{}", self.label())
+    }
+
+    /// The program files inside the archive and their SHA-256s. Computed on 10 October 2026 from the two archives
+    /// above *after* each archive matched its pinned SHA-256, so they inherit that check: an installed file that
+    /// hashes to one of these is byte for byte the file Cua released. `cua_driver_abi.h`, `LICENSE` and
+    /// `THIRD_PARTY_NOTICES.md` are not programs and are not listed.
+    pub fn files(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Arch::X86_64 => &[
+                (
+                    "cua-driver.exe",
+                    "77f5cac754b42b6a8bae126414fc8f7487432ace93466967965188e24e9e53fb",
+                ),
+                (
+                    "cua-driver-uia.exe",
+                    "1c737385f3cf008240ca8ff2a58ffc6810ebd382c14bd3dccb87ccbdc4ced556",
+                ),
+                (
+                    "cua_driver_sdk.dll",
+                    "1dae9015f81bb81b093b12181a1970b0a5cb1c2c992684afc1c629bdfc41728d",
+                ),
+                (
+                    "cua-cursor-theme.exe",
+                    "bc289b8cc0a4b6a088019115880c260bda2fedc67047c9df6309a3774cd59e25",
+                ),
+                (
+                    "cua_driver_node_runtime.node",
+                    "ff9194fec31c3279b5ba8bf45dd76335892d9a558090d6ee646b3483400c1ec6",
+                ),
+            ],
+            Arch::Arm64 => &[
+                (
+                    "cua-driver.exe",
+                    "0af3e4d677b25bbbce32ed01c80aa8276cc8512d3f8a5b58433f26c0b0b349a4",
+                ),
+                (
+                    "cua-driver-uia.exe",
+                    "b552844d766e9b386e4e5c9f439de294534f0e93bf247ce70046a7be79060eb8",
+                ),
+                (
+                    "cua_driver_sdk.dll",
+                    "a05a0477f05854acd86ad879d24b7fe5670761c49d11035f77aa185f3ed3738a",
+                ),
+                (
+                    "cua-cursor-theme.exe",
+                    "4963f0fc3308b695035cd5252d96949bbd07a7877093e463f1dc4fad2aaca406",
+                ),
+                (
+                    "cua_driver_node_runtime.node",
+                    "b264b75eb898a6035b0b2ddb8f9dc0e5d5a8da7bd240aeae3b2087249d6b9ed1",
+                ),
+            ],
+        }
+    }
+}
+
+/// Checks every pinned program file in `dir` against its SHA-256 before anything there is run. A missing file, a
+/// link (never followed, plot.md rule 2) or one wrong byte refuses the whole folder: Mewndo never starts a driver it
+/// has not verified.
+pub fn verify_installed(dir: &Path, arch: Arch) -> Result<(), VendorError> {
+    for (name, want) in arch.files() {
+        let path = dir.join(name);
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|e| VendorError::Io(format!("{} is missing ({e})", path.display())))?;
+        if !meta.file_type().is_file() {
+            return Err(VendorError::Io(format!(
+                "{} is not a plain file, so it is not run",
+                path.display()
+            )));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| VendorError::Io(e.to_string()))?;
+        verify(&bytes, want).map_err(|e| match e {
+            VendorError::Checksum { want, got } => VendorError::Io(format!(
+                "{name} does not match the pinned SHA-256 (expected {want}, got {got}); it is not run. \
+                 Download cua-driver again from Mewndo's settings"
+            )),
+            other => other,
+        })?;
+    }
+    Ok(())
+}
+
 /// The exact download URL. One asset, one tag, no "latest" redirect: Cua's own agent guidance warns that the
 /// repository-wide latest release is the wrong thing to resolve for a monorepo component, and a redirect is one
 /// more thing that can change under a pinned hash.
@@ -365,6 +469,48 @@ mod tests {
         assert!(dir.join("x.zip").exists());
         assert!(!part.exists(), "the .part must be gone after the rename");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_installed_files_are_checked_before_anything_runs() {
+        let dir =
+            std::env::temp_dir().join(format!("mewndo-vendor-installed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Nothing there: refused, naming the first missing file.
+        let err = verify_installed(&dir, Arch::X86_64)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cua-driver.exe is missing"), "{err}");
+        // A file with the right name and the wrong bytes: refused, with both hashes.
+        for (name, _) in Arch::X86_64.files() {
+            std::fs::write(dir.join(name), b"not the release").unwrap();
+        }
+        let err = verify_installed(&dir, Arch::X86_64)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not match the pinned SHA-256"), "{err}");
+        assert!(err.contains("it is not run"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_arch_pins_the_same_program_files_with_real_digests() {
+        assert_eq!(Arch::X86_64.size(), 31_316_916);
+        assert!(Arch::Arm64.size() > 1_000_000 && Arch::Arm64.size() < 100 * 1024 * 1024);
+        assert_eq!(Arch::X86_64.folder(), "cua-driver-rs-0.34.0-windows-x86_64");
+        let names = |a: Arch| a.files().iter().map(|f| f.0).collect::<Vec<_>>();
+        assert_eq!(names(Arch::X86_64), names(Arch::Arm64));
+        assert_eq!(names(Arch::X86_64)[0], "cua-driver.exe");
+        for arch in [Arch::X86_64, Arch::Arm64] {
+            for (name, sum) in arch.files() {
+                assert_eq!(sum.len(), 64, "{name}");
+                assert!(
+                    sum.bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                );
+            }
+        }
     }
 
     #[test]

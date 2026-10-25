@@ -234,3 +234,25 @@ dialog::backdrop { background: rgba(21, 23, 26, 0.28); }
 .now-name { font-weight: 600; }
 .now-empty { display: flex; align-items: center; gap: 16px; padding: 16px; color: var(--ink-2); }
 .now-cat { --cat-size: 96px; }
+
+/* Warnings (app.js renderAlerts, alerts-model.js): above every screen, one tidy row each on the light tokens. An
+   icon in a soft tint, the words in ink, the buttons on the right. Colour is never the only signal: each row has
+   an icon and a title. */
+.alerts-area { display: flex; flex-direction: column; gap: 8px; padding: 16px 40px 0; max-width: 1000px; }
+.alerts { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.alert-row { display: flex; align-items: flex-start; gap: 12px; margin: 0; padding: 12px 14px; border-radius: 14px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink); box-shadow: inset 3px 0 0 var(--needs); }
+.alert-row.stopped { box-shadow: inset 3px 0 0 var(--stopped); }
+.alert-icon { flex: none; width: 32px; height: 32px; padding: 7px; border-radius: 10px; background: var(--needs-soft); color: var(--needs);
+  fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.alert-row.stopped .alert-icon { background: var(--stopped-soft); color: var(--stopped); }
+.alert-words { flex: 1; min-width: 0; align-self: center; }
+.alert-title { font: var(--t-h2); }
+.alert-text { font: var(--t-body); color: var(--ink-2); overflow-wrap: anywhere; }
+.alert-note { font: var(--t-small); color: var(--ink-3); margin-top: 4px; }
+.alert-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; align-self: center; }
+.alert-actions button { padding: 5px 12px; font: var(--t-small); white-space: nowrap; }
+.alert-actions button.quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+.alert-actions button.quiet:hover { background: var(--surface-2); color: var(--ink); }
+@media (max-width: 1100px) { .alert-row { flex-wrap: wrap; } .alert-actions { width: 100%; padding-left: 44px; justify-content: flex-start; } }
+@media (forced-colors: active) { .alert-row { border: 1px solid CanvasText; box-shadow: none; } .alert-icon { color: CanvasText; } }

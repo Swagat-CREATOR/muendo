@@ -341,3 +341,22 @@ test('lane frames arrive as one "lane" event, whatever lane they belong to', () 
   assert.deepStrictEqual(lanes, [['a', 'one'], ['b', 'two']]);
   h.client.stop();
 });
+
+test('speaks(type): yes once connected, no after the core refuses that type, yes again on a new connection', () => {
+  const h = start();
+  assert.strictEqual(h.client.speaks('agent.message'), false, 'nothing is spoken before connecting');
+  const s = handshake(h);
+  assert.strictEqual(h.client.speaks('agent.message'), true);
+  const errors = [];
+  h.client.on('error', (e) => errors.push(e.body.message));
+  // An older core answers a type it doesn't know with an error (core/crates/mewndo-core/src/desk.rs).
+  s.send({ v: VERSION, id: 'm1', type: 'error', body: { message: 'unknown message type agent.message for a App connection' } });
+  assert.strictEqual(h.client.speaks('agent.message'), false);
+  assert.strictEqual(h.client.speaks('inbox.hold'), true, 'only the refused type');
+  assert.strictEqual(errors.length, 1, 'the error still reaches its listeners');
+  s.emit('close');
+  h.clock.run();
+  handshake(h);
+  assert.strictEqual(h.client.speaks('agent.message'), true, 'a new connection may be to a newer core');
+  h.client.stop();
+});

@@ -5,13 +5,11 @@
 // Which is why it is a plain counter and nothing more: no weights, no decay, no model. Three identical
 // answers, one card, the user's own words on it, and a rule they can see and delete.
 //
-// ponytail: DEFERRED -- §34.9 R11's second half. Accepting a habit should append the action to `[allow]` or
-// `[deny]` in `%APPDATA%\Mewndo\rules.toml` with `toml_edit`, keeping the user's formatting and adding a
-// `# habit <date>` comment. `accept` below holds the rule in memory instead, so a habit survives the session
-// but not a restart, and `Settings → Habits` has nothing to list yet. The reason it is deferred and not
-// faked: `toml_edit` is a second TOML parser to add to the workspace, and a half-written rules.toml is worse
-// than no habit at all -- the write needs the core's temp-file-then-rename path (plot.md rule 4), which this
-// crate cannot reach. `pending()` exposes what would be written.
+// Writing an accepted habit into the user's rules.toml is the core's job (mewndo-core `rules_file.rs`, called when
+// the user says yes on the Habit card): it needs the temp-file-then-rename path (plot.md rule 4), which this crate
+// cannot reach. `accept` below holds the rule in memory for this one project from the moment the user says yes;
+// the rules.toml line applies after the next restart, and in every project, because rules.toml has no
+// per-project section. `pending()` lists what was accepted this session.
 
 use crate::Verdict;
 use crate::sig::{Sig, hex};
@@ -136,8 +134,7 @@ impl Habits {
             .copied()
     }
 
-    /// Accepted habits that still have to reach the user's rules.toml. Settings → Habits will list these
-    /// once the write lands; until then it is the honest answer to "what has Mewndo learned?".
+    /// The habits accepted since the core started (each one is also written to rules.toml by the core).
     pub fn pending(&self) -> &[HabitRequest] {
         &self.pending
     }

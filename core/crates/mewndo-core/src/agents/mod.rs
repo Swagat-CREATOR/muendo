@@ -8,6 +8,7 @@
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod mailbox;
 
 /// A card's 1 to 5 (§33.2), from what the Router already worked out, the same for every agent: one action must
 /// not look riskier in one agent's card than in another's. A deny or a brake is a 5; a hard rule (the ask and

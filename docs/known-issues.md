@@ -59,3 +59,59 @@ took 3464 ms", Linux), and `mewndo-savepoint: asks Mewndo for a save point` (Win
 pipe isn't involved. CI on its own runner passes.
 
 If one fails on an idle PC, it's real: keep the budget and find where the time goes.
+
+## Connect agents: the v1 hooks are installed, but never run against a real agent here
+
+Found 10 Oct 2026, changed 11 Oct 2026. The Connect buttons now write the v1 hooks (`mewndo-hook.exe`) into
+`~/.claude/settings.json`, `~/.codex/hooks.json` plus a `notify` line in `~/.codex/config.toml`, and
+`~/.cursor/hooks.json` (`apps/desktop/engine/agent-connect.js`), replacing the v0 hooks. Tested only against
+temporary folders on Linux. Not verified: that Claude Code on Windows runs a quoted forward-slash path (the v0 hooks
+use the same form); that Codex loads the user-level `~/.codex/hooks.json` at all (the project-level file did not run,
+`docs/decisions.md`; the spec says hooks are on by default, so no feature flag is written); that Cursor reads
+`timeout_ms`; and that Codex and Cursor run a quoted backslash path. Codex and Cursor get no save points from the
+v1 hooks (only Mewndo's own, when it sees the agent), and with the core down their v1 hooks let everything through
+except protected paths, where the v0 guard script refused destructive commands.
+
+## Typing into an idle agent's terminal: never run against a real terminal
+
+Found 11 Oct 2026. The pure parts (choosing the agent's process, cleaning the text, the key records, the offer's
+single use and expiry, the app's confirm flow) are tested on Linux; the Windows code compiles for
+x86_64-pc-windows-gnu. Not verified, because no Windows console was available here: that `AttachConsole` plus
+`WriteConsoleInputW` into `CONIN$` reaches an agent running in Windows Terminal (ConPTY) or the classic console;
+that Claude Code's Ink input, Codex and Cursor read the key events as typing (Ink may treat a fast burst as a paste,
+and its Enter handling may differ) and submit on the final `VK_RETURN`; that Claude Code on Windows runs hooks
+through a shell the walk skips (Git Bash, cmd), so the reported process is the agent's; and how long the Toolhelp32
+snapshot adds to each hook. A parent process that exited may have had its id reused, which a snapshot cannot tell
+apart; the core refuses to type when the reported id changed since the offer, but not this. If typing fails, the
+Talk box shows the helper's reason and offers a lane.
+
+## Computer use and Show Me: never run on Windows
+
+Found 11 Oct 2026. Everything that can run on Linux is tested there (the switch, the download's size and SHA-256
+check with a local fake file, the per-program check, the MCP settings for each agent, the skill format on both
+sides, the recording state machine and its password rules, replay through the guard with a stand-in for
+cua-driver), and the Windows code compiles and is clippy-clean for x86_64-pc-windows-gnu. Not verified, because no
+Windows machine was available here:
+
+- the download from GitHub and `Expand-Archive` in the real app (the pinned archive was fetched once on Linux, and
+  its SHA-256 matched the pin);
+- that `cua-driver.exe mcp` starts from `%LOCALAPPDATA%\Mewndo\vendor\cua-driver` and answers (no live capture);
+- the recording hooks: that they see the user's clicks and keys and not injected ones; that UI Automation's
+  `IsPassword` is reported by the browsers and apps people use (a field it can't read is treated as a password
+  field, so typed text may be missing rather than leaked); that `ToUnicodeEx` gives the right characters on
+  non-US layouts (dead keys may come out wrong); that clicks on elevated apps reach the hooks; that a hung app's
+  UI Automation does not hold up the steps behind it for long;
+- that the global Esc shortcut and the core's Esc both stop a recording without the recorded app seeing Esc;
+- replay: clicks are aimed at the recorded point on the primary display (cua-driver's desktop target), so a
+  window that moved, another display or a different DPI scale clicks the wrong place; the card names the step so
+  the user can refuse it;
+- that Claude Code, Codex and Cursor load the `mewndo-computer` MCP server from the files Mewndo writes (Claude Code
+  rewrites `~/.claude.json` often; a running Claude Code may overwrite the change until it restarts).
+
+## Installer: never built here
+
+Found 10 Oct 2026. `build/stage-binaries.js --check` and its tests run on Linux and in CI against synthetic Windows
+binaries, but no NSIS installer has been produced by this work, and `installer.nsh` has not been run. An update
+installed while an agent is running a `mewndo-hook.exe` from the installed plugin folder (a permission hook can
+wait 300 s) would find that file in use; the NSIS installer then asks to retry. Not seen: no installer has run.
+

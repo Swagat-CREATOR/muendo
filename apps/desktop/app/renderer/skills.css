@@ -1,0 +1,17 @@
+/* The Skills screen (skills-screen.js): Show Me recording, review and the saved skills. */
+.sk-empty-img { height: 180px; width: auto; max-width: 100%; object-fit: contain; }
+.sk-note, .sk-panel { margin: 0 0 16px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.sk-note p, .sk-panel p { margin: 0 0 8px; }
+.sk-panel h2 { font: var(--t-h2); margin: 0 0 10px; }
+.sk-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; font: var(--t-small); }
+.sk-field input, .sk-field textarea { font: var(--t-body); }
+.sk-steps { margin: 8px 0; padding-left: 24px; max-height: 340px; overflow-y: auto; }
+.sk-steps li { padding: 4px 0; }
+.sk-step { display: flex; align-items: center; gap: 8px; }
+.sk-step .sk-says { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sk-step input { flex: 1; min-width: 0; }
+.sk-step .sk-private { color: var(--ink-2); font-style: italic; }
+.sk-list li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.sk-list li:first-child { border-top: 0; }
+.sk-list .sk-name { font: 600 14px/20px var(--font-ui); }
+.sk-list .sk-meta { flex: 1; min-width: 0; }

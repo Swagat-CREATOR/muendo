@@ -25,37 +25,49 @@ label { display: block; margin: 6px 0; }
 #setup-folders li { padding: 4px 0; }
 #setup-folders .error { margin-left: 24px; }
 
-header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
-header label { margin: 0 0 0 auto; }
-.columns { display: grid; grid-template-columns: 300px 1fr; flex: 1; min-height: 0; }
-nav { border-right: 1px solid var(--line); padding: 0 12px; overflow: auto; }
-#detail { padding: 0 20px 20px; overflow: auto; }
+/* Protected folders (design spec §8.6): the screen title, a status bar, then the folder list beside the details. */
+.fs-head { padding: 32px 40px 0; }
+.fs-bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 4px 40px 16px; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: 14px; background: var(--surface); font: var(--t-small); color: var(--ink-2); }
+.fs-bar label { margin: 0 0 0 auto; display: inline-flex; gap: 6px; align-items: center; }
+.fs-bar button { padding: 4px 12px; font: var(--t-small); }
+.columns { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px; flex: 1; min-height: 0; padding: 0 40px 24px; }
+.columns > nav { padding: 0 16px 0 0; border-right: 1px solid var(--border); overflow: auto; }
+.columns > nav > button { width: 100%; }
+#detail { min-width: 0; overflow: auto; }
+#folder-title { font: var(--t-title); font-variation-settings: var(--display-axes); margin: 0 0 2px; }
+#folder-path { font: var(--t-mono); color: var(--ink-3); margin: 0 0 12px; overflow-wrap: anywhere; }
+#detail h3 { font: var(--t-h2); margin: 24px 0 8px; }
+.fs-empty { padding: 48px 0; text-align: center; }
+.fs-cat { --cat-size: 96px; --pose: url(../../assets/cat/cat-loaf.svg); } /* resolves against design/base.css */
 
-#folders li { padding: 8px 10px; border-radius: 12px; cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
-#folders li:hover { border-color: var(--line); }
-#folders li.selected { border-color: var(--accent); }
+#folders li { padding: 10px 12px; border-radius: 12px; cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
+#folders li:hover { background: var(--surface); }
+#folders li.selected { border-color: var(--border); background: var(--surface); box-shadow: inset 3px 0 0 var(--focus); }
+#folders li > div + div { font: var(--t-small); color: var(--ink-2); }
+#folders li .error { color: var(--stopped); }
 #folders .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
 #folders .name .ring { --ring-size: 12px; }
 #folders .name .ring::after { display: none; }
 #folders .path { font: var(--t-mono); font-size: 11.5px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#folders li.selected { background: var(--surface); }
 .storage-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--surface-2); margin: 12px 0 4px; }
 .storage-bar i { display: block; height: 100%; }
 .storage-bar .used { background: var(--done); }
 .storage-bar .trash { background: var(--needs); }
 #folders progress { width: 100%; }
 
-.scroll { max-height: 280px; overflow: auto; border: 1px solid var(--line); }
+.scroll { max-height: 280px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
-thead th { position: sticky; top: 0; background: var(--bg); }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+thead th { position: sticky; top: 0; background: var(--surface); font: var(--t-small); color: var(--ink-2); }
 tbody tr { cursor: pointer; }
-tbody tr:hover, tbody tr.selected { background: #1f6b9c22; }
+tbody tr:hover { background: var(--surface); }
+tbody tr.selected { background: var(--done-soft); }
 
 #diff-lists h4 { margin: 10px 0 2px; }
 #diff-lists ul { list-style: none; padding-left: 4px; margin: 0; max-height: 200px; overflow: auto; }
 #diff-lists label { margin: 1px 0; font-family: ui-monospace, monospace; font-size: 12px; }
-#result { border: 1px solid var(--line); padding: 8px 12px; border-radius: 4px; }
+#result { border: 1px solid var(--line); padding: 8px 12px; border-radius: 12px; background: var(--surface); }
 #restores li { padding: 6px 0; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
 dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); }
@@ -67,10 +79,6 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   border: 1px solid var(--float-border); box-shadow: var(--float-shadow); z-index: 10; }
 #toast .cat { --cat-size: 48px; --cat: var(--float-ink); flex: none; }
 
-.banner { margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--line); }
-#alerts { padding: 8px 16px; }
-#alerts li { padding: 2px 0; }
-#alerts button { font-size: 12px; padding: 1px 8px; }
 .mono, pre { font-family: ui-monospace, monospace; font-size: 12px; }
 pre { max-height: 260px; overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #agents.running { font-weight: 600; color: var(--bad); }

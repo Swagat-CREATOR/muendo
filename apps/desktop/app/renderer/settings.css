@@ -23,3 +23,20 @@ body.settings { margin: 0; padding: 0; background: var(--sidebar); color: var(--
 .set-card table { font: var(--t-small); }
 .set-card input[type=number] { min-width: 0; width: 90px; }
 .set-card textarea { width: 100%; box-sizing: border-box; }
+
+/* Habits: one row per learned rule, the list it's in as a chip, the command in mono, Remove on the right. */
+.habit-list { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 8px; }
+.habit-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: #FFFFFF; }
+.habit-what { flex: 1; min-width: 0; }
+.habit-command { overflow-wrap: anywhere; color: var(--ink); }
+.habit-chip { flex: none; padding: 2px 10px; border-radius: var(--r-pill); font: var(--t-small); background: var(--done-soft); color: var(--ink); }
+.habit-chip.deny { background: var(--stopped-soft); }
+.habit-empty { padding: 16px; border-radius: 12px; border: 1px dashed var(--border); background: #FFFFFF; }
+.habit-empty p { margin: 0 0 4px; }
+
+/* Notifications: the Do not disturb choices, its state line, the volume slider. */
+.dnd-modes { display: flex; flex-direction: column; gap: 2px; margin: 10px 0 4px; }
+.dnd-modes input[type=time] { font: inherit; padding: 2px 6px; border-radius: 8px; border: 1px solid var(--border); background: #FFFFFF; color: var(--ink); }
+.dnd-now { margin: 8px 0 4px; font: var(--t-small); color: var(--ink-2); }
+.dnd-now.on { color: var(--needs); font-weight: 600; }
+#sound-volume { width: 180px; accent-color: var(--focus); }

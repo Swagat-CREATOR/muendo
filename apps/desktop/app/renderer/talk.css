@@ -15,3 +15,18 @@ input::placeholder { color: var(--float-ink-2); }
 .target button:hover { background: #24282C; }
 .target button:focus-visible { outline: 2px solid var(--float-done); }
 .keycap { min-width: 16px; padding: 1px 5px; font-size: 11px; }
+.status { font: var(--t-small); color: var(--float-ink-2); display: flex; align-items: center; gap: 6px; }
+.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--float-ink-2); }
+.status.sent::before { background: var(--float-done); }
+.status.queued::before { background: var(--float-needs); }
+.status.failed { color: var(--float-ink); }
+.status.failed::before { background: var(--float-stopped); }
+.status.sending::before { animation: talk-pulse 1s ease-in-out infinite alternate; }
+@keyframes talk-pulse { from { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .status.sending::before { animation: none; } }
+input[readonly] { cursor: default; }
+/* A typing offer: the exact text that would be typed, all of it, scrolling when it is long. */
+.quote { font: var(--t-small); color: var(--float-ink); max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+  overflow-wrap: anywhere; user-select: text; }
+.box.confirm input { display: none; }
+.status.confirm::before { background: var(--float-needs); }

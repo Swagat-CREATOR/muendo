@@ -9,7 +9,7 @@ message's labels and trash state and puts out-of-scope changes back.
 - **Journal:** per-user Durable Object stores each touched message's labels, trash
   and `gone` state over time.
 - **Heal:** `POST /gmail/restore` restores with one `batchModify` to untrash and one
-  per distinct label change (`src/heal.js`, unit-tested).
+  per distinct label change (`src/heal.js`, unit-tested). It needs the app token.
 
 > **Honest limit (spec §28.10):** permanently deleted mail can only come back from a
 > copy Mewndo made *before* deletion — Gmail has no undelete. `/gmail/restore` returns
@@ -72,33 +72,42 @@ here cannot read the mailbox and a bug in Heal cannot send.
   `docs/spec.md` stops at §31, so the shape follows §29.5 plus what
   `cloud/gateway/src/gateway.js` `validateDecideRequest`/`parseClefAnswers` accept.
 
-## Deploy (needs your Google project from P6.1 — I can't deploy from the repo)
+## How the app talks to it (docs/connections-setup.md)
+
+- **Sign-in:** the app opens `GET /oauth/start?claim=<sha256(secret)>`; after Google's callback the Worker parks an
+  app token under that hash for 10 minutes and the app collects it once with `POST /oauth/claim {claim: secret}`.
+  The token goes to Windows Credential Manager; the Worker keeps only its SHA-256 (`src/app-auth.js`).
+- **App routes** (all need `Authorization: Bearer <app token>`; the account comes from the token, never the body):
+  `GET /app/status`, `POST /app/sync` (reconcile now; the app calls it every 3 minutes, so Pub/Sub is optional),
+  `GET /app/changes` (the journal as changes, with subjects for the newest 20), `POST /gmail/restore
+  {messageIds?, before?}` (`before` = put each message back as it was just before that time), `POST /app/disconnect`
+  (stop the watch, revoke Google's grant, forget the account).
+- **Journal without a call per message:** `history.list` records carry labels and the labels added/removed, so the
+  state *before* the first change Mewndo sees is walked back from them (`historyToEntries`). Mewndo's own restores
+  are journaled as `by: "mewndo"` and not shown as an agent's change.
+
+## Deploy
 
 ```bash
 cd cloud/gmail
-npm install
-npx wrangler login
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
-npx wrangler deploy          # prints the Worker URL
+npx wrangler@3 login
+npx wrangler@3 deploy                          # prints the Worker URL; creates the Durable Object and the cron
+npx wrangler@3 secret put GOOGLE_CLIENT_ID      # you type it
+npx wrangler@3 secret put GOOGLE_CLIENT_SECRET
 ```
 
-Set the Pub/Sub push subscription endpoint (P6.1) to `<worker-url>/gmail/push` and
-the OAuth redirect URI to `<worker-url>/oauth/callback`.
+Add `<worker-url>/oauth/callback` to the OAuth client's redirect URIs. Pub/Sub push (`<worker-url>/gmail/push`,
+`GOOGLE_PUBSUB_TOPIC` in `wrangler.toml`) is optional and needs a Google billing account.
 
 ## Measure restore time (spec P6.2 "You should see")
 
-With a test account connected, trash 1 message then 100, then:
-
-```bash
-curl -s <worker-url>/gmail/restore -H 'content-type: application/json' \
-  -d '{"user":"you@gmail.com"}'
-```
-
-The response includes `ms`. Target: 2–10 s for one message, under 15 s for 100.
+With a test account connected, trash 1 message then 100, then press Undo on the burst in Mewndo (or call
+`/gmail/restore` with the app token). The response includes `ms`. Target: 2–10 s for one message, under 15 s for 100.
 
 ## Status
 
 Written here but **not deployed or tested against a live account** (needs your
-Google Cloud project and a test mailbox). The Heal planner (`src/heal.js`) is
-unit-tested offline: `npm test`.
+Google Cloud project and a test mailbox). The Heal planner, the journal helpers and
+the app routes (with a fake Durable Object) are unit-tested offline: `npm test`.
+`/gmail/send` still takes `user` from the body; it can't send until a `send_refresh_token`
+exists, which nothing grants yet.

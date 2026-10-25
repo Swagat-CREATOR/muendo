@@ -7,6 +7,8 @@
 // Routes
 //   GET  /health            liveness, and what §34.9 R6 pre-connects to
 //   POST /v1/decide         one System One decision (§34.3 in, §34.9 R6 out)
+//   POST /v1/transcribe     speech to text: a WAV body in, {text} out (Whisper), or {fallback:true} for the PC's
+//                           offline recognizer
 //   POST /invite/redeem     a judge code for a device token (§37.5)
 //   POST /admin/invites     mint judge codes    (x-admin-secret)
 //   POST /admin/revoke      revoke a device     (x-admin-secret)
@@ -23,9 +25,12 @@ import { Hub } from './hub.js'
 import { handle as mcpHandle } from './mcp.js'
 import {
   MAX_BODY_BYTES, estimateNeurons, kindOf, parseClefAnswers, sortedJson, validateDecideRequest,
+  toClefRequest, fromClefResponse, clefNeurons,
+  MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, wavSeconds, estimateAudioNeurons,
 } from './gateway.js'
 
 const DEFAULT_MODEL = '@cf/cloudflare/clef-flash'
+const DEFAULT_TRANSCRIBE_MODEL = '@cf/openai/whisper' // the user's choice, 10 Oct 2026
 
 export default {
   async fetch(request, env, ctx) {
@@ -45,6 +50,8 @@ async function route(request, env, ctx) {
   switch (`${request.method} ${path}`) {
     case 'GET /health': return json({ ok: true, service: 'mewndo-cloud' })
     case 'POST /v1/decide': return decide(request, env, ctx)
+    case 'POST /v1/transcribe': return transcribe(request, env, ctx)
+    case 'POST /v1/register': return register(request, env)
     case 'POST /invite/redeem': return redeem(request, env)
     case 'POST /admin/invites': return adminInvites(request, env)
     case 'POST /admin/revoke': return adminRevoke(request, env)
@@ -194,24 +201,18 @@ async function decide(request, env, ctx) {
   return json({ answers: parsed.answers, backend: decision.route, ms, rules_only: rulesOnly })
 }
 
-// The one place the Workers AI call shape lives. §32.5 rule 3 lists the exact
-// input and output of @cf/cloudflare/clef-flash as unverified, so this asks for
-// the §34.9 R6 field names as strict JSON and lets parseClefAnswers refuse
-// anything else. When the real binding schema is confirmed, only this changes.
+// The one place the Workers AI call shape lives. clef-flash takes typed questions and returns typed answers
+// (gateway.js, "the real clef-flash API"); toClefRequest and fromClefResponse convert both ways. A model that answers
+// with text instead (a DECIDE_MODEL override to a chat model) is still read as JSON in that text.
 async function askWorkersAi(env, req, deadlineMs) {
   if (!env.AI) throw new Error('no AI binding')
   const model = env.DECIDE_MODEL || DEFAULT_MODEL
-  const sys = 'You answer questions about an AI agent action for a safety guard. '
-    + 'Reply with ONLY a JSON object: {"answers":{"<question id>":<answer>}}. '
-    + 'noul -> {"p_yes":<0..1>}. score -> {"value":<a number on that question\'s scale>}. '
-    + 'choice -> {"probabilities":{"<option>":<0..1>, ...}} over exactly that question\'s options. '
-    + 'Answer every question id. No prose.'
-  const call = env.AI.run(model, {
-    messages: [{ role: 'system', content: sys }, { role: 'user', content: JSON.stringify(req) }],
-    temperature: 0, // a guard decision must be stable for identical input
-  })
-  const out = await withDeadline(call, deadlineMs, 'workers_ai')
+  const selector = /\/clef$/.test(model) ? 'clef' : 'clef-flash'
+  const out = await withDeadline(env.AI.run(model, toClefRequest(req, selector)), deadlineMs, 'workers_ai')
   try {
+    if (out && typeof out === 'object' && out.answers && typeof out.answers === 'object') {
+      return fromClefResponse(req.questions, out)
+    }
     const text = typeof out === 'string' ? out : out?.response ?? out?.result ?? out
     return typeof text === 'string' ? JSON.parse(extractJson(text)) : text
   } catch (e) {
@@ -230,7 +231,7 @@ function spent(e) {
 // none is known to, so this is almost always null and the estimate stands.
 function usedNeurons(raw) {
   const n = Number(raw?.usage?.neurons ?? raw?.neurons)
-  return Number.isFinite(n) ? Math.ceil(n) : null
+  return Number.isFinite(n) ? Math.ceil(n) : clefNeurons(raw?.usage)
 }
 
 // Stops waiting at the deadline (§34.8). It cannot cancel env.AI.run, because
@@ -244,7 +245,69 @@ function withDeadline(promise, ms, what) {
   ])
 }
 
+// --- speech to text ---------------------------------------------------------------
+// The audio is used for this one call and never stored or logged; only its length and the time taken are.
+// No answer cache: two recordings are never the same question.
+async function transcribe(request, env, ctx) {
+  const token = bearer(request)
+  if (!token) return json({ error: 'unauthorized' }, 401)
+  const audio = new Uint8Array(await request.arrayBuffer())
+  if (audio.length > MAX_AUDIO_BYTES) return json({ error: `audio over ${MAX_AUDIO_BYTES} bytes` }, 413)
+  let seconds
+  try {
+    seconds = wavSeconds(audio)
+  } catch (e) {
+    return json({ error: e.message }, e.status || 400)
+  }
+  if (seconds > MAX_AUDIO_SECONDS) return json({ error: `audio over ${MAX_AUDIO_SECONDS} seconds` }, 413)
+
+  const deadlineHeader = Number(request.headers.get('x-mewndo-deadline-ms'))
+  const decision = await state(env, 'authPrepare', {
+    token,
+    sig: `audio:${crypto.randomUUID()}`,
+    scope: 'audio',
+    kind: 'transcribe',
+    estNeurons: estimateAudioNeurons(seconds),
+    deadlineMs: Number.isFinite(deadlineHeader) ? deadlineHeader : undefined,
+  })
+  const who = { tester: decision.tester, device: decision.device }
+  const rulesOnly = decision.rules_only === true
+  if (decision.route === 'fallback') {
+    log({ at: 'transcribe', backend: 'fallback', reason: decision.reason, tester: who.tester })
+    return json({ fallback: true, reason: decision.reason, rules_only: rulesOnly })
+  }
+
+  const started = Date.now()
+  try {
+    if (!env.AI) throw new Error('no AI binding')
+    const model = env.TRANSCRIBE_MODEL || DEFAULT_TRANSCRIBE_MODEL
+    // The binding's documented input: the file's bytes as an array of 0..255 (whisper.json in Cloudflare's docs).
+    const out = await withDeadline(env.AI.run(model, { audio: [...audio] }), decision.deadlineMs, 'workers_ai')
+    if (typeof out?.text !== 'string') throw spent(new Error('no text in the answer'))
+    const ms = Date.now() - started
+    ctx.waitUntil(state(env, 'settle', { ...who, reserved: decision.reserve, backend: 'whisper', ms }).catch(() => {}))
+    log({ at: 'transcribe', backend: 'workers_ai', seconds: Math.round(seconds * 10) / 10, ms, tester: who.tester })
+    return json({ text: out.text.trim(), backend: 'workers_ai', ms, rules_only: rulesOnly })
+  } catch (e) {
+    const ms = Date.now() - started
+    ctx.waitUntil(state(env, 'settle', {
+      ...who, reserved: decision.reserve, actualNeurons: e?.spent ? null : 0, backend: 'whisper', ms,
+    }).catch(() => {}))
+    log({ at: 'transcribe', backend: 'workers_ai', ms, error: String(e && e.message) })
+    return json({ fallback: true, reason: 'workers_ai_error', ms, rules_only: rulesOnly })
+  }
+}
+
 // --- K3: invites and admin ----------------------------------------------------
+// A device token without an invite (state.js register). The network is counted by a hash of its address, so no
+// address is ever stored.
+async function register(request, env) {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown'
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`mewndo:${ip}`))
+  const who = [...new Uint8Array(digest)].slice(0, 12).map((b) => b.toString(16).padStart(2, '0')).join('')
+  return json(await state(env, 'register', { who }))
+}
+
 async function redeem(request, env) {
   const body = await readJson(request)
   const out = await state(env, 'redeem', { code: body.code, name: body.name ?? null })

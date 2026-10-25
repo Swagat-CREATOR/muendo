@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="design/base.css">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="shell.css">
+  <link rel="stylesheet" href="connections.css">
+  <link rel="stylesheet" href="skills.css">
 </head>
 <body>
   <section id="setup" class="firstrun" hidden>
@@ -88,6 +90,12 @@
       </div>
     </aside>
     <div class="content">
+    <!-- Warnings (a folder that can't be found, low disk space...) above every screen, one row each: alerts-model.js. -->
+    <div id="alerts-area" class="alerts-area" hidden>
+      <p id="shortcut-problem" class="alert-row" role="alert" hidden></p>
+      <p id="hook-problem" class="alert-row" role="alert" hidden></p>
+      <ul id="alerts" class="plain alerts" aria-label="Warnings" hidden></ul>
+    </div>
     <section class="screen" data-screen="home" hidden>
       <h1 id="hello" class="hello display"></h1>
       <p id="greeting" class="greeting">Undo anything with <span class="keycap">Alt</span> + <span class="keycap">Shift</span> + <span class="keycap">Z</span></p>
@@ -115,7 +123,7 @@
       <div id="ib-list" class="ib-list" role="list"></div>
       <div id="ib-empty" class="tl-empty" hidden>
         <span class="cat ib-cat" aria-hidden="true"><i></i></span>
-        <p id="ib-empty-text">Nothing needs you. When an agent asks something, it shows up here and beside the dock.</p>
+        <p id="ib-empty-text">All clear. When an agent asks something, it shows up here and beside the dock.</p>
       </div>
     </section>
     <section class="screen" data-screen="agents" hidden>
@@ -157,27 +165,58 @@
       <div id="cx-grid" class="cx-grid"></div>
     </section>
     <section class="screen" data-screen="skills" hidden>
-      <div class="tl-head"><h1 class="display">Skills</h1><button class="primary" disabled title="Not available yet">Record a skill</button></div>
-      <div class="tl-empty">
-        <span class="cat sk-cat" aria-hidden="true"><i></i></span>
-        <p>Show Me will let you teach Mewndo a workflow once and let your agents repeat it.</p>
-        <p class="muted">It isn't available yet. When it comes, it stays off until you turn it on in Settings.</p>
+      <div class="tl-head"><h1 class="display">Skills</h1><button id="sk-record" class="primary">Record a skill</button></div>
+      <div id="sk-off" class="sk-note" hidden>
+        <p>Show Me needs computer use, which is off. Turn it on in Settings first; it stays off until you do.</p>
+        <button id="sk-open-settings">Open Computer use settings</button>
       </div>
+      <p id="sk-status" class="muted" role="status"></p>
+      <div id="sk-recording" class="sk-panel" hidden>
+        <p><strong>Recording.</strong> Show the workflow in your apps, then press Esc. It stops by itself after 10 minutes.
+          Text typed into password fields and password managers is never recorded.</p>
+        <p id="sk-rec-count" class="muted"></p>
+        <button id="sk-stop">Stop recording</button>
+      </div>
+      <div id="sk-editor" class="sk-panel" hidden>
+        <h2 id="sk-editor-title">Review the recording</h2>
+        <label class="sk-field">Name <input id="sk-name" maxlength="80" placeholder="Send the weekly report"></label>
+        <label class="sk-field">What it does <textarea id="sk-desc" rows="2" maxlength="2000"></textarea></label>
+        <p class="muted">Each step below is what an agent will do, in order. Delete what you didn't mean to show; you can correct typed text.
+          Replay clicks the same screen points, so the windows need to be where they were.</p>
+        <ol id="sk-steps" class="sk-steps"></ol>
+        <p id="sk-editor-error" class="error" role="alert"></p>
+        <div class="row">
+          <button id="sk-save" class="primary">Save skill</button>
+          <button id="sk-cancel">Discard</button>
+          <button id="sk-delete" class="danger" hidden>Delete skill…</button>
+        </div>
+      </div>
+      <ul id="sk-list" class="plain sk-list"></ul>
+      <div id="sk-empty" class="tl-empty">
+        <img id="sk-empty-img" class="sk-empty-img" src="../assets/cat/skills-empty.png" alt="" hidden>
+        <span id="sk-empty-cat" class="cat sk-cat" aria-hidden="true"><i></i></span>
+        <p>Show Me lets you teach Mewndo a workflow once and let your agents repeat it.</p>
+        <p class="muted">Agents run a skill with the run_skill tool, and every step still asks you first.</p>
+      </div>
+      <dialog id="sk-delete-dialog">
+        <form method="dialog">
+          <h2>Delete this skill?</h2>
+          <p>Agents can't run it any more. The file goes to the trash folder inside Mewndo's skills folder, so it can be put back by hand.</p>
+          <menu><button value="cancel">Cancel</button><button value="ok" class="danger">Delete</button></menu>
+        </form>
+      </dialog>
     </section>
-    <section class="screen folders-screen" data-screen="folders">
-    <header>
+    <section class="screen folders-screen" data-screen="folders" hidden>
+    <div class="tl-head fs-head"><h1 class="display">Protected folders</h1><button id="add-folder-top" class="primary">Add folder…</button></div>
+    <header class="fs-bar">
       <span id="agents"></span>
       <span id="pause-status" class="muted"></span>
       <span id="core-status" class="muted"></span>
       <button id="pause">Pause protection for 1 hour</button>
       <label id="login-wrap"><input type="checkbox" id="login"> Start at sign-in</label>
     </header>
-    <p id="shortcut-problem" class="error banner" role="alert" hidden></p>
-    <p id="hook-problem" class="error banner" role="alert" hidden></p>
-    <ul id="alerts" class="plain banner" role="alert" hidden></ul>
     <div class="columns">
       <nav aria-label="Protected folders">
-        <h2>Protected folders</h2>
         <ul id="folders" class="plain"></ul>
         <button id="add-folder">Add folder…</button>
         <div id="storage-bar" class="storage-bar" hidden title="History used, and Mewndo's trash, against the budget"><i class="used"></i><i class="trash"></i></div>
@@ -186,7 +225,10 @@
       </nav>
 
       <section id="detail">
-        <p id="no-folder" class="muted">Choose a folder on the left, or add one.</p>
+        <div id="no-folder" class="tl-empty fs-empty">
+          <span class="cat fs-cat" aria-hidden="true"><i></i></span>
+          <p id="no-folder-text">Choose a folder on the left to see its save points, or add one.</p>
+        </div>
         <div id="folder-view" hidden>
           <h2 id="folder-title"></h2>
           <p id="folder-path" class="muted"></p>
@@ -253,6 +295,32 @@
     </form>
   </dialog>
 
+  <dialog id="remove-missing">
+    <form method="dialog">
+      <h2>Remove <span id="remove-missing-name"></span> from Mewndo?</h2>
+      <p>Mewndo stops looking for this folder. Nothing in the folder is touched, wherever it is now. To copy files out of
+        its save points first, choose it on the left and use Restore to separate folder.</p>
+      <label><input type="radio" name="missing-history" value="keep" checked> Keep its save points: protect the folder again (say, when its drive is back) and they're all there</label>
+      <label><input type="radio" name="missing-history" value="delete"> Also delete its save points (Mewndo's trash for it is kept)</label>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Remove from Mewndo</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="locate-dialog">
+    <form method="dialog">
+      <h2>Where is <span id="locate-name"></span> now?</h2>
+      <p id="locate-text"></p>
+      <p class="muted">If its drive is just unplugged, plug it back in: Mewndo picks it up again with its history.</p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Protect its new place…</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="hooks-dialog">
     <form method="dialog">
       <h2 id="hooks-title">Add Mewndo to Claude Code?</h2>
@@ -298,8 +366,36 @@
     </form>
   </dialog>
 
+  <!-- Connections (renderer/connections.js): the GitHub token or the Notion secret, and the GitHub repo picker. -->
+  <dialog id="cx-secret-dialog">
+    <form method="dialog">
+      <h2 id="cx-secret-title"></h2>
+      <p id="cx-secret-text"></p>
+      <input id="cx-secret" type="password" autocomplete="off" spellcheck="false" aria-label="Token" class="cx-secret">
+      <p class="muted">Mewndo never writes it to a file or the log.</p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Connect</button>
+      </menu>
+    </form>
+  </dialog>
+  <dialog id="cx-repos-dialog">
+    <form method="dialog">
+      <h2>Repositories to journal</h2>
+      <p>Up to 10. Mewndo checks each one every 5 minutes; changes from now on can be undone.</p>
+      <div id="cx-repos" class="cx-repos"></div>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
   <div id="toast" role="status" aria-live="polite" hidden><span id="toast-cat" class="cat" aria-hidden="true" hidden><i></i></span><span id="toast-text"></span></div>
   <script src="design/logos.js"></script>
+  <script src="alerts-model.js"></script>
   <script src="app.js"></script>
+  <script src="connections.js"></script>
+  <script src="skills-screen.js"></script>
 </body>
 </html>

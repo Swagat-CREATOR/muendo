@@ -22,3 +22,8 @@ serde_json.workspace = true
 #                 already owns a runtime it can `spawn_blocking` into.
 #   vte, strip-ansi-escapes - the ring buffer replays raw bytes into xterm.js, which is the terminal emulator.
 #                 Parsing them here would mean emulating one twice.
+
+[target.'cfg(windows)'.dependencies]
+# WaitForSingleObject: a lane's agent has ended when its process is signalled, not when GetExitCodeProcess
+# stops saying STILL_ACTIVE (lane.rs, `exited`).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }

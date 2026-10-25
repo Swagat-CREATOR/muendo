@@ -10,7 +10,9 @@
 </head>
 <body class="float">
 <div class="box">
-  <input id="text" placeholder="Hold your Wispr Flow key and speak, or type" aria-label="Talk to your agents">
+  <input id="text" placeholder="Type, or hold the dock's mic and speak" aria-label="Talk to your agents">
+  <div id="status" class="status" role="status" hidden></div>
+  <div id="quote" class="quote" hidden></div>
   <div id="target" class="target" hidden></div>
 </div>
 <script src="talk.js"></script>

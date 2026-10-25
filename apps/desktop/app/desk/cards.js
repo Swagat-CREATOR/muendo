@@ -14,8 +14,11 @@
 const VISIBLE = 3; // at most three cards; the rest collapse into "+N more" (§33.1)
 const DEFAULT_GRACE_MS = 2_000;
 const VOICE_HINT = 'Hold your Wispr Flow key and speak';
+// When Mewndo's own mic works (app/speech.js), V records into the reply box instead: press V or the mic to stop,
+// check the words, Enter sends.
+const MIC_HINT = 'Listening… press V or the mic to stop';
 
-// The five kinds of §33.2. The Inbox engine (Part D) names them; these aliases keep the UI working if it uses the
+// The five kinds of §33.2, and the Habit card of §34.7. The Inbox engine (Part D) names them; these aliases keep the UI working if it uses the
 // longer names from the spec table.
 const ALIASES = {
   permission: 'permission', 'needs-permission': 'permission', 'needs_permission': 'permission',
@@ -23,6 +26,7 @@ const ALIASES = {
   done: 'done', stop: 'done',
   drift: 'drift', hold: 'drift', 'drift-hold': 'drift',
   receipt: 'receipt', 'receipt-warning': 'receipt', 'receipt_warning': 'receipt',
+  habit: 'habit',
 };
 const normaliseKind = (kind) => ALIASES[String(kind ?? '').toLowerCase()] ?? 'question';
 
@@ -55,9 +59,16 @@ const KEYS = {
     2: { action: 'undo', label: 'Undo turn' },
     e: { action: 'dismiss', label: 'Ignore' },
   },
+  // "Always allow `npm test` in shop?" (§34.7). The core writes the rule on yes; no agent is waiting on it.
+  habit: {
+    1: { action: 'answer', choice: 0, label: 'Yes' },
+    2: { action: 'answer', choice: 1, label: 'No' },
+    3: { action: 'answer', choice: 2, label: 'Never ask' },
+  },
 };
 
-// 1–9 pick an option on a Question card; the options come from the core, so only the ones it sent work.
+// 1–9 pick an option on a Question card, and a next step on a Done card (the core sends up to three, in the same
+// shape); the options come from the core, so only the ones it sent work.
 function keyAction(card, rawKey) {
   const key = rawKey === 'Spacebar' ? ' ' : rawKey;
   const kind = normaliseKind(card?.kind);
@@ -66,7 +77,7 @@ function keyAction(card, rawKey) {
   if (key === 'Escape') return { action: card?.state === 'answering' ? 'take-back' : 'leave' };
   if (key === 'Enter') return { action: 'confirm' };
   const lower = typeof key === 'string' && key.length === 1 ? key.toLowerCase() : key;
-  if (kind === 'question' && /^[1-9]$/.test(String(key))) {
+  if ((kind === 'question' || kind === 'done') && /^[1-9]$/.test(String(key))) {
     const choice = Number(key) - 1;
     const label = card?.options?.[choice];
     return label ? { action: 'answer', choice, label } : null;
@@ -88,9 +99,10 @@ function describe(card) {
   const hints = {
     permission: ['1 allow once', '2 always allow here', '3 deny', 'Space add a reason'],
     question: [`1–${Math.min(9, Math.max(1, card.options?.length ?? 1))} pick`, 'Space type', 'V voice'],
-    done: ['Space reply', 'V voice reply', 'U undo turn', 'E clear'],
+    done: [...(card.options?.length ? [`1–${Math.min(9, card.options.length)} next step`] : []), 'Space reply', 'V voice reply', 'U undo turn', 'E clear'],
     drift: ['1 resume with corrected brief', '2 let it', '3 stop and review'],
     receipt: ['1 send back', '2 undo turn', 'E ignore'],
+    habit: ['1 yes', '2 no', '3 never ask'],
   }[kind];
   return {
     id: card.id,
@@ -245,4 +257,4 @@ function createCards({ now = Date.now } = {}) {
   };
 }
 
-module.exports = { createCards, keyAction, describe, normaliseKind, KEYS, VISIBLE, DEFAULT_GRACE_MS, VOICE_HINT };
+module.exports = { createCards, keyAction, describe, normaliseKind, KEYS, VISIBLE, DEFAULT_GRACE_MS, VOICE_HINT, MIC_HINT };

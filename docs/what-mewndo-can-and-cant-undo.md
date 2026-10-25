@@ -118,6 +118,11 @@ Written but not connected, so Mewndo can't undo anything there today:
   an answer it can't parse becomes a fallback to the local rules, never a guessed verdict. Nothing points the core
   at a gateway by default: unless `MEWNDO_DECIDE_URL` is set, no model is called at all and every Guard decision is
   made by the rules in the core, on this PC.
+  The core's gateway client (`core/crates/mewndo-core/src/clef_gateway.rs`) is written and has run against the real
+  Worker under `wrangler dev` with a **stubbed** model, on Linux only. It is used only when `MEWNDO_GATEWAY_URL` is
+  set and a device token is saved in Windows Credential Manager (`Mewndo/gateway-device-token`); nothing saves that
+  token yet, and the Worker is not deployed, so on a real PC every Guard decision is still the rules'. Its HTTPS
+  path (SChannel) has been compiled for Windows but never run there.
 
 Started on that date, and nothing in the app calls any of it yet:
 
@@ -136,6 +141,50 @@ request: a card, answered with the Inbox key, the answer back to the hook, focus
 Claude Code or Codex session has driven it yet. Not built at all: guarded computer use and Show Me (spec §36). Whoever lands
 one of these owns the matching change to this page: spec §31.7 makes keeping it level with §28.10 part of the
 work, and nothing may be claimed here that isn't measured.
+
+**Habit cards** (spec §34.7): after the same answer three times to the same action in the same project, the Inbox
+offers "Always allow `npm test` in shop?" with yes, no and never ask. Yes stops asking for that action in that
+project at once, and adds the command to `[allow]` (or `[deny]`) in `%APPDATA%\Mewndo\rules.toml` under a
+`# habit <date>` comment, keeping the rest of the file as it was. What it can't do: rules.toml has no per-project
+section, so after the next restart that line applies in **every** project, and as a phrase it also matches longer
+commands that contain it. A rules.toml that doesn't parse is never rewritten; the habit then lasts until the core
+stops. "Never ask" and the counts are kept in memory only, so they reset when the core restarts. Undoing a habit means
+deleting its line from rules.toml; there is no Settings → Habits page yet. Tested in the core and the app's card
+logic on Linux; not yet seen in the real app on Windows.
+
+**Lanes** (spec §33.7): the core can start Claude Code, Codex or Cursor's agent in a terminal Mewndo owns, type a
+reply into it at any time, press Ctrl+C in it (the brake), resize it, replay its last 256 KB to a window that opens
+later, and stop it. Tested end to end over the desk pipe on Linux with `sh`, and on Windows in CI with `cmd` through
+ConPTY; never yet with a real agent. What it can't do: it reads a terminal, it doesn't understand one, so a reply
+typed while the agent is mid-answer is typed then, exactly as if you had pressed the keys. A lane does not outlive
+Mewndo: quitting Mewndo stops every agent running in a lane. The replay buffer is memory only. The lanes window
+still shows a placeholder, so none of this can be used from the app yet.
+
+**Guarded computer use** (spec §36): built in the core and the proxy, off by default, and nothing in the app
+can switch it on yet. When on, every action an agent takes on the desktop through cua-driver is shown on a card
+first and happens only if you allow it; touching the mouse or keyboard while an agent is acting pauses it until
+you choose Resume. What it can't do: **nothing a click does can be undone by Mewndo**, so the card is the only
+protection. The card cannot show what is under the pointer (no element name, no screenshot yet), and it shows
+typed text only as its length. Never run against the real cua-driver; tested with a fake driver on Linux.
+
+**The agent cursor** (spec §36.6 U7, U8): when you allow an act at a point, a second cursor -- Mewndo's, with a
+label such as "Claude · clicking" -- glides there, so you can tell the agent's pointer from yours. Mewndo asks
+cua-driver to hide its own cursor so there is only one; if the driver won't, its cursor stays and Mewndo adds just
+the label beside it. What it can't do: it only shows, it never stops anything (the card does that). It can't place
+an act that names no window or display, or a window it can't confirm belongs to that app, and then shows nothing
+rather than a wrong place; it places a point from a shrunken desktop screenshot as if the screenshot were full
+size. The click can land before the cursor arrives. The window code has only been compiled for Windows, never run
+there, and the driver's cursor switch has never been tried on the real driver, so nobody has yet seen either.
+
+**Cloud speech** (voice commands): when a gateway is set up, what you say is sent to Mewndo's Cloudflare Worker and
+Whisper (base) for that one transcription, then dropped; nothing stores it. Without a network, a token, or today's
+free budget, Windows' own offline recognizer is used instead, which is less accurate. Not yet run against the real
+Whisper: tested with a fake model and a canned recording.
+
+**Uninstalling** asks whether to delete Mewndo's saved history; the default is No. Yes permanently deletes every
+save point, Mewndo's trash, the Agent Inbox's card history and rules.toml (`%APPDATA%\mewndo` and
+`%LOCALAPPDATA%\Mewndo`), and that cannot be undone. Either way Mewndo's hooks are taken out of Claude Code's
+settings, keeping the rest of the file and a backup. The installer has not yet been built and run as part of v1.
 
 Partly built: the **Flight Recorder**. The core keeps a local append-only log of guard decisions, heals, holds,
 approvals, save points and restores, hash-chained and signed with a device key, so rewriting or dropping an event

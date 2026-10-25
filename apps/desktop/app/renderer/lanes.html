@@ -1,21 +1,56 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<!-- xterm.js writes its own <style> element for the terminal's colours, so inline styles are allowed; scripts are
+     only this folder's files. Nothing loads from the internet. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'">
 <title>Mewndo: lanes</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #11131a; color: #e8eaf2; font: 14px "Segoe UI", system-ui, sans-serif; }
-  main { padding: 24px; max-width: 560px; }
-  p { color: #9aa0b4; line-height: 1.5; }
-</style>
+<link rel="stylesheet" href="design/tokens.css">
+<link rel="stylesheet" href="design/base.css">
+<link rel="stylesheet" href="vendor/xterm/xterm.css">
+<link rel="stylesheet" href="lanes.css">
 </head>
-<body>
-<main>
-  <h1>Lanes</h1>
-  <p>Agents started from Mewndo run in lanes (spec §33.7). The lane terminals are built in the core, but not yet
-    connected to this window, so Mewndo can't start or show a lane here yet. Agents you start yourself still show up
-    in the dock and the Inbox.</p>
+<body class="float">
+<header class="bar">
+  <div id="tabs" class="tabs" role="tablist" aria-label="Lanes"></div>
+  <button id="new" class="new" type="button" title="Start an agent in a new lane">+ New lane</button>
+</header>
+
+<div id="offline" class="offline" hidden>Mewndo isn't connected to its core. Lanes keep running there; they come
+  back here when it reconnects.</div>
+
+<main id="views" class="views">
+  <section id="picker" class="picker" hidden aria-labelledby="picker-title">
+    <h1 id="picker-title" class="title">New lane</h1>
+    <p class="lede">A lane is a terminal Mewndo owns. An agent started here always gets what you type or say to it
+      from Mewndo, even after it finishes.</p>
+    <div id="picks" class="picks" role="radiogroup" aria-label="Agent"></div>
+    <label class="field" for="folder">Folder
+      <input id="folder" list="folders" spellcheck="false" autocomplete="off" placeholder="C:\Users\you\project">
+      <datalist id="folders"></datalist>
+    </label>
+    <p id="pick-note" class="note" role="status"></p>
+    <div class="actions">
+      <button id="start" class="primary" type="button">Start</button>
+      <button id="cancel" class="quiet" type="button">Cancel</button>
+    </div>
+    <p class="limits">What a lane can't do: Mewndo writes into the terminal but does not read it, so it can't tell
+      whether the agent is waiting at a prompt. A lane ends when Mewndo quits, and only the last 256 KB of output is
+      kept for a window that opens later.</p>
+  </section>
 </main>
+
+<footer id="tools" class="tools" hidden>
+  <span id="where" class="where"></span>
+  <button id="brake" class="quiet" type="button" title="Send Ctrl+C to the agent">Brake (Ctrl+C)</button>
+  <button id="close" class="quiet" type="button">Close lane</button>
+</footer>
+
+<script src="vendor/xterm/xterm.js"></script>
+<script src="vendor/xterm/addon-fit.js"></script>
+<script src="design/logos.js"></script>
+<script src="lanes-model.js"></script>
+<script src="lanes.js"></script>
 </body>
 </html>

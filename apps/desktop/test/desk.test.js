@@ -491,3 +491,352 @@ test("the core's budget.state reaches the dock as Rules only mode, on and off", 
   client.emit('budget.state', {});
   assert.deepStrictEqual(seen, [true, false, false]);
 });
+
+// --- agent.message, free speech, the card mic, inbox.hold, click-in and peek -------------------------------------
+
+// A core that takes agent.message (speaks), with a clock the test fires by hand for the result deadline.
+function messagingDesk({ refuses = [], dictation = false, connected = true } = {}) {
+  const client = fakeClient({ connected });
+  client.speaks = (type) => !refuses.includes(type);
+  client.connected = () => connected;
+  const timers = [];
+  const desk = {
+    schedule: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    cancel: (t) => { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); },
+    dictation: () => dictation,
+  };
+  const sizes = []; // sizeTalk: true while a typing offer is up
+  desk.sizeTalk = (tall) => sizes.push(tall);
+  const out = makeDesk({ client, desk });
+  const statuses = () => out.ui.sentTo.filter(([n, ch]) => n === 'talk' && ch === 'talk:status').map(([, , p]) => p);
+  return { ...out, timers, sizes, statuses, fire: () => timers.splice(0).forEach((t) => t.fn()) };
+}
+
+test('typed Talk text with no lane and no reply window goes as agent.message, and the box says "Sent"', () => {
+  const { desk, client, ui, focus, statuses } = messagingDesk();
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex' }));
+  desk.openTalk();
+  desk.handlers.talk('run the tests');
+  client.emit('route.result', { target: 'a2', confidence: 0.9, alternatives: [] });
+  assert.deepStrictEqual(client.sent.at(-1), ['agent.message', { agent_id: 'a2', text: 'run the tests', via: 'key' }]);
+  assert.deepStrictEqual(statuses().at(-1), { tone: 'sending', text: 'Sending to Codex…', options: [] });
+  assert.strictEqual(focus.restores, 1, 'the keyboard goes back at once; the box stays to say what happened');
+  assert.ok(!ui.hidden.includes('talk'));
+  client.emit('agent.message.result', { agent_id: 'a2', delivered: 'now' });
+  assert.deepStrictEqual(statuses().at(-1), { tone: 'sent', text: 'Sent to Codex.', options: [] });
+});
+
+test('queued says when the agent will get it; a late or repeated result is ignored', () => {
+  const { desk, client, statuses, timers } = messagingDesk();
+  client.emit('agent.status', agent());
+  desk.openTalk();
+  desk.handlers.talk('also update the README');
+  client.emit('route.result', { target: 'a1', confidence: 0.9, alternatives: [] });
+  assert.strictEqual(timers.length, 1, 'the deadline is armed');
+  client.emit('agent.message.result', { agent_id: 'a1', delivered: 'queued' });
+  assert.strictEqual(statuses().at(-1).text, 'Queued: Claude Code gets it when it finishes this step.');
+  assert.strictEqual(timers.length, 0, 'and disarmed by the answer');
+  const n = statuses().length;
+  client.emit('agent.message.result', { agent_id: 'a1', delivered: 'now' });
+  assert.strictEqual(statuses().length, n, 'nothing pending, nothing shown');
+});
+
+test('unsupported: the core\'s reason, said plainly (problem() when there is no offerLane)', () => {
+  const { desk, client, ui, problems } = messagingDesk();
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex' }));
+  desk.openTalk();
+  desk.handlers.talk('run the tests');
+  client.emit('route.result', { target: 'a2', confidence: 0.9, alternatives: [] });
+  client.emit('agent.message.result', { agent_id: 'a2', delivered: 'unsupported', reason: 'Codex is not waiting and has no hook to take it' });
+  assert.deepStrictEqual(ui.hidden.at(-1), 'talk');
+  assert.deepStrictEqual(problems, ["Can't reach Codex: Codex is not waiting and has no hook to take it. A lane is a terminal Mewndo owns, so replies always reach it."]);
+});
+
+test('unsupported with offerLane: "Open a lane" is offered for that agent', () => {
+  const offered = [];
+  const client = fakeClient();
+  client.speaks = () => true;
+  const { desk } = makeDesk({ client, desk: { offerLane: (card) => offered.push(card), schedule: () => null, cancel: () => {} } });
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex' }));
+  desk.openTalk();
+  desk.handlers.talk('run the tests');
+  client.emit('route.result', { target: 'a2', confidence: 0.9, alternatives: [] });
+  client.emit('agent.message.result', { agent_id: 'a2', delivered: 'unsupported', reason: 'no hook can take it' });
+  assert.strictEqual(offered.length, 1);
+  assert.strictEqual(offered[0].title, "Can't reach Codex: no hook can take it.");
+  assert.deepStrictEqual(offered[0].options, ['Open a lane', 'Not now']);
+});
+
+test('a core that never answers agent.message: the deadline says so, never "sent"', () => {
+  const { desk, client, statuses, fire } = messagingDesk();
+  client.emit('agent.status', agent());
+  desk.openTalk();
+  desk.handlers.talk('hi');
+  client.emit('route.result', { target: 'a1', confidence: 0.9, alternatives: [] });
+  fire();
+  assert.strictEqual(statuses().at(-1).tone, 'failed');
+  assert.match(statuses().at(-1).text, /can't say whether Claude Code got that/);
+});
+
+test('an older core that refuses agent.message falls back to today\'s "can\'t reach"', () => {
+  const { desk, client, problems, ui, timers } = messagingDesk();
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex' }));
+  desk.openTalk();
+  desk.handlers.talk('run the tests');
+  client.emit('route.result', { target: 'a2', confidence: 0.9, alternatives: [] });
+  client.emit('error', { message: 'unknown message type agent.message for a App connection' });
+  assert.match(problems.at(-1), /Can't reach Codex outside a lane\./);
+  assert.deepStrictEqual(ui.hidden.at(-1), 'talk');
+  assert.strictEqual(timers.length, 0);
+  // Some other error is none of this code's business.
+  client.emit('error', { message: 'unknown message type lane.open for a App connection' });
+  assert.strictEqual(problems.length, 1);
+});
+
+// Claude Code idle at its prompt: the core answers agent.message with a typing offer.
+function offered() {
+  const m = messagingDesk();
+  m.client.emit('agent.status', agent({ status: 'idle' }));
+  m.desk.openTalk();
+  m.desk.handlers.talk('use UTC\neverywhere');
+  m.client.emit('route.result', { target: 'a1', confidence: 0.9, alternatives: [] });
+  m.client.emit('agent.message.result', { agent_id: 'a1', delivered: 'confirm', offer_id: 'o1', preview: 'use UTC everywhere',
+    reason: 'Claude Code is idle at its prompt. Type this into its terminal?' });
+  m.confirms = () => m.ui.sentTo.filter(([n, ch]) => n === 'talk' && ch === 'talk:confirm').map(([, , p]) => p);
+  return m;
+}
+
+test('an idle agent: the Talk box shows the reason and the exact text, and nothing is typed before "Type it"', () => {
+  const { desk, client, ui, focus, sizes, confirms } = offered();
+  assert.deepStrictEqual(confirms(), [{ text: 'Claude Code is idle at its prompt. Type this into its terminal?',
+    preview: 'use UTC everywhere', options: ['Type it', 'Cancel'] }]);
+  assert.strictEqual(client.sent.filter(([t]) => t === 'agent.type').length, 0, 'nothing typed yet');
+  assert.deepStrictEqual(ui.shown.at(-1), ['talk', true], 'the box takes the keyboard so 1 and 2 work');
+  assert.strictEqual(focus.saves, 2, 'and remembers the window the user was in first');
+  assert.deepStrictEqual(sizes, [true], 'with room for the whole text');
+  assert.deepStrictEqual(desk.offer(), { offerId: 'o1', agentId: 'a1', name: 'Claude Code' });
+});
+
+test('"Type it" (1) sends only the offer id, and the box says what the core did', () => {
+  const { desk, client, focus, sizes, statuses, timers } = offered();
+  const restored = focus.restores;
+  desk.handlers.chip(1);
+  assert.deepStrictEqual(client.sent.at(-1), ['agent.type', { offer_id: 'o1' }], 'no text: the core types what it showed');
+  assert.deepStrictEqual(statuses().at(-1), { tone: 'sending', text: "Typing into Claude Code's terminal…", options: [] });
+  assert.strictEqual(focus.restores, restored + 1, 'the keyboard goes back at once');
+  assert.deepStrictEqual(sizes, [true, false]);
+  assert.strictEqual(timers.length, 1, 'silence from the core is reported, never "typed"');
+  client.emit('agent.message.result', { agent_id: 'a1', delivered: 'typed', offer_id: 'o1', reason: "Typed into Claude Code's terminal." });
+  assert.deepStrictEqual(statuses().at(-1), { tone: 'sent', text: "Typed into Claude Code's terminal.", options: [] });
+  assert.strictEqual(timers.length, 0);
+  // Used: a second 1 types nothing.
+  desk.handlers.chip(1);
+  assert.strictEqual(client.sent.filter(([t]) => t === 'agent.type').length, 1);
+});
+
+test('Cancel (2), Esc or new words: nothing is typed, and a later 1 does nothing', () => {
+  const { desk, client, ui, sizes } = offered();
+  desk.handlers.chip(2);
+  assert.strictEqual(desk.offer(), null);
+  assert.deepStrictEqual(ui.hidden.at(-1), 'talk');
+  assert.deepStrictEqual(sizes, [true, false]);
+  desk.handlers.chip(1);
+  assert.strictEqual(client.sent.filter(([t]) => t === 'agent.type').length, 0);
+
+  const esc = offered();
+  esc.desk.handlers.closeTalk();
+  esc.desk.handlers.chip(1);
+  assert.strictEqual(esc.client.sent.filter(([t]) => t === 'agent.type').length, 0);
+
+  const replaced = offered();
+  replaced.desk.say('something else');
+  assert.strictEqual(replaced.desk.offer(), null);
+  assert.strictEqual(replaced.client.sent.filter(([t]) => t === 'agent.type').length, 0);
+});
+
+test('typing that the core could not do: its reason, and the lane offer; an expired offer is matched by its id', () => {
+  const { desk, client, problems } = offered();
+  desk.handlers.chip(1);
+  // The core no longer knows the offer, so it can't name the agent; it echoes the offer id instead.
+  client.emit('agent.message.result', { agent_id: '', delivered: 'unsupported', offer_id: 'o1',
+    reason: 'That offer was already used or replaced, so nothing was typed.' });
+  assert.deepStrictEqual(problems, ["Can't reach Claude Code: That offer was already used or replaced, so nothing was typed. A lane is a terminal Mewndo owns, so replies always reach it."]);
+  // An agent that started working again before the user confirmed gets it when it stops: the core says queued.
+  const moved = offered();
+  moved.desk.handlers.chip(1);
+  moved.client.emit('agent.message.result', { agent_id: 'a1', delivered: 'queued', offer_id: 'o1' });
+  assert.strictEqual(moved.statuses().at(-1).text, 'Queued: Claude Code gets it when it finishes this step.');
+});
+
+test('a confirm the app cannot act on is never shown as an offer', () => {
+  const { desk, client, ui, statuses } = messagingDesk();
+  client.emit('agent.status', agent({ status: 'idle' }));
+  desk.openTalk();
+  desk.handlers.talk('hi');
+  client.emit('route.result', { target: 'a1', confidence: 0.9, alternatives: [] });
+  client.emit('agent.message.result', { agent_id: 'a1', delivered: 'confirm', preview: 'hi' });
+  assert.strictEqual(ui.sentTo.filter(([, ch]) => ch === 'talk:confirm').length, 0);
+  assert.strictEqual(statuses().at(-1).tone, 'failed');
+  assert.strictEqual(desk.offer(), null);
+});
+
+test('words said to the dock: one agent gets them directly, shown in the Talk box without taking focus', () => {
+  const { desk, client, ui, focus, statuses } = messagingDesk();
+  client.emit('agent.status', agent());
+  assert.strictEqual(desk.say('make the button blue'), true);
+  assert.deepStrictEqual(ui.shown.at(-1), ['talk', true], 'the fake records showTalk; the option says no focus');
+  assert.strictEqual(focus.saves, 0, 'the user\'s app keeps the keyboard');
+  assert.deepStrictEqual(ui.sentTo.find(([, ch]) => ch === 'talk:dictated')[2], { text: 'make the button blue' });
+  assert.ok(!client.sent.some(([t]) => t === 'route.request'), 'one agent: no Router needed');
+  assert.deepStrictEqual(client.sent.at(-1), ['agent.message', { agent_id: 'a1', text: 'make the button blue', via: 'voice' }]);
+  client.emit('agent.message.result', { agent_id: 'a1', delivered: 'now' });
+  assert.strictEqual(statuses().at(-1).text, 'Sent to Claude Code.');
+});
+
+test('words said with two agents go to the Router; unsure means chips, and a chip delivers', () => {
+  const { desk, client, ui } = messagingDesk();
+  client.emit('agent.status', agent());
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex', lane_id: 'lane-9' }));
+  desk.say('run the tests');
+  assert.deepStrictEqual(client.sent.at(-1), ['route.request', { text: 'run the tests' }]);
+  client.emit('route.result', { target: 'a1', confidence: 0.4, alternatives: ['a2'] });
+  assert.deepStrictEqual(ui.sentTo.filter(([, ch]) => ch === 'talk:chips').at(-1)[2].chips, ['Claude Code', 'Codex']);
+  desk.handlers.chip(2);
+  assert.deepStrictEqual(client.lanes, [['lane-9', 'run the tests\r']]);
+  assert.deepStrictEqual(ui.sentTo.filter(([, ch]) => ch === 'talk:status').at(-1)[2], { tone: 'sent', text: 'Sent to Codex.', options: [] });
+});
+
+test('words said with no core to route them are not sent anywhere, so main.js asks "did you mean"', () => {
+  const { desk, client } = messagingDesk({ connected: false });
+  client.emit('agent.status', agent());
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex' }));
+  assert.strictEqual(desk.say('run the tests'), false);
+  assert.strictEqual(desk.say('   '), false);
+  assert.deepStrictEqual(client.sent, []);
+});
+
+test('the card mic: V listens, V again stops, the words land in the reply box and wait for Enter', () => {
+  const { desk, client, ui } = messagingDesk({ dictation: true });
+  client.emit('inbox.card', card({ id: 'd1', kind: 'done', options: [] }));
+  desk.openInbox();
+  assert.strictEqual(ui.state().mic, true);
+  desk.handlers.key('v', 'd1');
+  assert.deepStrictEqual(ui.state().textFor, { cardId: 'd1', via: 'voice', hint: 'Listening… press V or the mic to stop', mic: 'listening' });
+  assert.deepStrictEqual(client.sent, [['inbox.hold', { card_id: 'd1' }]], 'the Stop hook is asked to keep waiting');
+  desk.handlers.key('v', 'd1');
+  assert.strictEqual(ui.state().textFor.mic, 'working');
+  desk.handlers.dictated('d1', ' also update the README ');
+  assert.deepStrictEqual(ui.state().textFor, { cardId: 'd1', via: 'voice', mic: null, draft: 'also update the README', hint: 'Check it, then Enter to send' });
+  assert.deepStrictEqual(client.sent.map(([t]) => t), ['inbox.hold'], 'speaking alone sends nothing to the agent');
+  desk.handlers.text('d1', 'also update the README', 'voice');
+  desk.handlers.graceEnd('d1');
+  assert.deepStrictEqual(client.sent.at(-1), ['inbox.answer', { card_id: 'd1', choice: null, text: 'also update the README', via: 'voice' }]);
+});
+
+test('the card mic hearing nothing says so; a dictation for a box that closed is dropped', () => {
+  const { desk, client, ui } = messagingDesk({ dictation: true });
+  client.emit('inbox.card', card({ id: 'q1', kind: 'question', options: ['a'] }));
+  desk.openInbox();
+  desk.handlers.key('v', 'q1');
+  desk.handlers.key('v', 'q1');
+  desk.handlers.dictated('q1', '');
+  assert.match(ui.state().textFor.hint, /didn't catch that/);
+  assert.ok(!client.sent.some(([t]) => t === 'inbox.hold'), 'hold is for Done cards, whose Stop hook waits');
+  desk.handlers.key('Escape', 'q1');
+  assert.strictEqual(desk.handlers.dictated('q1', 'late words'), null);
+});
+
+test('inbox.hold: on focus of a Done card\'s reply box, at most once every few seconds, never to a core that refused it', () => {
+  const { desk, client } = messagingDesk();
+  client.emit('inbox.card', card({ id: 'd1', kind: 'done', options: [] }));
+  assert.strictEqual(desk.handlers.hold('d1'), true);
+  assert.strictEqual(desk.handlers.hold('d1'), false, 'not again straight away');
+  assert.strictEqual(desk.handlers.hold('nope'), false);
+  assert.deepStrictEqual(client.sent, [['inbox.hold', { card_id: 'd1' }]]);
+  const old = messagingDesk({ refuses: ['inbox.hold'] });
+  old.client.emit('inbox.card', card({ id: 'd1', kind: 'done', options: [] }));
+  assert.strictEqual(old.desk.handlers.hold('d1'), false);
+  assert.deepStrictEqual(old.client.sent, []);
+});
+
+test('a card that appears takes no focus; clicking into it enters answer mode, and answering hands focus back', () => {
+  const { desk, client, ui, focus } = makeDesk();
+  client.emit('inbox.card', card({ id: 'd1', kind: 'done', options: ['Looks good, ship it', 'Show me the screens'] }));
+  assert.deepStrictEqual(ui.shown, [['cards', false]]);
+  assert.strictEqual(focus.saves, 0);
+  desk.handlers.click('select', 'd1');
+  assert.strictEqual(focus.saves, 1, 'the app the user was in is saved first');
+  assert.deepStrictEqual(ui.shown.at(-1), ['cards', true]);
+  assert.strictEqual(desk.answerMode(), true);
+  desk.handlers.click('select', 'd1');
+  assert.strictEqual(focus.saves, 1, 'a second click saves nothing new');
+  desk.handlers.key('2', 'd1'); // a next step
+  desk.handlers.graceEnd('d1');
+  assert.deepStrictEqual(client.sent.at(-1), ['inbox.answer', { card_id: 'd1', choice: 1, text: null, via: 'key' }]);
+  assert.strictEqual(focus.restores, 1);
+});
+
+test('peek (hovering "Claude needs you") shows the stack without focus, and only when there is something', () => {
+  const { desk, client, ui, focus } = makeDesk();
+  assert.strictEqual(desk.peek(), false);
+  client.emit('inbox.card', card());
+  ui.shown.length = 0;
+  assert.strictEqual(desk.peek(), true);
+  assert.deepStrictEqual(ui.shown, [['cards', false]]);
+  assert.strictEqual(focus.saves, 0);
+});
+
+test('the Talk box opened from an agent\'s row goes straight to that agent, without asking the Router', () => {
+  const { desk, client } = makeDesk();
+  client.emit('agent.status', agent());
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex', lane_id: 'lane-9' }));
+  desk.openTalk('Codex');
+  assert.strictEqual(desk.talking().to, 'Codex');
+  desk.handlers.talk('run the tests');
+  assert.ok(!client.sent.some(([type]) => type === 'route.request'), 'no Router: the row already said which agent');
+  assert.deepStrictEqual(client.lanes, [['lane-9', 'run the tests\r']]);
+});
+
+test('words said to the dock\'s mic while the Talk box is aimed at an agent go to that agent', () => {
+  const { desk, client } = makeDesk();
+  client.emit('agent.status', agent());
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex', lane_id: 'lane-9' }));
+  desk.openTalk('Codex');
+  assert.strictEqual(desk.say('add a loading spinner'), true);
+  assert.ok(!client.sent.some(([type]) => type === 'route.request'));
+  assert.deepStrictEqual(client.lanes, [['lane-9', 'add a loading spinner\r']]);
+});
+
+test('the dock\'s Inbox clicked with nothing to answer shows "All clear" without taking focus', () => {
+  const { desk, client, ui, focus } = makeDesk();
+  assert.strictEqual(desk.showEmptyInbox(), true);
+  assert.deepStrictEqual(ui.shown.at(-1), ['cards', false], 'shown beside the dock, focus stays with the user');
+  assert.strictEqual(focus.saves, 0);
+  assert.strictEqual(ui.state().empty, true);
+  desk.handlers.click('close-empty');
+  assert.strictEqual(ui.state().empty, false);
+  assert.deepStrictEqual(ui.hidden.at(-1), 'cards');
+  // With a card waiting, the empty view is never shown: the card is.
+  client.emit('inbox.card', card());
+  assert.strictEqual(desk.showEmptyInbox(), false);
+});
+
+test('a reply on a Codex Done card goes as agent.message: no hook waits behind that card', () => {
+  const { desk, client } = messagingDesk();
+  client.emit('agent.status', agent({ agent_id: 'a2', kind: 'codex', name: 'Codex' }));
+  client.emit('inbox.card', card({ id: 'd2', kind: 'done', agent_id: 'a2', options: [], grace_ms: 0 }));
+  desk.openInbox();
+  desk.handlers.text('d2', 'also run the linter', 'key');
+  assert.deepStrictEqual(client.sent.at(-1), ['agent.message', { agent_id: 'a2', text: 'also run the linter', via: 'key' }]);
+  assert.ok(!client.sent.some(([t]) => t === 'inbox.answer'), 'never an inbox answer nothing is waiting for');
+});
+
+test('a held Done card that is dismissed lets the agent go: inbox.hold with held false', () => {
+  const { desk, client } = messagingDesk();
+  client.emit('inbox.card', card({ id: 'd1', kind: 'done', options: [] }));
+  desk.openInbox();
+  desk.handlers.hold('d1');
+  assert.deepStrictEqual(client.sent.at(-1), ['inbox.hold', { card_id: 'd1' }]);
+  desk.handlers.click('dismiss', 'd1');
+  assert.deepStrictEqual(client.sent.at(-1), ['inbox.hold', { card_id: 'd1', held: false }]);
+});

@@ -580,3 +580,286 @@ running. **Recent** is the last five Timeline rows. Home's data loads when Home 
 
 **What it can't do yet:** "actions held" (Guard's refusals aren't counted per day yet); clicking a number opens the
 screen but doesn't filter it; right after start, agents appear once Mewndo has seen them (up to 30 s).
+
+## The core's Clef transport (10 Oct 2026)
+
+`core/crates/mewndo-core/src/clef_gateway.rs` implements mewndo-router's `Clef` over `POST /v1/decide`. Every reply
+goes through `mewndo_router::clef::read_reply`, so `rules_only` reaches `Router::rules_only` and from there
+`budget.state`. Choices made:
+
+- **Configuration.** The gateway URL comes from `MEWNDO_GATEWAY_URL`; the device token from Windows Credential
+  Manager, Generic credential `Mewndo/gateway-device-token` (CLAUDE.md rule 4), read once at start-up. Either one
+  missing means `NoClef`. Nothing in the app redeems an invite and saves the token yet; that is the next step and
+  needs the deployed Worker.
+- **One warm connection.** One `ureq::Agent` (SChannel via native-tls, as `decide.rs`) for the core's life, plus a
+  thread that sends `GET /health` at start-up and every 45 s. §34.9 R6 says "every 45 s while an agent is working";
+  this pings always, because the core has no "agent working" signal the thread can see yet. `/health` spends no
+  neurons. ureq 2 has no TCP keepalive or idle-timeout setting, so §34.9's "30 s keepalive, 90 s idle pool" are not
+  set explicitly; the pool's own defaults apply.
+- **Deadline.** The router's per-kind deadline is sent as `x-mewndo-deadline-ms` and is also ureq's whole-request
+  timeout; a reply that arrives after it is treated as `Deadline` anyway. Every failure (timeout, no network, any
+  non-200, a non-JSON body) is a `ClefError`, and the router decides by its rules (CLAUDE.md rule 3). A non-200 body
+  is never logged.
+- **Windows only.** Off Windows `configured()` returns None (no TLS stack on the WSL box, §32.5 rule 5); the logic is
+  tested everywhere with a fake transport.
+- **Tested against the real Worker** with `scripts/gateway-dev-test.sh`: `wrangler dev` on
+  `cloud/gateway/dev/wrangler.stub.toml`, whose entry `dev/stub-ai.js` replaces only the AI binding. Proven on Linux,
+  10 Oct 2026: model answer (`backend: workers_ai`), the same signature answered from the cache (`backend: cache`),
+  a wrong token answered 401 and turned into a fallback. **The stub's output is not clef-flash's real output**,
+  which stays unverified until one real call after deploy.
+
+## The Habit card and rules.toml (10 Oct 2026)
+
+`Event::Habit` from the Inbox now reaches the apps as an `inbox.card` with `kind: "habit"`, options
+`["yes", "no", "never ask"]`, `agent_id` set to the agent *kind* (a habit belongs to an agent kind and a project, not
+to one running agent), and no agent waiting on it. The core keeps the card until it is answered (and re-sends it to an
+app that reconnects). The answer comes back as an ordinary `inbox.answer` (a choice index, or the option's words as
+text, for voice); the core handles it itself, not through the Inbox, and sends `inbox.release` so the app drops it.
+No new message type, so mewndo-proto is unchanged.
+
+- **yes**: `Habits::accept` (that project, from now on) and `rules_file::add_habit`: `toml_edit` keeps the user's
+  formatting and comments, appends to `[allow]` or `[deny]` `commands` under `# habit <YYYY-MM-DD>` (UTC), checks the
+  result still loads with `CompiledRules::load`, then writes a temp file and renames it into place (plot.md rule 4).
+  A file that does not parse, or whose `[allow]`/`commands` is not a table/list, is left untouched and the habit stays
+  in memory only (logged as `habit not written`).
+- **no**: nothing. **never ask**: `Habits::mute`, in memory.
+- **Where rules.toml lives**: the app passes `--rules` (`%APPDATA%\Mewndo\rules.toml` on Windows, the app's userData
+  folder elsewhere) and the core reads it once at start, on top of the built-in rules. Without `--rules` (the tests,
+  and any core started by hand) the core reads no user file and writes none, so no test touches the real one.
+- **Not per project.** rules.toml (§34.9 R1) has no project field, so a written habit is a global phrase after a
+  restart. Adding one is a spec change, so it is recorded here and in docs/what-mewndo-can-and-cant-undo.md instead.
+
+## Lanes on the desk pipe (10 Oct 2026)
+
+The lane control bodies moved from mewndo-pty into mewndo-proto unchanged (`lane.open`, `lane.opened`, `lane.reply`,
+`lane.brake`, `lane.resize`, `lane.closed`), mewndo-pty re-exports them, and three things were added:
+
+- **`lane.attach {lane_id}`** (app -> core): a lane window that (re)opens gets the 256 KB replay buffer as lane
+  frames, then `lane.opened`, on its own connection only. §33.7's "the session survives the window" needs it.
+- **`lane.close {lane_id}`** (app -> core): ends the lane for good (the agent is killed if it still runs). The core
+  answers every app with `lane.closed {removed: true}`; an agent that ends by itself is `lane.closed {exit_code,
+  removed: false}` and the lane stays, so its last output can still be read.
+- **`lane.opened` carries `running` and `exit_code`**, because it is also what an app connecting later is sent for
+  every lane that exists.
+
+Raw keystrokes from a lane window travel as lane frames (type 1) from the app; only an app connection may send
+them. `lane.open` can only start `claude`, `codex` or `cursor-agent` (`desk_lanes::AGENTS`), in an absolute folder
+that exists: the pipe already admits only this user, but this is the one message that starts a program.
+
+Lane output has its own broadcast channel (256 frames), separate from the desk's events (1024), so a busy agent
+cannot push Inbox cards out of a slow app's queue. An app that falls behind on lane output loses terminal bytes
+(logged) and should `lane.attach` again. The core kills every lane when it stops.
+
+## Guarded computer use: U3, U5 and U6 (10 Oct 2026)
+
+- **Shape.** `mewndo-core mcp-computer --agent <name>` is the MCP server an agent is given. It runs the pinned
+  `cua-driver mcp` (vendor.rs) as a child and offers its tools as `computer_<name>`, schema unchanged, description
+  prefixed "[Guarded by Mewndo] ". The three agent-cursor settings are hidden; everything else is offered.
+- **The core is the gate.** Every call, reads included, is a `computer.action` on the desk pipe (`hello {role:
+  computer}`), answered by `computer.verdict`. Off unless the app starts the core with `--computer-use`, which
+  nothing does yet (UI request). Reads are allowed without a card; acts always get an Inbox permission card,
+  because the Router cannot see what is under the pointer (no UIA lookup, U5.3) and so never allows one alone.
+- **Fails closed.** No core, no answer in 290 s, or anything but a verdict refuses the call. The hooks fail open
+  because files can be restored; a click cannot.
+- **Redaction.** Typed text, clipboard text and single-character keys travel as "<N characters>", always, because
+  nothing can tell a password field from another. The card says "type 12 characters".
+- **Takeover (U6).** Low-level keyboard and mouse hooks read only the injected flag. Human input within 30 s of an
+  allowed act pauses every call until `computer.resume`. If the hooks cannot be installed, computer use stays off.
+- **U7 and U8 are built** (the next two entries). Not built: the UIA element lookup (U5.3) and the screenshot
+  crop on the card (U5.5).
+
+## The agent cursor (U7) (10 Oct 2026)
+
+- **Shape.** `core/crates/mewndo-overlay`: `coords.rs` (driver point → virtual screen, pure), `motion.rs` (the
+  `MotionPlanner` trait and a built-in planner), `cua_motion.rs` (Cua's planner behind the trait, feature
+  `cua-motion`), `window.rs` (the windows; a no-op off Windows). The core's `ComputerGate` starts it when computer
+  use is switched on, and only then; an allowed act that has a point and a target it can place moves it, labelled
+  "Claude · clicking" (`show_cursor` and `doing` in `computer.rs`). Reads, denied acts and acts without a point
+  move nothing.
+- **Windows.** One `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` popup
+  per display, on the overlay's own thread, which alone is made per-monitor-v2 DPI aware
+  (`SetThreadDpiAwarenessContext`) so it works in cua-driver's physical pixels without changing the rest of the
+  core. Transparency is a colour key and drawing is GDI into only the rectangle that changed, rather than
+  `UpdateLayeredWindow` of a whole display every frame. `WDA_EXCLUDEFROMCAPTURE` keeps it out of screenshots,
+  so the agent never sees Mewndo's cursor in its own captures (Windows 10 2004 and later; earlier, it shows).
+  Hidden 5 s after it arrives; windows rebuilt on `WM_DISPLAYCHANGE` and `WM_DPICHANGED`; "Show animations in
+  Windows" off means it jumps instead of gliding.
+- **Coordinates.** A window target is placed at `ClientToScreen` of its `window_id`, but **that `window_id` is
+  the HWND is unconfirmed** (no live capture, decisions "cua-driver" 3), so it is used only when it is a live
+  window owned by the act's `pid`; otherwise no cursor. A desktop target is the primary display. A capped desktop
+  capture (`max_image_dimension`) is placed as full size, because the core does not know the cap: wrong by the
+  cap's factor. No target, or another display: no cursor.
+- **Motion.** A default build uses the built-in glide: straight, smoothstep-eased, `0.1 + 0.1·log2(D/W + 1)` s
+  clamped to 0.2–0.8 s. The opt-in crate `core/optional/mewndo-cua-motion` uses Cua's `plan_move` at Cua Driver's defaults (signature arc,
+  native timing). Plans are in physical pixels while Cua's constants are points, so on a scaled display a move is
+  a little slower than Cua's own cursor. Cua's trail, glow and magnet effects are not drawn.
+- **The git dependency resolves.** `cua-cursor-motion` is in `[workspace.dependencies]` pinned to
+  `rev = 5a364bbe60e1f8a901ceacd889606b6367dc96ab`, optional in `mewndo-overlay`, named in `cua_motion.rs` only;
+  the subcrate has no `build.rs`, so building it runs no Cua code. `golden_paths` passes all 48 cases of
+  `third_party/cua/cursor-motion-golden.json` to 1e-6 (`cargo test --manifest-path core/optional/mewndo-cua-motion/Cargo.toml`).
+- **What the feature does not do: keep builds off the network.** Cargo locks optional dependencies too, so every
+  build of the workspace, default included, needs the Cua repository's source. Checked: `cargo check --offline`
+  with a cargo home holding the crates.io registry but no git checkout fails with "can't checkout from
+  'https://github.com/trycua/cua': you are in the offline mode". The fetch was a 367 MB git database here, once
+  per cargo home; CI keeps no cargo cache, so it fetches on every run. What the feature does keep: no Cua code is
+  compiled or run by a default build or by CI's tests. A network-free default build would need the wrapper moved
+  to its own package outside the workspace, with its own lock file, losing the feature switch; not done.
+- **Timing.** The cursor starts moving when the core allows the act, and the proxy forwards the act at once, so
+  the click can land before the glide arrives. Holding the verdict until arrival, as Cua clicks at `arrival_t`, is
+  not built.
+- **Not proved:** any of it on Windows. The window code compiles and is clippy-clean for `x86_64-pc-windows-gnu`;
+  it has never been run. The cursor state, the geometry, the coordinates and the planners are tested on Linux.
+
+## The driver's own cursor switched off (U8) (10 Oct 2026)
+
+- **How.** `mewndo-computer`'s `run()` starts the driver, then calls `set_agent_cursor_enabled {session, enabled:
+  false}` for its own session label (`proxy::hide_driver_cursor`), straight to the driver: Mewndo's own call, not
+  the agent's, so it does not go through the gate, and the agent still cannot reach the tool (hidden, U3). The
+  call has 5 s; that is the only route of the three in decisions "cua-driver" 4 that works on a driver Mewndo
+  starts per agent.
+- **Fallback.** No such tool, an error, an `isError` result or no answer in 5 s: the driver's cursor stays on, the
+  reason goes to stderr, and every `computer.action` then carries `driver_cursor: true` (`mewndo-proto`,
+  `#[serde(default)]`, so an older proxy reads as false). The core's overlay then draws the label chip only,
+  beside the driver's cursor, instead of a second arrow.
+- **Unconfirmed:** that the driver accepts the call before the session has done anything else. The contract
+  makes `session` a free label (decisions "cua-driver" 4), but no live capture shows the call working on a session
+  that has not acted yet; if it refuses, the fallback above is what the user sees.
+- **Tested** with the fake driver: the exact call and arguments, the agent still refused the tool, a driver without
+  the tool, a driver that refuses it; the flag travelling in `computer.action` and the core drawing the chip only.
+  Not run against the real cua-driver.
+
+## Cloud speech to text (10 Oct 2026)
+
+The user chose, on 10 Oct 2026: audio may leave the PC; **Whisper base** (`@cf/openai/whisper`) on Workers AI; **no
+clean-up model** (Whisper's text is used as it is). parakeet-redux was looked at and not used: its weights are
+CC-BY-4.0 but its only runtime is Moondream's proprietary, Python-only engine (research notes in the session; the
+Hugging Face page itself could not be reached from the build container).
+
+- **Gateway:** `POST /v1/transcribe`, a WAV body (at most 30 s and 2 MB), the device token as for `/v1/decide`.
+  Answers `{text, backend, ms, rules_only}` or `{fallback: true, reason}`. Model input is `{audio: [bytes]}` and
+  output `{text}`, as Cloudflare's `whisper.json` documents; not yet confirmed by a real call.
+- **Budget:** its own kind, `transcribe` (deadline 8 s), below Guard: when the day runs low it falls back with
+  `budget_low_offline` and the PC uses its own recognizer. Cost estimate from the WAV header's length at 41.14
+  neurons per audio minute (Cloudflare's pricing page), so 30 s costs 21. No answer cache. The audio is never
+  stored or logged, only its length and the time taken.
+- **App:** `speech.js` tries the gateway first when `MEWNDO_GATEWAY_URL` is set and the device token is in
+  Credential Manager (read through koffi), with a 9 s deadline; any fallback, error status, network failure,
+  missing token or timeout uses Windows' System.Speech recognizer, which stays the only provider otherwise.
+- **Unverified until deployed:** the CPU cost of turning up to 2 MB into the byte array the binding takes, under
+  the free plan's 10 ms CPU limit; and the koffi Credential Manager read, which has not run on Windows.
+
+**Correction, same day: Cua's motion crate moved out of the workspace.** As first built, `cua-cursor-motion` was an
+optional dependency of `mewndo-overlay` behind a `cua-motion` feature. Cargo resolves optional git dependencies
+for every build of a workspace, so every build and every CI run fetched Cua's 367 MB git database, and an offline
+build failed. The wrapper and its golden test are now the crate `core/optional/mewndo-cua-motion`, excluded from the
+workspace (`core/Cargo.toml` `exclude = ["optional"]`), with its own lock. The workspace lock has no git source at
+all, and only `cargo test --manifest-path core/optional/mewndo-cua-motion/Cargo.toml` fetches Cua (2 unit and 2
+golden tests pass there). The overlay in the shipped app uses the built-in glide; Cua's planner is not wired in.
+
+
+## clef-flash's real call shape, confirmed live (10 Oct 2026)
+
+The first deployed `/v1/decide` calls failed (`workers_ai_error` in about 200 ms): `askWorkersAi` sent a chat prompt,
+but clef-flash takes typed questions. Its schema, from Cloudflare's model page (`workers-ai-models/clef-flash.json`):
+in `{model: "clef-flash", state, questions: {<id>: {type, instructions, criteria}}}` (choice criteria a map of
+options, score criteria an array of 2..10 levels); out `{model, answers: {<id>: {type, noul} | {type, choice,
+probabilities, confidence} | {type, score, legend, probabilities, confidence}}, usage: {input_tokens, output_tokens}}`,
+a score being a 0-based, probability-weighted level index. Billed at $0.038 per million input tokens.
+`toClefRequest` / `fromClefResponse` in `cloud/gateway/src/gateway.js` convert both ways. **Confirmed by real calls
+on the deployed Worker** (mewndo-cloud.swarupswagat21.workers.dev): `rm -rf db/migrations` against a "don't touch db"
+brief gave in_scope 0.06, irreversible 0.60, risk 3.4 on 1..5, verdict deny 0.89; 240–370 ms; identical on repeat.
+Whisper base was also confirmed live (1 s test tone in 5.8 s, cold).
+
+## Messages to an agent, the reply window hold, next steps (11 Oct 2026)
+
+- **Protocol (app <-> core, not in §38.5's table):** `agent.message {agent_id, text, via}` is answered by
+  `agent.message.result {agent_id, delivered: "now" | "queued" | "unsupported", reason}` with the request's id.
+  `inbox.hold {card_id, held = true}` stretches a waiting Done card's window; `held: false` returns it to the short
+  window. `agent.status` gains an optional `lane_id`, omitted when absent, so old readers are unaffected.
+- **Semantics (core `agents/mailbox.rs`):** a waiting `Stop` hook takes the text now; an agent mid-turn (a hook
+  ran since its last `Stop`) queues it, joined by blank lines and capped at 4000 characters, and its next `Stop`
+  prints it at once, before the Done card and before Claude's loop guard (the queue empties, so it cannot loop).
+  Anything else is `unsupported` with a reason naming the lane as the way in.
+- **Hold limits:** Claude 120 s (its `Stop` hook timeout is 130 s); Cursor 25 s (its guessed 30 s). The short
+  window stays 15 s. The Inbox's own timer on a Done card is the held maximum; the handler expires the card itself
+  when the short window ends unheld.
+- **Codex:** its schema takes `{"decision":"block","reason"}` on `Stop`, so queued messages are delivered. The
+  reply window stays off by default (`Codex::reply_window` zero): the shipped `Stop` hook has a 5 s timeout and no
+  real run has shown Codex continuing. Turning it on needs a longer timeout in `integrations/codex/hooks.json`.
+- **Next steps:** up to three options before Undo turn and Clear, from the Receipt's first mismatch, a failing
+  last test run, then "Looks good, carry on" / "Run the tests" / "Summarize what you changed" ("Looks good" never
+  over a problem). Cursor's "Reply" option is gone (Space replies); "Seen" stays last. Claude's `amber` status is
+  now `needs-you`, matching Codex and Cursor.
+- **Receipts:** a rules-only check of "I edited/updated/fixed/created/deleted <file>" against finished file-tool
+  spans, shell commands naming the file, and the journal when v0 gives one. Unchecked (not flagged) when a
+  non-test, non-read-only shell command or a subagent ran without the journal, or the turn began before the core.
+- **Not done:** typing into an idle agent's own console is not built (pending the user's decision). Nothing
+  reaches an agent idle at its prompt except a lane. (Since built, with the user's approval: next entry.)
+
+## Typing into an idle agent's terminal (11 Oct 2026)
+
+The user explicitly approved this feature, with four limits that are not to be loosened:
+
+1. It only types text the user entered in Mewndo's capsule (the Talk box or a card's reply, typed or dictated).
+2. It only types into the console of an agent process that Mewndo's own hook (`mewndo-hook.exe`) reported.
+3. It always shows the user exactly what it will type and where, and types only after the user confirms.
+4. The text travels over Mewndo's private local pipe and a child process's stdin: never argv, never logged, never
+   stored on disk.
+
+- **Protocol (app <-> core, not in §38.5's table):** `hook.request` gains `console_pid: Option<u32>` (left out of the
+  JSON when absent). `agent.message.result` gains `delivered: "confirm"` with `offer_id` and `preview`, and
+  `delivered: "typed"`; both new fields are optional and omitted otherwise, so older readers are unaffected. New
+  `agent.type {offer_id}` (app -> core), answered by `agent.message.result {agent_id, delivered: "typed" |
+  "now" | "queued" | "unsupported", reason, offer_id}`. It carries no text: the core types only what it stored and
+  showed. The answer echoes `offer_id` so the app can match it when the core no longer knows the offer's agent.
+- **Which process (limit 2):** the forwarder walks up from its parent in one Toolhelp32 snapshot, skipping up to
+  four launcher shells (cmd, bash, sh, powershell, pwsh, conhost, wsl; any case), and reports the first other
+  process (`mewndo-hook/src/console.rs`, Toolhelp declared by hand because the crate carries no windows-sys). The
+  core keeps the latest per agent in the mailbox. Claude's handler records it under its own agent id; Codex and
+  Cursor are recorded in `desk_agents.rs`. Off Windows it is always None.
+- **When (core `desk_agents.rs`, `typing.rs`):** only when `agent.message` would be `unsupported` because the agent
+  is idle (no hook waiting, not mid-turn), a console pid is known, and the platform has a typer (Windows). The offer
+  stores the normalised text (newlines, tabs and Unicode line separators to spaces; control characters and bidi
+  overrides removed, so the preview cannot read differently from what is typed; trimmed; 2000 characters), lasts
+  60 s, is used once, and replaces any older offer for the same agent. On `agent.type` the core re-checks: a hook
+  now waiting gets it `now`, an agent mid-turn `queued`, a different console pid since the offer is refused.
+- **How (limit 4):** the core runs itself as `mewndo-core type-into --pid N` with `DETACHED_PROCESS |
+  CREATE_NO_WINDOW`, writes the text to its stdin and closes it, and kills it after 3 s. The helper exists because
+  `AttachConsole` is per process and the core must not give up its own. It calls `FreeConsole`, `AttachConsole(pid)`,
+  opens `CONIN$` (`GENERIC_READ | GENERIC_WRITE`, shared read/write, `OPEN_EXISTING`) and writes key-down and key-up
+  `KEY_EVENT` records per UTF-16 unit (`uChar` set, repeat 1, virtual key 0), then Enter (`VK_RETURN`, `'\r'`), with
+  `WriteConsoleInputW`. Its stderr is a short reason with no text. The core logs only "typed N chars into <agent>"
+  or the failure reason.
+- **Confirm in the app (limit 3):** the Talk box grows to show the core's reason, the preview in quotes (all of it,
+  scrolling) and "1 Type it" / "2 Cancel". It takes the keyboard for this and gives it back on either answer; keys
+  count only 500 ms after it appears (and never on auto-repeat), so a key already on its way from the user's other
+  app can't answer it. Esc, Cancel, new words or the minute running out drop the offer without typing.
+- **Why not a lane only:** a lane needs the agent restarted inside Mewndo; this reaches the agent where the user
+  already runs it, at the cost of depending on the console's input path, which is unverified (known-issues.md).
+
+## Computer use switch, cua-driver download and Show Me (11 Oct 2026)
+
+- **Switch.** Settings → Computer use, Off by default (`app-settings.json` `computerUse`). On is accepted only when
+  every pinned program in the vendor folder hashes to its SHA-256; then `core.restart()` re-asks `args` and the core
+  gets `--computer-use`. Off restarts it without. At start-up the app checks the driver and restarts the core once
+  if computer use is on and the driver checks out.
+- **Download.** One asset of release `cua-driver-rs-v0.34.0`, size and SHA-256 shown first, fetched only on the
+  user's Download. Streamed to a `.part` while hashing; renamed only if size and SHA-256 match; unpacked with
+  PowerShell's `Expand-Archive` into a staging folder; every program (`cua-driver.exe`, `cua-driver-uia.exe`,
+  `cua_driver_sdk.dll`, `cua-cursor-theme.exe`, `cua_driver_node_runtime.node`) checked against its own pinned
+  SHA-256 before any is moved in. The per-program hashes were computed here from the archives after they matched
+  the release's `SHA256SUMS`. `mewndo-core mcp-computer` checks them again (`vendor::verify_installed`) before it
+  starts the driver. Sizes: 31,316,916 bytes (x64), 29,456,947 (arm64).
+- **MCP server for agents.** Claude Code: `mcpServers.mewndo-computer` in `~/.claude.json` (user scope); Cursor:
+  `~/.cursor/mcp.json`; Codex: a marked `[mcp_servers.mewndo-computer]` block at the end of `config.toml`. Same
+  confirm, backup and link rules as the hook setup.
+- **Show Me.** Recording is the core's (`mewndo-computer` `record.rs`, `mewndo-core` `showme.rs`, protocol
+  `showme.start/stop/state/step`; `showme.state` gained optional `reason` and `steps`). It needs computer use on.
+  Low-level hooks exist only while recording; UI Automation (the `windows` crate) gives the clicked element and
+  `IsPassword` of the focused field; a field it can't read counts as a password field. Steps are JSON (format 1,
+  `docs/samples/showme/skill.json`) in `<desk folder>\skills`, written by the app.
+- **Replay.** `run_skill {name}` in the proxy plans the steps into driver calls and puts each through the same
+  gate; the proxy adds the step's words under `mewndo_skill_step` to the gate's copy of the arguments only (an
+  agent's own value is removed) so the card says which skill and step. Every act still asks: the gate cannot tell
+  a risky step from a safe one without seeing what is under the pointer.
+

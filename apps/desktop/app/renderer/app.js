@@ -224,6 +224,8 @@ function renderFolders() {
   h('div', { class: f.status === 'paused' || f.status === 'unavailable' ? 'error' : '' }, statusText(f)),
   progressBar(f))));
   if (!state.folders.length) $('folders').append(h('li', { class: 'muted' }, 'No folders yet.'));
+  $('no-folder-text').textContent = state.folders.length ? 'Choose a folder on the left to see its save points.'
+    : 'No folders yet. Add the folders your agents work in, and Mewndo keeps every version of every file.';
   const s = state.usedBytes != null
     ? `History uses ${size(state.usedBytes)} of ${size(state.budgetBytes)}. Trash: ${size(state.trashBytes)}.`
     : '';
@@ -252,19 +254,86 @@ function renderCore(core) {
   $('core-status').title = `${what} The core does no file work yet: your folders are protected by the engine either way.`.trim();
 }
 
+// --- Warnings (alerts-model.js): one row each above every screen, with an icon, the words and its buttons ----------
+
+const ALERT_SVG_NS = 'http://www.w3.org/2000/svg';
+const ALERT_ICONS = {
+  folder: ['M2.5 5.5a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1V13.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z', 'M7 8.5l4 4M11 8.5l-4 4'],
+  disk: ['M3 4.5h12v9H3z', 'M3 10.5h12', 'M12 12h.01'],
+  eye: ['M2 9s2.5-4.5 7-4.5S16 9 16 9s-2.5 4.5-7 4.5S2 9 2 9z', 'M9 7.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3z'],
+  alert: ['M9 2.5 16 15H2z', 'M9 7v4', 'M9 13h.01'],
+};
+function alertIcon(kind) {
+  const svg = document.createElementNS(ALERT_SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 18 18');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'alert-icon');
+  for (const d of ALERT_ICONS[kind] ?? ALERT_ICONS.alert) {
+    const p = document.createElementNS(ALERT_SVG_NS, 'path');
+    p.setAttribute('d', d);
+    svg.append(p);
+  }
+  return svg;
+}
+
+let alertsSeen = null; // what was drawn last: redrawn only when it changes, so a focused button keeps its focus
+function renderAlerts() {
+  const rows = window.MewAlerts.rows(state.alerts, { folders: state.folders, windows: state.windows });
+  const seen = JSON.stringify([rows, state.shortcutProblem, state.hookProblem]);
+  if (seen === alertsSeen) return;
+  alertsSeen = seen;
+  $('alerts').hidden = !rows.length;
+  $('alerts').replaceChildren(...rows.map((r) => h('li', { class: `alert-row ${r.tone}` },
+    alertIcon(r.icon),
+    h('div', { class: 'alert-words' },
+      r.title && h('div', { class: 'alert-title' }, r.title),
+      h('div', { class: 'alert-text' }, r.text),
+      r.note && h('div', { class: 'alert-note' }, r.note)),
+    h('div', { class: 'alert-actions' }, ...r.actions.map((a) => h('button', {
+      class: a.id === 'dismiss' ? 'quiet' : '',
+      onclick: guard(() => alertAction(a.id, r)),
+      'aria-label': a.id === 'dismiss' ? `Dismiss: ${r.title ?? r.text}` : null,
+    }, a.label))))));
+  for (const [id, text] of [['shortcut-problem', state.shortcutProblem], ['hook-problem', state.hookProblem]]) {
+    $(id).hidden = !text;
+    fill($(id), text && alertIcon('alert'), text && h('span', { class: 'alert-words alert-text' }, text));
+  }
+  $('alerts-area').hidden = !rows.length && !state.shortcutProblem && !state.hookProblem;
+}
+
+async function alertAction(id, r) {
+  if (id === 'dismiss') return api.dismissAlert(r.code, r.folder);
+  if (id === 'storage') return api.openStorageSettings();
+  const f = state.folders.find((x) => samePath(x.root, r.folder));
+  if (!f) return api.dismissAlert(r.code, r.folder); // gone meanwhile: nothing left to act on
+  if (id === 'remove') {
+    $('remove-missing-name').textContent = f.name;
+    $('remove-missing').querySelector('input[value=keep]').checked = true;
+    if (await ask($('remove-missing')) !== 'ok') return;
+    const choice = $('remove-missing').querySelector('input[name=missing-history]:checked').value;
+    await api.unprotect(f.root, window.MewAlerts.removeCall(choice).keepHistory);
+    toast(choice === 'delete' ? `${f.name} was removed from Mewndo with its save points.`
+      : `${f.name} was removed from Mewndo. Its save points are kept for when you protect it again.`);
+    return refresh();
+  }
+  if (id === 'locate') {
+    $('locate-name').textContent = f.name;
+    $('locate-text').textContent = window.MewAlerts.LOCATE_LIMIT;
+    if (await ask($('locate-dialog')) !== 'ok') return;
+    go('folders');
+    if (await addFolders(await api.chooseFolders())) {
+      toast(`Protected at its new place. ${f.name}'s old save points stay under the old entry until you remove it.`);
+    }
+  }
+}
+
 function renderHeader() {
   const until = state.pausedUntil;
   $('pause-status').textContent = until ? `Protection paused until ${new Date(until).toLocaleTimeString()}` : '';
   $('pause').textContent = until ? 'Resume protection' : 'Pause protection for 1 hour';
   $('login-wrap').hidden = !state.loginSupported;
   // Warnings from Mewndo (storage, low disk, unavailable folders, watcher trouble) stay until resolved or dismissed.
-  $('alerts').hidden = !state.alerts?.length;
-  $('alerts').replaceChildren(...(state.alerts ?? []).map((a) => h('li', { class: 'error' }, a.message, ' ',
-    h('button', { onclick: guard(() => api.dismissAlert(a.code, a.folder)), 'aria-label': 'Dismiss this warning' }, 'Dismiss'))));
-  $('shortcut-problem').hidden = !state.shortcutProblem;
-  $('shortcut-problem').textContent = state.shortcutProblem ?? '';
-  $('hook-problem').hidden = !state.hookProblem;
-  $('hook-problem').textContent = state.hookProblem ?? '';
+  renderAlerts();
   renderCore(state.core);
   const names = (state.agents ?? []).map((a) => a.name);
   $('agents').textContent = names.length ? `AI agents running: ${names.join(', ')}` : 'No AI agents running';
@@ -277,9 +346,9 @@ $('open-settings').onclick = guard(() => api.openSettings());
 $('open-limits').onclick = guard((e) => { e.preventDefault(); return api.openLimits(); });
 $('login').onchange = guard(async (e) => api.setOpenAtLogin(e.target.checked));
 
-$('add-folder').onclick = guard(async () => {
-  const paths = await api.chooseFolders();
-  if (!paths.length) return;
+// Protect the chosen folders and show the first one. True when at least one is protected.
+async function addFolders(paths) {
+  if (!paths.length) return false;
   toast(`Checking ${plural(paths.length, 'folder')}…`); // measuring size can take a moment
   const results = await api.protect(paths);
   $('toast').hidden = true;
@@ -291,7 +360,10 @@ $('add-folder').onclick = guard(async () => {
     const f = state.folders.find((x) => x.root === ok.root || x.root.toLowerCase() === ok.root.toLowerCase());
     if (f) selectFolder(f.root);
   }
-});
+  return !!ok;
+}
+$('add-folder').onclick = guard(async () => { await addFolders(await api.chooseFolders()); });
+$('add-folder-top').onclick = $('add-folder').onclick;
 
 // --- Main window: selected folder ------------------------------------------------------------------------------
 
@@ -510,7 +582,7 @@ async function undoRestore(r) {
 async function loadHookStatus() {
   try {
     const plan = await api.claudeHooksPlan();
-    $('claude-hooks-status').textContent = plan.installed ? 'Set up: Claude Code sessions make exact save points.' : 'Not set up yet.';
+    $('claude-hooks-status').textContent = plan.installed ? 'Connected: Claude Code makes a save point every turn, and its questions appear as cards.' : 'Not set up yet.';
     $('claude-hooks').textContent = plan.installed ? 'Show Claude Code setup…' : 'Set up Claude Code save points…';
   } catch (e) {
     $('claude-hooks-status').textContent = e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -519,13 +591,14 @@ async function loadHookStatus() {
 
 const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' };
 
-// Show exactly what will be added to the agent's settings, then add it only if the user says so.
+// Show exactly what will be added to the agent's settings, then add it only if the user says so. Once added, the
+// same dialog offers to take Mewndo's hooks out again.
 async function setupHooks(agent) {
   const name = AGENT_NAMES[agent];
-  $('hooks-title').textContent = agent === 'claude' ? 'Add Mewndo to Claude Code?' : `Add Mewndo's Guard to ${name}?`;
-  $('hooks-about-claude').hidden = agent !== 'claude';
-  $('hooks-about-agent').hidden = agent === 'claude';
-  for (const el of document.querySelectorAll('.agent-name')) el.textContent = name;
+  $('hooks-title').textContent = `Connect ${name} to Mewndo?`;
+  $('hooks-about-claude').hidden = true; // the v0 text; the plan says what these hooks do and can't do
+  $('hooks-about-agent').hidden = true;
+  $('hooks-ok').textContent = 'Add the hooks';
   $('hooks-error').textContent = '';
   let plan;
   try {
@@ -540,16 +613,21 @@ async function setupHooks(agent) {
     $('hooks-ok').disabled = false;
     return;
   }
+  $('hooks-about-agent').replaceChildren(...plan.about.map((text, i) => h('p', i ? { class: 'muted' } : {}, text)));
+  $('hooks-about-agent').hidden = false;
   $('hooks-path').textContent = plan.settingsPath;
-  $('hooks-note').textContent = plan.installed ? 'These hooks are already set up; nothing needs to change.'
-    : plan.exists ? 'Everything already in this file stays as it is. A backup of the current file is saved next to it first.'
-      : 'This file does not exist yet and will be created.';
+  $('hooks-note').textContent = plan.note;
   $('hooks-preview').textContent = plan.preview;
-  $('hooks-ok').disabled = plan.installed;
+  $('hooks-ok').textContent = plan.installed ? `Remove Mewndo's hooks from ${name}` : 'Add the hooks';
   if ((await ask($('hooks-dialog'))) !== 'ok') return;
-  const result = agent === 'claude' ? await api.claudeHooksInstall() : await api.agentHooksInstall(agent);
-  const after = agent === 'claude' ? 'New Claude Code sessions make exact save points and ask Mewndo first.' : `New ${name} sessions ask Mewndo first.`;
-  toast(result.backup ? `Added. The previous settings were saved to ${result.backup}. ${after}` : `Added. ${after}`);
+  if (plan.installed) {
+    const removed = await api.agentHooksRemove(agent);
+    toast(`Removed Mewndo's hooks from ${name}.${removed.backups.length ? ` The previous settings were saved to ${removed.backups.join(' and ')}.` : ''}`);
+  } else {
+    const result = agent === 'claude' ? await api.claudeHooksInstall() : await api.agentHooksInstall(agent);
+    const after = `New ${name} sessions ask Mewndo first, and their questions and finished turns appear as cards beside the dock.`;
+    toast(result.backup ? `Added. The previous settings were saved to ${result.backup}. ${after}` : `Added. ${after}`);
+  }
   if (agent === 'claude') await loadHookStatus();
 }
 $('claude-hooks').onclick = guard(() => setupHooks('claude'));
@@ -584,6 +662,8 @@ function go(name) {
   if (name === 'inbox') setTimeout(() => loadInbox());
   if (name === 'home') setTimeout(() => loadHome());
   if (name === 'connections') setTimeout(() => renderConnections());
+  if (name === 'skills') setTimeout(() => loadSkills()); // skills-screen.js
+  if (name === 'folders') setTimeout(() => showFirstFolder());
   for (const b of document.querySelectorAll('#nav .nav-item')) {
     if (b.dataset.screen === name) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
@@ -836,7 +916,7 @@ const loadInbox = guard(async () => {
 });
 function renderInbox(connected = true) {
   $('ib-empty').hidden = inbox.length > 0;
-  $('ib-empty-text').textContent = connected ? 'Nothing needs you. When an agent asks something, it shows up here and beside the dock.'
+  $('ib-empty-text').textContent = connected ? 'All clear. When an agent asks something, it shows up here and beside the dock.'
     : "The Agent Desk isn't running, so cards can't show up yet.";
   document.querySelector('.ib-cat').style.setProperty('--pose', `url("${new URL('../assets/cat/cat-loaf.svg', document.baseURI).href}")`);
   const keep = document.activeElement?.closest?.('.ib-card')?.dataset.id;
@@ -895,18 +975,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // --- Connections (design spec §8.5) ----------------------------------------------------------------------------
-// What it can't do yet: no account can be connected; the cards say so instead of offering a button that does nothing.
-const ACCOUNTS = [
-  ['Gmail', 'Undo sends, deletes and label changes an agent makes in your mail.'],
-  ['Google Drive', 'Put back files an agent moved, renamed or deleted in Drive.'],
-  ['Notion', 'Undo page edits and deletes an agent makes in your workspace.'],
-  ['GitHub', 'See and undo pushes, branch deletes and issue changes an agent makes.'],
-];
-function renderConnections() {
-  fill($('cx-grid'), ...ACCOUNTS.map(([name, what]) => h('div', { class: 'cx-card' },
-    h('div', { class: 'cx-head' }, MewLogos.img(name, 32), h('span', { class: 'cx-name' }, name), h('span', { class: 'chip' }, 'Not available yet')),
-    h('p', {}, what))));
-}
+// The screen is drawn by renderer/connections.js (loaded after this file): renderConnections() is defined there.
 
 // Home's live parts (§8.1): Today's numbers, Right now and Recent, from real data only. Loaded when Home shows and
 // every 30 s while it does, not on every 3 s refresh (the save point lists can be long).
@@ -965,6 +1034,12 @@ async function refresh() {
     $('no-folder').hidden = false;
   }
   renderFolders();
+  showFirstFolder();
+}
+
+// The Protected folders screen never sits empty when there is a folder to show: the first one is opened.
+function showFirstFolder() {
+  if (state?.setupDone && screen === 'folders' && !selected && !busy && state.folders.length) selectFolder(state.folders[0].root);
 }
 
 api.on('state-changed', guard(refresh));
@@ -985,6 +1060,13 @@ api.on('savepoints-changed', (root) => {
 });
 api.on('restores-changed', (root) => { if (root === selected) loadRestores(); });
 api.on('toast', toast);
+// A card arrived and Settings > Notifications has its sound on (main.js decides, Do not disturb included).
+const cardSound = new Audio('../assets/sounds/card.wav');
+api.on('chime', (volume) => {
+  cardSound.volume = Math.min(1, Math.max(0, Number(volume) || 0));
+  cardSound.currentTime = 0;
+  cardSound.play().catch(() => {}); // no sound device: nothing to play it on
+});
 // The bar's change ticker: show what changed in that folder since its newest save point.
 api.on('show-diff', guard(async ({ root, savePoint }) => {
   if (!state?.folders?.some((f) => f.root === root)) return;

@@ -24,6 +24,9 @@ flate2.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 ulid.workspace = true
+toml_edit.workspace = true
+# The Receipt's "I edited <file>" check (agents/claude.rs `file_claims`); already in the lock through mewndo-trace.
+regex.workspace = true
 
 # Real SQLite needs a C compiler (docs/decisions.md, "desk.db"), which the windows-gnu dev box has not got. Both
 # targets that have one get the real desk database; windows-gnu builds the writer task with a sink that keeps no
@@ -42,6 +45,7 @@ windows-sys = { workspace = true, features = [
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_Threading",
+    "Win32_System_Console", # typing.rs: a confirmed message typed into an idle agent's terminal
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Security_Credentials",

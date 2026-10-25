@@ -11,16 +11,21 @@ class_name = "DriveUser"
 tag = "v1"
 new_sqlite_classes = ["DriveUser"]
 
-# Copies of files in watched folders. Free tier is 10 GB; src/heal.js refuses to
-# go over it and warns from 8 GB (CLAUDE.md rule 6: no paid service unasked).
-[[r2_buckets]]
-binding = "COPIES"
-bucket_name = "mewndo-drive-copies"
+# OPTIONAL: copies of files in watched folders, so a permanently deleted file can come
+# back (as a new file with a new id). Off by default: Cloudflare asks for a payment card
+# before it turns R2 on, even for the free 10 GB (CLAUDE.md rule 6: no paid service
+# unasked). src/heal.js refuses to go over 10 GB and warns from 8 GB. To turn it on, see
+# docs/connections-setup.md, then remove the # from the three lines below.
+# [[r2_buckets]]
+# binding = "COPIES"
+# bucket_name = "mewndo-drive-copies"
 
 # Renew the changes watch daily, before it expires.
 [triggers]
 crons = ["23 4 * * *"]
 
-# Secrets (NOT here): wrangler secret put GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# Secrets (NOT here): npx wrangler@3 secret put GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# The Worker learns its own address when you first connect, for Drive's push callback;
+# WORKER_ORIGIN is only a fallback and needn't be edited.
 [vars]
 WORKER_ORIGIN = "https://mewndo-drive.example.workers.dev"

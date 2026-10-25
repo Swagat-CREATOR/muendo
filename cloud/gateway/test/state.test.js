@@ -240,3 +240,21 @@ test('status says rules only once the day is 95% used', async () => {
   const out = await state.status({ now: NOW })
   assert.deepEqual([out.budget.low, out.budget.rules_only], [true, true])
 })
+
+test('register: a device token without an invite, its own budget line, at most 5 new devices a network a day', async () => {
+  const { state } = newState()
+  const a = await state.register({ who: 'net-a', now: NOW })
+  assert.equal(a.device, 'open-1')
+  assert.deepEqual(await state.auth(a.token), { tester: 'open-1', device: 'open-1', name: null })
+  const b = await state.register({ who: 'net-a', now: NOW })
+  assert.notEqual(a.token, b.token)
+  assert.equal(b.device, 'open-2')
+  for (let i = 0; i < 3; i++) await state.register({ who: 'net-a', now: NOW })
+  await assert.rejects(state.register({ who: 'net-a', now: NOW }), (e) => e.status === 429)
+  // Another network, or the next day, is not held back.
+  assert.ok((await state.register({ who: 'net-b', now: NOW })).token)
+  assert.ok((await state.register({ who: 'net-a', now: NOW + 86_400_000 })).token)
+  // Revoking still works on an open device.
+  await state.revoke({ token: a.token })
+  assert.equal(await state.auth(a.token), null)
+})

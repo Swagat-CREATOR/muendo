@@ -15,8 +15,9 @@
 //!
 //! **The four things §33.10 says not to get wrong**, and where each one lives:
 //!
-//! 1. `Stop` loop guard: [`Claude::stop`]'s first five lines. `stop_hook_active` with no reply pending returns
-//!    `{}` at once, before the transcript is read, before Receipts, before any card. Blocking a `Stop` makes
+//! 1. `Stop` loop guard: near the top of [`Claude::stop`]. `stop_hook_active` with no reply pending returns
+//!    `{}` at once, before the transcript is read, before Receipts, before any card. Only a queued
+//!    `agent.message` comes before it, and that empties the queue, so it cannot loop either. Blocking a `Stop` makes
 //!    Claude carry on, which ends in another `Stop`; without this the pair never stops.
 //! 2. `PermissionRequest` waits [`PERMISSION_WAIT`] = 295 s while the hook's own timeout is 300 s (§38.4), so
 //!    the core always answers first. On a timeout it prints **nothing**: Claude's own prompt is still on the
@@ -47,6 +48,7 @@
 //!   snapshot; that is what [`parent_pid`] does on Windows, and `/proc/<pid>/stat` on unix so the field is real
 //!   in the WSL tests too. A PID that cannot be read is `None` and the agent is still tracked by its session id.
 
+use super::mailbox::{self, Mailbox, NextStep};
 use mewndo_inbox::{
     Answer, Card, CardId, CardKind, EngineClient, Inbox, Opt, PermissionFacts, SavepointRequest,
 };
@@ -79,6 +81,11 @@ pub const SAVEPOINT_PRE_TOOL: Duration = Duration::from_secs(1);
 pub const SAVEPOINT_PROMPT: Duration = Duration::from_millis(50);
 /// §33.10 Part C step 4, `Stop`: "the reply window (default 15 s; ends early on E or Dismiss)".
 pub const REPLY_WINDOW: Duration = Duration::from_secs(15);
+/// The `Stop` hook's own timeout in `integrations/claude-code/hooks/hooks.json`.
+pub const STOP_HOOK_TIMEOUT: Duration = Duration::from_secs(130);
+/// The most a held reply window lasts (`inbox.hold`): the hook's timeout less 10 s, so the core always answers
+/// before Claude Code gives up on the hook - the same order as [`PERMISSION_WAIT`] and its 300 s.
+pub const REPLY_WINDOW_HELD: Duration = STOP_HOOK_TIMEOUT.saturating_sub(Duration::from_secs(10));
 /// §33.10 Part C step 4, `Stop`: "run Receipts (§35, at most 3 s)".
 pub const RECEIPTS_BUDGET: Duration = Duration::from_secs(3);
 /// §33.10 Part C step 6's fallback waits inside `PreToolUse` itself, whose matcher entry in
@@ -222,6 +229,8 @@ pub struct Flags {
     pub mode: Mode,
     /// §33.10 Part C step 4, `Stop`.
     pub reply_window: Duration,
+    /// How far `inbox.hold` stretches the reply window while the user is replying.
+    pub reply_window_held: Duration,
     /// §33.10 Part C step 4, `PermissionRequest`.
     pub permission_wait: Duration,
 }
@@ -233,6 +242,7 @@ impl Default for Flags {
             answer_ask_user_question: true,
             mode: Mode::Shadow,
             reply_window: REPLY_WINDOW,
+            reply_window_held: REPLY_WINDOW_HELD,
             permission_wait: PERMISSION_WAIT,
         }
     }
@@ -249,6 +259,8 @@ pub struct Deps {
     pub events: Arc<dyn Events>,
     pub receipts: Arc<dyn Receipts>,
     pub flags: Flags,
+    /// `agent.message` and `inbox.hold` (mailbox.rs), shared with the other two handlers.
+    pub mailbox: Arc<Mailbox>,
 }
 
 impl Deps {
@@ -262,6 +274,7 @@ impl Deps {
             events: Arc::new(NoEvents),
             receipts: Arc::new(RuleReceipts::default()),
             flags: Flags::default(),
+            mailbox: Arc::new(Mailbox::default()),
         }
     }
 }
@@ -517,6 +530,8 @@ struct Session {
     hook_pid: Option<u32>,
     /// Claude Code itself: the parent of the hook's PID (§33.10 Part C step 4, `SessionStart`).
     agent_pid: Option<u32>,
+    /// The Mewndo lane this session runs in, from the forwarder's `MEWNDO_LANE_ID` (§33.10 Part F step 8).
+    lane_id: Option<String>,
     status: &'static str,
     /// This turn (§35): `None` between `Stop` and the next prompt.
     trace_id: Option<String>,
@@ -584,6 +599,13 @@ impl Claude {
         let key = session_key(request, &input);
         self.touch(&key, request, &input);
         match event {
+            Event::PreToolUse | Event::PostToolUse | Event::SubagentStop => {
+                self.busy(&key, "working")
+            }
+            Event::PermissionRequest => self.busy(&key, "needs-you"),
+            _ => {}
+        }
+        match event {
             Event::SessionStart => self.session_start(&key, &input),
             Event::UserPromptSubmit => self.prompt(&key, &input).await,
             Event::PreToolUse => self.pre_tool(&key, &input).await,
@@ -638,6 +660,7 @@ impl Claude {
             session.status = "working";
             (session.agent_id.clone(), session.cwd.clone())
         };
+        self.0.deps.mailbox.working(&agent_id, NAME);
         self.publish_status(&agent_id, "working", Some(first_line(&prompt)));
         // 50 ms is not long enough for a save point on a big folder, and that is the point: the user is
         // waiting on their own prompt. A later answer is still kept (see `savepoint`), so the turn has its
@@ -1054,10 +1077,12 @@ impl Claude {
     fn notification(&self, key: &str, input: &Input) -> HookResponse {
         let message = input.message.clone().unwrap_or_default();
         let status = if needs_user(&message) {
-            "amber"
+            "needs-you"
         } else {
             "working"
         };
+        // Not a sign of a turn in progress for the mailbox: "Claude is waiting for your input" comes after `Stop`,
+        // when nothing will carry a queued message to it.
         let agent_id = self.set_status_to(key, status);
         self.publish_status(&agent_id, status, Some(first_line(&message)));
         say(NOTHING_TO_SAY)
@@ -1070,6 +1095,16 @@ impl Claude {
     // reply window (default 15 s; ends early on E or Dismiss)"
 
     async fn stop(&self, key: &str, input: &Input) -> HookResponse {
+        let agent_id = self.agent_id(key);
+        // **A message the user sent while Claude worked** (`agent.message`, mailbox.rs) is delivered here, at
+        // once, as the reason to carry on: a Done card must not swallow it. This comes before the loop guard and
+        // cannot loop: the queue is emptied, so the next `Stop` finds nothing and the guard below returns `{}`.
+        if let Some(text) = self.0.deps.mailbox.take_queued(&agent_id) {
+            self.set_status_to(key, "working");
+            self.publish_status(&agent_id, "working", Some(first_line(&text)));
+            return say(block_json(text));
+        }
+
         // **The loop guard.** Blocking a Stop makes Claude carry on, and when it finishes it fires Stop again
         // with `stop_hook_active: true`. If that second Stop made another Done card and blocked again, the two
         // would never stop. So: unless a card from an earlier Stop is still waiting for this session, the
@@ -1078,16 +1113,16 @@ impl Claude {
             let pending = self.pending_reply(key).await;
             if pending.is_none() {
                 self.log("claude stop: stop_hook_active with no reply pending; returning at once");
+                self.0.deps.mailbox.idle(&agent_id, NAME);
                 return say(NOTHING_TO_SAY);
             }
         }
 
-        let (agent_id, trace_id, spans, savepoint) = {
+        let (trace_id, spans, savepoint) = {
             let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
             let session = state.entry(key.to_string()).or_default();
-            session.status = "idle";
+            session.status = "done";
             (
-                session.agent_id.clone(),
                 session.trace_id.clone().unwrap_or_default(),
                 session.spans.clone(),
                 session.savepoint.clone(),
@@ -1101,6 +1136,7 @@ impl Claude {
             .and_then(last_assistant_text)
             .unwrap_or_default();
         let summary = summarize(&final_message);
+        let failing_test = last_failing_test(&spans, &self.0.tests);
 
         let changes = savepoint
             .as_deref()
@@ -1131,50 +1167,70 @@ impl Claude {
                 mismatches: receipt.mismatches.clone(),
             });
         }
-        self.publish_status(&agent_id, "idle", Some(summary.clone()));
+        self.publish_status(&agent_id, "done", Some(summary.clone()));
 
         // §33.2's Done card: "A 2-line summary plus the Receipt (§35)", keys "Space reply · V voice reply ·
-        // U undo turn · E clear". A mismatch adds the send-back option of the Receipt warning card.
+        // U undo turn · E clear". Up to three next steps come first, so keys 1-3 are theirs: a mismatch the
+        // Receipt found is the first of them (the send-back of the Receipt warning card).
         let body = match (summary.is_empty(), receipt.line.is_empty()) {
             (true, true) => String::new(),
             (true, false) => receipt.line.clone(),
             (false, true) => summary.clone(),
             (false, false) => format!("{summary}\n{}", receipt.line),
         };
+        let steps = mailbox::next_steps(
+            receipt
+                .mismatches
+                .first()
+                .map(|first| (first.as_str(), send_back_message(&receipt))),
+            failing_test.as_deref(),
+        );
         let mut card = Card::new(CardKind::Done, &agent_id, "Finished", body);
         card.trace_id = (!trace_id.is_empty()).then(|| trace_id.clone());
-        card.options = if receipt.mismatches.is_empty() {
-            vec![Opt::new(UNDO_TURN), Opt::new(CLEAR)]
-        } else {
-            vec![
-                Opt::new(SEND_BACK).recommended(),
-                Opt::new(UNDO_TURN),
-                Opt::new(CLEAR),
-            ]
-        };
-        card.deadline = Some(self.0.deps.flags.reply_window);
+        card.options = done_options(&steps, !receipt.mismatches.is_empty());
+        // The Inbox's own timer is the longest the hook may wait (a held window); the short window is this
+        // handler's, and it expires the card itself when that ends.
+        let flags = &self.0.deps.flags;
+        let held = flags.reply_window_held.max(flags.reply_window);
+        card.deadline = Some(held);
         let (id, waiting) = self.0.deps.inbox.create(card.clone()).await;
         self.set_done_card(key, Some(id));
 
-        // The window ends early the moment an answer arrives, which is what "ends early on E or Dismiss"
-        // means from this side: E releases a Clear, and the oneshot resolves.
-        let answer = match timeout(self.0.deps.flags.reply_window, waiting).await {
-            Ok(Ok(answer)) => answer,
-            Ok(Err(_)) => {
-                self.set_done_card(key, None);
-                return say(NOTHING_TO_SAY);
-            }
-            Err(_) => {
-                self.0.deps.inbox.expire(id).await;
-                self.set_done_card(key, None);
-                return say(NOTHING_TO_SAY);
-            }
-        };
+        // The window ends early the moment an answer or an `agent.message` arrives, which is what "ends early
+        // on E or Dismiss" means from this side: E releases a Clear, and the oneshot resolves. `inbox.hold`
+        // stretches it while the user is still typing or speaking.
+        let window = self
+            .0
+            .deps
+            .mailbox
+            .open(&agent_id, NAME, id, flags.reply_window, held);
+        let ended = window.wait(waiting).await;
+        self.0.deps.mailbox.close(&agent_id, id);
         self.set_done_card(key, None);
-        match done_answer(&card, &answer, &receipt) {
-            // A reply or a send-back: block, and the text is what Claude reads and carries on from.
-            Some(text) => say(block_json(text)),
-            None => say(NOTHING_TO_SAY),
+        let reply = ended
+            .answer
+            .as_ref()
+            .and_then(|answer| done_answer(&card, answer, &steps));
+        if ended.answer.is_none() {
+            // Timed out, or a message came instead: the card can no longer be answered. A no-op when the
+            // Inbox has already expired it.
+            self.0.deps.inbox.expire(id).await;
+        }
+        match mailbox::join(reply, ended.message) {
+            // A reply, a next step, a send-back or a message: block, and the text is what Claude reads and
+            // carries on from.
+            Some(text) => {
+                self.0.deps.mailbox.resumed(&agent_id);
+                self.set_status_to(key, "working");
+                self.publish_status(&agent_id, "working", Some(first_line(&text)));
+                say(block_json(text))
+            }
+            None => {
+                self.0.deps.mailbox.idle(&agent_id, NAME);
+                self.set_status_to(key, "idle");
+                self.publish_status(&agent_id, "idle", Some(summary));
+                say(NOTHING_TO_SAY)
+            }
         }
     }
 
@@ -1232,6 +1288,11 @@ impl Claude {
         {
             session.cwd = cwd;
         }
+        if let Some(lane) = request.lane_id.as_deref().map(str::trim)
+            && !lane.is_empty()
+        {
+            session.lane_id = Some(lane.to_string());
+        }
         if let Some(pid) = request.pid {
             session.hook_pid = Some(pid);
             // The hook is a child of Claude Code, so Claude Code's own PID is the hook's parent (§33.10 Part C
@@ -1239,6 +1300,37 @@ impl Claude {
             if session.agent_pid.is_none() {
                 session.agent_pid = parent_pid(pid);
             }
+        }
+        // The process that owns Claude Code's terminal, which the forwarder found past the shell that ran it. The
+        // mailbox keeps it, so a message to Claude idle at its prompt can be typed there once the user confirms.
+        if let Some(pid) = request.console_pid {
+            let agent_id = session.agent_id.clone();
+            drop(state);
+            self.0.deps.mailbox.console(&agent_id, pid);
+        }
+    }
+
+    fn agent_id(&self, key: &str) -> String {
+        let state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .get(key)
+            .map(|s| s.agent_id.clone())
+            .unwrap_or_default()
+    }
+
+    /// A hook that only runs mid-turn: the mailbox learns the agent is working (so `agent.message` queues), and
+    /// the apps hear about it when the status changed - not on every tool call.
+    fn busy(&self, key: &str, status: &'static str) {
+        let (agent_id, changed) = {
+            let mut state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+            let session = state.entry(key.to_string()).or_default();
+            let changed = session.status != status;
+            session.status = status;
+            (session.agent_id.clone(), changed)
+        };
+        self.0.deps.mailbox.working(&agent_id, NAME);
+        if changed {
+            self.publish_status(&agent_id, status, None);
         }
     }
 
@@ -1262,6 +1354,14 @@ impl Claude {
     }
 
     fn publish_status(&self, agent_id: &str, status: &str, last_line: Option<String>) {
+        // The lane, so the Talk box can type into a Claude started in one. Never called with the lock held.
+        let lane_id = {
+            let state = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .values()
+                .find(|s| s.agent_id == agent_id)
+                .and_then(|s| s.lane_id.clone())
+        };
         self.0.deps.events.agent_status(AgentStatus {
             agent_id: agent_id.to_string(),
             kind: KIND.to_string(),
@@ -1269,6 +1369,7 @@ impl Claude {
             connection: "hooked".to_string(),
             status: status.to_string(),
             last_line: last_line.filter(|l| !l.is_empty()),
+            lane_id,
         });
     }
 
@@ -1453,26 +1554,43 @@ impl Claude {
 
 // --- card and answer helpers ------------------------------------------------------------------------------
 
-/// §33.2's Done card keys, as labels. Matched by label and not by index, because the card has one more option
-/// when there is a mismatch to send back and a wrong index would undo a turn the user wanted kept.
-const SEND_BACK: &str = "Send back";
+/// §33.2's Done card keys after the next steps, as labels. Matched by label and not by index, because the number
+/// of next steps varies and a wrong index would undo a turn the user wanted kept.
 const UNDO_TURN: &str = "Undo turn";
 const CLEAR: &str = "Clear";
 
+/// The Done card's options: the next steps (keys 1-3), then Undo turn and Clear. A send-back is recommended.
+fn done_options(steps: &[NextStep], send_back: bool) -> Vec<Opt> {
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let option = Opt::new(step.label.clone());
+            if send_back && i == 0 {
+                option.recommended()
+            } else {
+                option
+            }
+        })
+        .chain([Opt::new(UNDO_TURN), Opt::new(CLEAR)])
+        .collect()
+}
+
 /// What to block the turn with, or `None` to let it end.
-fn done_answer(card: &Card, answer: &Answer, receipt: &Receipt) -> Option<String> {
+fn done_answer(card: &Card, answer: &Answer, steps: &[NextStep]) -> Option<String> {
     // Space or V: the user's own words, which is the reply (§33.2).
     if let Some(text) = answer.text.as_deref().map(str::trim)
         && !text.is_empty()
     {
         return Some(text.to_string());
     }
-    match answer.choice.and_then(|n| card.options.get(n)) {
-        Some(option) if option.label == SEND_BACK => Some(send_back_message(receipt)),
-        // Undo turn is a restore, which the core runs from the card; Clear is "I have read it". Neither is
-        // something to tell the agent, so the turn ends.
-        _ => None,
-    }
+    let label = &card.options.get(answer.choice?)?.label;
+    // A next step is sent exactly like a typed reply. Undo turn is a restore, which the core runs from the card;
+    // Clear is "I have read it". Neither is something to tell the agent, so the turn ends.
+    steps
+        .iter()
+        .find(|step| &step.label == label)
+        .map(|step| step.text.clone())
 }
 
 /// §35: what the agent is asked to look at again. Facts only - the claim and what the evidence says - because
@@ -1864,6 +1982,17 @@ fn rule_receipt(claims: &[Claim], input: &ReceiptInput, tests: &Tests) -> Receip
         }
     }
 
+    // "I edited / created / deleted <file>", against the files this turn's tool calls really touched. Only for a
+    // turn Mewndo saw begin (it has a trace): a core that started mid-turn has missed tool calls, and their
+    // absence is not evidence.
+    if !input.trace_id.is_empty() {
+        for claim in file_claims(&input.final_message) {
+            if let Some(mismatch) = unsupported_file_claim(&claim, input, tests) {
+                mismatches.push(mismatch);
+            }
+        }
+    }
+
     // §35, spec line 2275: `✓ 4 files · ✓ npm test passed after the last edit · 1 save point`.
     let mut parts = Vec::new();
     let files = touched.len();
@@ -1896,6 +2025,212 @@ fn rule_receipt(claims: &[Claim], input: &ReceiptInput, tests: &Tests) -> Receip
         line: parts.join(" · "),
         mismatches,
     }
+}
+
+/// The last test run of the turn, when it did not pass: its command, for the "Fix the failing tests" next step.
+fn last_failing_test(spans: &[Span], tests: &Tests) -> Option<String> {
+    let last = spans
+        .iter()
+        .filter(|s| s.test_runner(tests).is_some())
+        .max_by_key(|s| s.at())?;
+    match last.exit_code {
+        Some(code) if code != 0 => Some(last.name.clone()),
+        _ => None,
+    }
+}
+
+/// "I updated README.md", as the agent wrote it: the verb and the file.
+#[derive(Debug, Clone, PartialEq)]
+struct FileClaim {
+    verb: String,
+    path: String,
+}
+
+/// How many words after the verb the file may come: "fixed the date parser in src/date.ts" is five.
+const CLAIM_REACH: usize = 6;
+
+/// The file claims in an agent's final message, rules only. Cautious in the same ways as mewndo-trace's claims:
+/// code fences and quoted lines are skipped, a negation in the four words before the verb drops the claim, and
+/// only something that looks like a file (a separator, or a name with a short extension) is a subject.
+fn file_claims(message: &str) -> Vec<FileClaim> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    static VERB: OnceLock<Regex> = OnceLock::new();
+    static CLAUSE: OnceLock<Regex> = OnceLock::new();
+    let verb = VERB.get_or_init(|| {
+        Regex::new(r"(?i)\b(edited|updated|modified|changed|fixed|rewrote|refactored|created|added|wrote|deleted|removed)\b")
+            .expect("a fixed pattern")
+    });
+    // A clause ends at a full stop, a question or exclamation mark, a semicolon or a colon followed by a space,
+    // at the end of a line, or at "and"/"but"/"then" - so one verb never reaches the next statement's file.
+    let clause = CLAUSE.get_or_init(|| {
+        Regex::new(r"(?i)[.!?;:](?:\s+|$)|\n|\s(?:and|but|then)\s").expect("a fixed pattern")
+    });
+    let mut prose = String::new();
+    let mut fenced = false;
+    for line in message.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if !fenced && !trimmed.starts_with('>') {
+            prose.push_str(line);
+            prose.push('\n');
+        }
+    }
+    let mut out: Vec<FileClaim> = Vec::new();
+    for part in clause.split(&prose) {
+        for found in verb.find_iter(part) {
+            let before: Vec<String> = part[..found.start()]
+                .split_whitespace()
+                .rev()
+                .take(4)
+                .map(|w| w.to_lowercase().replace('’', "'"))
+                .collect();
+            if before.iter().any(|w| NEGATED.contains(&w.as_str())) {
+                continue;
+            }
+            let Some(path) = part[found.end()..]
+                .split_whitespace()
+                .take(CLAIM_REACH)
+                .find_map(file_like)
+            else {
+                continue;
+            };
+            if out.iter().any(|c| c.path == path) {
+                continue;
+            }
+            out.push(FileClaim {
+                verb: found.as_str().to_lowercase(),
+                path,
+            });
+        }
+    }
+    out
+}
+
+/// Words that make a file claim not a claim: "I haven't updated README.md", "I could have deleted it".
+const NEGATED: &[&str] = &[
+    "not", "no", "never", "didn't", "didnt", "haven't", "havent", "hasn't", "hasnt", "wasn't",
+    "wasnt", "weren't", "werent", "couldn't", "couldnt", "cannot", "can't", "cant", "won't",
+    "wont", "unable", "could", "would", "should", "might", "may", "if", "to", "be", "been",
+    "being", "will",
+];
+
+/// Names that look like files and are products: "updated Node.js" is not a claim about a file.
+const NOT_FILES: &[&str] = &[
+    "node.js",
+    "next.js",
+    "nuxt.js",
+    "vue.js",
+    "react.js",
+    "express.js",
+    "three.js",
+    "d3.js",
+    "chart.js",
+    "asp.net",
+    "vb.net",
+    ".net",
+];
+
+/// A word as a file path, or None. Same clean-up as mewndo-trace's subjects: wrapping backticks, quotes and
+/// brackets go, and so does trailing punctuation.
+fn file_like(word: &str) -> Option<String> {
+    let w = word.trim_matches(|c: char| "`'\"()[]{}<>*_".contains(c));
+    let w = w.trim_end_matches(['.', ',', ';', ':', '!', '?', ')']);
+    if w.is_empty() || w.contains("://") || NOT_FILES.contains(&w.to_lowercase().as_str()) {
+        return None;
+    }
+    let has_extension = w.rsplit_once('.').is_some_and(|(stem, ext)| {
+        stem.chars().count() >= 2
+            && (1..=6).contains(&ext.len())
+            && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            && ext.chars().any(|c| c.is_ascii_alphabetic())
+    });
+    let separated = (w.contains('/') || w.contains('\\')) && w.chars().any(char::is_alphanumeric);
+    (has_extension || separated).then(|| w.to_string())
+}
+
+/// Commands that read and never write, so running one is not a way the claimed file could have changed.
+const READ_ONLY: &[&str] = &[
+    "ls",
+    "dir",
+    "cat",
+    "type",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "rg",
+    "find",
+    "echo",
+    "pwd",
+    "tree",
+    "which",
+    "where",
+    "get-content",
+    "get-childitem",
+    "select-string",
+];
+
+/// A mismatch line when nothing this turn could have done what the claim says, or None when something did, or
+/// might have. The journal, when v0 gave one, is authoritative. Without it the evidence is the tool calls: a
+/// file tool that named the file, or a shell command that names it. A shell command that names no file could
+/// still have changed one (`sed -i`, a code generator), and so could a subagent, so either of those makes the
+/// claim unverifiable - and an unverifiable claim is left alone, not reported.
+fn unsupported_file_claim(
+    claim: &FileClaim,
+    input: &ReceiptInput,
+    tests: &Tests,
+) -> Option<String> {
+    let name = claim
+        .path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&claim.path)
+        .to_lowercase();
+    let touched = input
+        .spans
+        .iter()
+        .filter(|s| s.ended_at.is_some() && matches!(s.kind, SpanKind::File | SpanKind::Mcp))
+        .flat_map(|s| s.files.iter())
+        .chain(input.changes.iter().flat_map(|c| c.all()))
+        .any(|path| same_subject(path, &claim.path));
+    let named_by_shell = input
+        .spans
+        .iter()
+        .any(|s| s.kind == SpanKind::Shell && s.name.to_lowercase().contains(&name));
+    if touched || named_by_shell {
+        return None;
+    }
+    if input.changes.is_none() {
+        let could_have = input.spans.iter().any(|s| match s.kind {
+            SpanKind::Subagent => true,
+            SpanKind::Shell => {
+                let first = s
+                    .name
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_lowercase();
+                let reads = READ_ONLY.contains(&first.as_str())
+                    || ["git status", "git diff", "git log", "git show"]
+                        .iter()
+                        .any(|g| s.name.trim_start().starts_with(g));
+                !reads && s.test_runner(tests).is_none()
+            }
+            _ => false,
+        });
+        if could_have {
+            return None;
+        }
+    }
+    Some(format!(
+        "Says it {} {} · no tool call this turn touched that file",
+        claim.verb,
+        cut(&claim.path, 80)
+    ))
 }
 
 /// Does this path answer that claim's subject? A claim says `src/date.ts` or `migrations/`; a span and a
@@ -1996,6 +2331,7 @@ mod tests {
                 .map(str::to_string),
             lane_id: None,
             payload,
+            console_pid: None,
         }
     }
 
@@ -2506,7 +2842,8 @@ mod tests {
         assert_eq!(out.stdout, "{}");
         let statuses = h.fakes.statuses.lock().unwrap().clone();
         let last = statuses.last().unwrap();
-        assert_eq!(last.status, "amber");
+        // "amber" on the wire until agent messages; now the same "needs-you" Codex and Cursor send.
+        assert_eq!(last.status, "needs-you");
         assert_eq!(
             last.last_line.as_deref(),
             Some("Claude needs your permission to use Bash")
@@ -2536,16 +2873,22 @@ mod tests {
             out.stdout,
             r#"{"decision":"block","reason":"also fix the pricing test"}"#
         );
-        // §33.8: the summary on the card is the agent's own last message, cut at two sentences.
+        // §33.8: the summary on the card is the agent's own last message, cut at two sentences. It is sent with
+        // the Done card ("done"); the reply then carries Claude on, so the last status is "working".
         let statuses = h.fakes.statuses.lock().unwrap().clone();
-        let last = statuses.last().unwrap();
-        assert_eq!(last.status, "idle");
+        let done = statuses
+            .iter()
+            .rfind(|s| s.status == "done")
+            .expect("the Done card's status");
         assert_eq!(
-            last.last_line.as_deref(),
+            done.last_line.as_deref(),
             Some(
                 "I fixed the date parser in src/date.ts so bare dates are read as UTC. All the checkout tests pass now."
             )
         );
+        let last = statuses.last().unwrap();
+        assert_eq!(last.status, "working");
+        assert_eq!(last.last_line.as_deref(), Some("also fix the pricing test"));
     }
 
     #[tokio::test]
@@ -3205,6 +3548,391 @@ mod tests {
             parent_pid(u32::MAX),
             None,
             "a PID that does not exist is None, not a panic"
+        );
+    }
+
+    // --- agent.message, inbox.hold and the next steps (mailbox.rs) ---------------------------------------------
+
+    fn agent_of(h: &Harness) -> String {
+        h.fakes
+            .statuses
+            .lock()
+            .unwrap()
+            .last()
+            .expect("a status names the agent")
+            .agent_id
+            .clone()
+    }
+
+    /// The Done card on top of the stack, once the `Stop` hook has made it.
+    async fn done_card_of(inbox: &Inbox) -> Card {
+        for _ in 0..400 {
+            if let Some(card) = inbox.stack(mewndo_inbox::TOP).await.cards.first() {
+                return card.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("no Done card was made");
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_while_claude_works_is_delivered_at_its_next_stop_without_a_card() {
+        let h = harness_with(|deps| deps.flags.reply_window = Duration::from_secs(60));
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        h.claude
+            .respond(&request("pre-tool", sample("pre-tool-bash.json")))
+            .await;
+        let agent = agent_of(&h);
+        let mailbox = h.claude.0.deps.mailbox.clone();
+        assert_eq!(
+            mailbox.offer(&agent, "use the staging database").0,
+            mewndo_proto::Delivery::Queued
+        );
+        assert_eq!(
+            mailbox.offer(&agent, "and keep the old API").0,
+            mewndo_proto::Delivery::Queued
+        );
+        let started = std::time::Instant::now();
+        let out = h
+            .claude
+            .respond(&request("stop", sample("stop.json")))
+            .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a queued message does not wait for the card"
+        );
+        assert_eq!(
+            out.stdout,
+            r#"{"decision":"block","reason":"use the staging database\n\nand keep the old API"}"#
+        );
+        assert!(
+            h.inbox.stack(mewndo_inbox::TOP).await.cards.is_empty(),
+            "no Done card for a turn that carries on"
+        );
+        // Delivered once: the Stop after it is the loop guard's, and returns at once.
+        let started = std::time::Instant::now();
+        let again = h
+            .claude
+            .respond(&request("stop", sample("stop-hook-active.json")))
+            .await;
+        assert_eq!(again.stdout, "{}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            mailbox.offer(&agent, "too late").0,
+            mewndo_proto::Delivery::Unsupported,
+            "idle at its prompt: only a lane reaches it now"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_while_the_done_card_waits_carries_claude_on_now() {
+        let h = harness_with(|deps| deps.flags.reply_window = Duration::from_secs(30));
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        let agent = agent_of(&h);
+        let claude = h.claude.clone();
+        let stop =
+            tokio::spawn(
+                async move { claude.respond(&request("stop", sample("stop.json"))).await },
+            );
+        let card = done_card_of(&h.inbox).await;
+        let statuses = h.fakes.statuses.lock().unwrap().clone();
+        assert_eq!(
+            statuses.last().unwrap().status,
+            "done",
+            "the Done card is up"
+        );
+        let (delivered, reason) = h.claude.0.deps.mailbox.offer(&agent, "now add a test");
+        assert_eq!(delivered, mewndo_proto::Delivery::Now, "{reason}");
+        let out = tokio::time::timeout(Duration::from_secs(5), stop)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out.stdout,
+            r#"{"decision":"block","reason":"now add a test"}"#
+        );
+        assert_eq!(
+            h.inbox.state(card.id).await,
+            Some(CardState::Expired),
+            "the card leaves the stack"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_next_step_on_the_done_card_is_sent_like_a_reply_and_clear_ends_the_turn() {
+        let h = harness_with(|deps| deps.flags.reply_window = Duration::from_secs(5));
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        let claude = h.claude.clone();
+        let stop =
+            tokio::spawn(
+                async move { claude.respond(&request("stop", sample("stop.json"))).await },
+            );
+        let card = done_card_of(&h.inbox).await;
+        let labels: Vec<&str> = card.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Looks good, carry on",
+                "Run the tests",
+                "Summarize what you changed",
+                "Undo turn",
+                "Clear"
+            ]
+        );
+        h.inbox.answer(card.id, choice(card.id, 1, Via::Key)).await;
+        assert_eq!(
+            stop.await.unwrap().stdout,
+            r#"{"decision":"block","reason":"Run the tests"}"#
+        );
+
+        // Clear is "I have read it": nothing for the agent, and the turn ends.
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        let claude = h.claude.clone();
+        let stop =
+            tokio::spawn(
+                async move { claude.respond(&request("stop", sample("stop.json"))).await },
+            );
+        let card = done_card_of(&h.inbox).await;
+        let clear = card.options.iter().position(|o| o.label == CLEAR).unwrap();
+        h.inbox
+            .answer(card.id, choice(card.id, clear, Via::Key))
+            .await;
+        assert_eq!(stop.await.unwrap().stdout, "{}");
+        let statuses = h.fakes.statuses.lock().unwrap().clone();
+        assert_eq!(statuses.last().unwrap().status, "idle");
+    }
+
+    #[tokio::test]
+    async fn a_mismatch_and_a_failing_test_become_the_first_next_steps() {
+        let h = harness_with(|deps| deps.flags.reply_window = Duration::from_secs(5));
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        // The sample's test run fails (`not ok 1`), and the sample transcript says "I fixed the date parser in
+        // src/date.ts" in a turn that never edited it.
+        h.claude
+            .respond(&request("pre-tool", sample("pre-tool-bash.json")))
+            .await;
+        h.claude
+            .respond(&request("post-tool", sample("post-tool-bash.json")))
+            .await;
+        let mut stop = sample("stop.json");
+        stop["transcript_path"] = json!(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(SAMPLES)
+                .join("stop-transcript.jsonl")
+                .to_string_lossy()
+        );
+        let claude = h.claude.clone();
+        let waiting = tokio::spawn(async move { claude.respond(&request("stop", stop)).await });
+        let card = done_card_of(&h.inbox).await;
+        // The first mismatch names the claim ("Says tests pass" here); the send-back carries all of them.
+        assert!(
+            card.options[0].label.starts_with("Send back: Says "),
+            "{:?}",
+            card.options
+        );
+        assert!(card.options[0].recommended);
+        assert_eq!(card.options[1].label, "Fix the failing tests");
+        assert!(
+            card.options
+                .iter()
+                .all(|o| o.label != "Looks good, carry on"),
+            "never offered over a problem"
+        );
+        let receipts = h.fakes.receipts.lock().unwrap().clone();
+        assert!(
+            receipts[0]
+                .mismatches
+                .iter()
+                .any(|m| m.contains("src/date.ts")),
+            "{receipts:?}"
+        );
+        h.inbox.answer(card.id, choice(card.id, 0, Via::Key)).await;
+        let out = waiting.await.unwrap();
+        let printed: Value = serde_json::from_str(&out.stdout).unwrap();
+        let reason = printed["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("Mewndo checked this turn") && reason.contains("src/date.ts"),
+            "{reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_reply_window_outlasts_the_short_one_and_never_the_hook() {
+        let h = harness_with(|deps| {
+            deps.flags.reply_window = Duration::from_millis(150);
+            deps.flags.reply_window_held = Duration::from_secs(10);
+        });
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        let claude = h.claude.clone();
+        let stop =
+            tokio::spawn(
+                async move { claude.respond(&request("stop", sample("stop.json"))).await },
+            );
+        let card = done_card_of(&h.inbox).await;
+        assert!(h.claude.0.deps.mailbox.hold(&card.id.to_string(), true));
+        // Well past the short window: the user is still typing.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        h.inbox
+            .answer(card.id, text(card.id, "rename it to parseDate", Via::Voice))
+            .await;
+        assert_eq!(
+            stop.await.unwrap().stdout,
+            r#"{"decision":"block","reason":"rename it to parseDate"}"#
+        );
+        // The shipped numbers: held at most the hook's own timeout less a margin.
+        assert!(REPLY_WINDOW < REPLY_WINDOW_HELD && REPLY_WINDOW_HELD < STOP_HOOK_TIMEOUT);
+        let hooks: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../integrations/claude-code/hooks/hooks.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            hooks["hooks"]["Stop"][0]["hooks"][0]["timeout"].as_u64(),
+            Some(STOP_HOOK_TIMEOUT.as_secs())
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_tells_the_apps_working_needs_you_done_and_idle() {
+        let h = harness_with(|deps| deps.flags.reply_window = Duration::from_millis(50));
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        h.claude
+            .respond(&request("pre-tool", sample("pre-tool-bash.json")))
+            .await;
+        h.claude
+            .respond(&request("pre-tool", sample("pre-tool-bash.json")))
+            .await;
+        let statuses: Vec<String> = h
+            .fakes
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.status.clone())
+            .collect();
+        assert_eq!(
+            statuses,
+            ["working"],
+            "a tool call that changes nothing sends nothing"
+        );
+        h.claude
+            .respond(&request("stop", sample("stop.json")))
+            .await;
+        let statuses: Vec<String> = h
+            .fakes
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.status.clone())
+            .collect();
+        assert_eq!(statuses, ["working", "done", "idle"]);
+    }
+
+    #[tokio::test]
+    async fn a_claude_started_in_a_lane_names_its_lane_on_agent_status() {
+        let h = harness();
+        let mut prompt = request("prompt", sample("prompt.json"));
+        prompt.lane_id = Some("01JLANE7QX".into());
+        h.claude.respond(&prompt).await;
+        let statuses = h.fakes.statuses.lock().unwrap().clone();
+        assert_eq!(
+            statuses.last().unwrap().lane_id.as_deref(),
+            Some("01JLANE7QX")
+        );
+        // Outside a lane there is none.
+        let h = harness();
+        h.claude
+            .respond(&request("prompt", sample("prompt.json")))
+            .await;
+        assert_eq!(
+            h.fakes.statuses.lock().unwrap().last().unwrap().lane_id,
+            None
+        );
+        assert_eq!(
+            super::mailbox::lane_of("lane:01JLANE7QX").as_deref(),
+            Some("01JLANE7QX")
+        );
+        assert_eq!(super::mailbox::lane_of("codex:s1"), None);
+    }
+
+    #[test]
+    fn a_receipt_flags_a_file_the_agent_says_it_changed_but_no_tool_call_touched() {
+        let tests = Tests::builtin();
+        let mut edit = Span::start("s1", "t1", "Edit", "src/a.ts", 1);
+        edit.files = vec![r"C:\code\shop\src\a.ts".into()];
+        edit.finish("", "", None, 2, &tests);
+        let mut read = Span::start("s2", "t1", "Read", "README.md", 3);
+        read.files = vec!["README.md".into()];
+        read.finish("", "", None, 4, &tests);
+        let mut run = Span::start("s3", "t1", "Bash", "npm test", 5);
+        run.finish("# pass 3\n# fail 0\n", "", Some(0), 6, &tests);
+        let receipt = |message: &str, spans: Vec<Span>, changes: Option<Changes>, trace: &str| {
+            let input = ReceiptInput {
+                trace_id: trace.into(),
+                final_message: message.into(),
+                spans,
+                changes,
+            };
+            rule_receipt(&Claims::builtin().extract(message), &input, &tests).mismatches
+        };
+        let spans = vec![edit.clone(), read.clone(), run.clone()];
+
+        let found = receipt(
+            "I updated `src/a.ts` and fixed the typo in README.md.",
+            spans.clone(),
+            None,
+            "t1",
+        );
+        assert_eq!(
+            found,
+            ["Says it fixed README.md · no tool call this turn touched that file"],
+            "reading a file is not changing it, and the edited one is fine"
+        );
+        // Not claims: a negation, a product name, a version, a code block, a quoted line.
+        assert!(
+            receipt(
+                "I haven't updated docs/setup.md yet. I updated Node.js to v20.1.\n```\nedited lib/x.ts\n```\n> I deleted old.txt",
+                spans.clone(),
+                None,
+                "t1",
+            )
+            .is_empty()
+        );
+        // A shell command that names the file is evidence; so is the journal.
+        let mut rm = Span::start("s4", "t1", "Bash", "rm build/old.js", 7);
+        rm.finish("", "", Some(0), 8, &tests);
+        assert!(receipt("I deleted build/old.js.", vec![rm], None, "t1").is_empty());
+        let mut changes = Changes::default();
+        changes.edited.push("README.md".into());
+        assert!(receipt("I fixed README.md.", spans.clone(), Some(changes), "t1").is_empty());
+        // A shell command that could have written it, unseen, makes the claim unverifiable: left alone.
+        let mut sed = Span::start("s5", "t1", "Bash", "sed -i s/a/b/ docs/*.md", 9);
+        sed.finish("", "", Some(0), 10, &tests);
+        assert!(receipt("I fixed README.md.", vec![sed], None, "t1").is_empty());
+        // And a turn Mewndo did not see begin is not checked at all.
+        assert!(receipt("I fixed README.md.", vec![], None, "").is_empty());
+        // Created and deleted are checked the same way.
+        assert_eq!(
+            receipt("Created src/new.ts.", vec![run], None, "t1"),
+            ["Says it created src/new.ts · no tool call this turn touched that file"]
         );
     }
 }

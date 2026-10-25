@@ -81,6 +81,8 @@ async function hashFile(file, within) {
 }
 
 const HOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// verifySince checks this much further back than asked: file times are coarser than the clock (see there).
+const MTIME_SLACK_MS = 5_000;
 
 // The hot cache (spec §25.2): content up to 1 MB stored in the last 24 hours also kept uncompressed in
 // <store>/hot/<first 2 hex>/<sha256>, so the most likely restores skip unpacking. Only a copy: mewndo-core checks
@@ -308,6 +310,9 @@ function createStore(dir) {
 
   // After an unclean shutdown: re-check every object written at or after `since` (ms) and delete the ones whose
   // content no longer matches its name (e.g. cut short by a power loss). Returns the deleted hashes.
+  // File times are coarser than the clock that set `since`: Linux stamps files a few ms behind Date.now(), and FAT and
+  // exFAT drives round down to 2 s. So an object written right after `since` can carry an earlier time; everything
+  // from MTIME_SLACK_MS before it is checked too. A few extra reads, once, after a crash.
   async function verifySince(since) {
     const bad = [];
     if (!(await exists(objectsDir))) return bad;
@@ -319,7 +324,7 @@ function createStore(dir) {
         const e = files[next++];
         const file = path.join(e.parentPath, e.name);
         const st = await fsp.lstat(file).catch(() => null);
-        if (!st || st.mtimeMs < since) continue;
+        if (!st || st.mtimeMs < since - MTIME_SLACK_MS) continue;
         const want = e.name.replace(/\.gz$/, '');
         const check = crypto.createHash('sha256');
         const ok = await pipeline(fs.createReadStream(file), ...(e.name.endsWith('.gz') ? [zlib.createGunzip()] : []), hashTap(check),

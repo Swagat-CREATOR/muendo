@@ -54,6 +54,39 @@ function parseIntent(said, { agents = [] } = {}) {
   };
 }
 
+// Free speech or a command? The bar's mic hears both: "stop Claude" is for Mewndo, "Claude, stop editing the README
+// and run the tests" is for Claude. A command has to lead what was said (after "hey Mewndo", "please" or an agent's
+// name) and, for stop and resume, be short; anything else is a message for an agent, which the Router delivers.
+//   { kind: 'command', intent }  act on it as today (undo and freeze still confirm first)
+//   { kind: 'ask', intent }      a command missing a piece ("stop it"): "did you mean", as today
+//   { kind: 'message', text, agent, intent }  send the words to an agent; agent is the one named, if any
+//   { kind: 'empty', intent }    nothing was heard
+// What it can't do: it is word rules, not understanding. "Pause Codex for a sec" is a command; "continue with the
+// tests" is a message. Saying "Mewndo, ..." does not force a command.
+const FILLER = new Set(['hey', 'hi', 'ok', 'okay', 'mewndo', 'please', 'can', 'could', 'would', 'you']);
+const LEADS = /^(stop|brake|halt|pause|kill|freeze|undo|revert|roll ?back|rollback|put back|resume|carry on|continue|unpause|go on|what)\b/;
+const SHORT = 4; // stop and resume with more than this many words after the verb's leading words are messages
+
+function classify(said, { agents = [] } = {}) {
+  const intent = parseIntent(said, { agents });
+  const text = String(said ?? '').trim();
+  if (!text) return { kind: 'empty', intent };
+  if (intent.intent === 'brief') return { kind: 'command', intent };
+  // The words that matter: fillers and agent names dropped from the front ("Claude, undo ...", "please stop Codex").
+  const named = (w) => agents.some((name) => name.toLowerCase().split(/\s+/).includes(SOUNDS_LIKE[w] ?? w)) && !['code', 'agent', 'the', 'ai'].includes(w);
+  const words = text.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+  let i = 0;
+  while (i < words.length && (FILLER.has(words[i]) || named(words[i]))) i++;
+  const rest = words.slice(i);
+  const led = LEADS.test(rest.join(' '));
+  const short = rest.filter((w) => !named(w)).length <= SHORT;
+  const message = { kind: 'message', text, agent: findAgent(text.toLowerCase(), agents), intent };
+  if (intent.intent === 'unclear') return led && short ? { kind: 'ask', intent } : message;
+  if (!led) return message;
+  if (['stop', 'resume'].includes(intent.intent) && !short) return message;
+  return { kind: 'command', intent };
+}
+
 // The suggestion or intent in words, for "did you mean" and confirmations.
 function describe(i) {
   const who = i.agent ?? 'any agent';
@@ -68,4 +101,4 @@ function describe(i) {
   }
 }
 
-module.exports = { parseIntent, describe };
+module.exports = { parseIntent, describe, classify };

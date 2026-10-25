@@ -22,7 +22,7 @@ let closeTimer = null;
 function wake() {
   pill.classList.remove('dot');
   clearTimeout(idle);
-  idle = setTimeout(() => { if (!overHit && !state.alert && !state.card && !state.ask && !state.holds?.length && !press && !talking && !agentsOpen) pill.classList.add('dot'); }, IDLE_MS);
+  idle = setTimeout(() => { if (!overHit && !state.alert && !state.card && !state.ask && !state.needs && !state.holds?.length && !press && !talking && !agentsOpen) pill.classList.add('dot'); }, IDLE_MS);
 }
 
 function setOpen(open) {
@@ -81,7 +81,7 @@ function render() {
   wake();
 }
 window.bar.onState((s) => {
-  const arrived = s.card && s.card.id !== state.card?.id;
+  const arrived = (s.card && s.card.id !== state.card?.id) || (s.needs && s.needs.cardId !== state.needs?.cardId);
   const collapsed = pill.classList.contains('dot');
   state = s;
   render();
@@ -107,7 +107,7 @@ function face() {
   if (!eyes) return;
   const braked = state.status === 'braked' || state.agents?.some((a) => a.braked);
   const quiet = Date.now() - quietSince > 5 * 60_000;
-  eyes.mood(braked ? 'caught' : state.card || state.ask || state.alert ? 'needs' : state.rulesOnly || quiet ? 'sleepy' : 'calm');
+  eyes.mood(braked ? 'caught' : state.card || state.ask || state.alert || state.needs ? 'needs' : state.rulesOnly || quiet ? 'sleepy' : 'calm');
   if (!cursorNear) eyes.lookToward(MIDDLE[state.edge ?? 'bottom']);
 }
 setInterval(face, 60_000).unref?.();
@@ -118,7 +118,7 @@ window.bar.onCursor?.((p) => {
   else face();
 });
 // A card arrived while the pill was a dot: the face pops out first, looking where the card opens (§11.8 Mascot peek).
-// ponytail: no "Claude needs you" chip yet; the card says who, and it opens right after.
+// The "Claude needs you" chip beside it (renderChips) says who.
 function peek() {
   pill.classList.remove('peek');
   void pill.offsetWidth; // restart the animation
@@ -185,7 +185,7 @@ function renderPanel() {
 }
 // The agent list (design spec §11.12): every agent, grouped by project, needs-you first; opens from the Agents
 // capsule toward the middle of the screen. What it can't do yet: keyboard moves (the dock never takes focus), a
-// Talk box aimed at one agent, and cloud agents.
+// and cloud agents. A row's mic opens the Talk box aimed at that agent.
 let agentsOpen = false;
 const withData = (e, data) => { Object.assign(e.dataset, data); return e; };
 let brakeArmed = null; // { name, at } after the first ✕ press; a second within 2 s brakes
@@ -219,7 +219,7 @@ function renderAgentList() {
         el('span', { className: 'al-task' }, armed ? `Stop ${a.name}? Click ✕ again` : shortTask(a.task || a.name)),
         a.cards ? el('span', { className: 'al-count' }, String(a.cards)) : '',
         el('span', { className: 'al-tools' },
-          withData(el('span', { className: 'al-tool', title: 'Talk to your agents' }, '🎙'), { action: 'talk' }),
+          withData(el('span', { className: 'al-tool', title: `Talk to ${a.name}` }, '🎙'), { action: 'talk' }),
           a.status === 'Braked' ? '' : withData(el('span', { className: `al-tool brake${armed ? ' armed' : ''}`, title: `Brake ${a.name}` }, '✕'), { brake: a.name })));
       Object.assign(row.dataset, { action: 'agent-open', arg: a.name });
       rows.push(row);
@@ -241,53 +241,27 @@ let agentsTimer = null;
 document.addEventListener('mouseleave', () => { clearTimeout(agentsTimer); agentsTimer = setTimeout(() => setAgents(false), 1200); });
 document.addEventListener('mouseenter', () => clearTimeout(agentsTimer));
 
-// Voice: hold the mic to talk. Records 16 kHz mono and hands a WAV to the main process (speech.js) on release.
+// Voice: hold the mic to talk. The shared recorder (recorder.js) records 16 kHz mono and hands a WAV to the main
+// process (speech.js) on release. A Mewndo command acts as before; anything else is a message for an agent, shown in
+// the Talk box and routed there (main.js voiceCommand).
 const MAX_TALK_MS = 30_000;
-let rec = null; // { stream, ctx, chunks } while recording
+const recorder = MewRecorder();
 let talking = false;
 async function startTalking() {
   talking = true;
   pill.classList.add('listening');
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-    const ctx = new AudioContext({ sampleRate: 16000 });
-    const node = ctx.createScriptProcessor(4096, 1, 1);
-    const chunks = [];
-    node.onaudioprocess = (e) => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-    ctx.createMediaStreamSource(stream).connect(node);
-    node.connect(ctx.destination);
-    rec = { stream, ctx, chunks, timer: setTimeout(stopTalking, MAX_TALK_MS) };
-    if (!talking) stopTalking(); // let go before the mic was ready
-  } catch {
+  const ok = await recorder.start({ maxMs: MAX_TALK_MS, onMax: stopTalking });
+  if (!ok) {
     talking = false;
     pill.classList.remove('listening');
     $('mic').title = 'No microphone: check Windows Settings, Privacy, Microphone.';
   }
 }
-function wavOf(chunks, rate) {
-  const n = chunks.reduce((a, c) => a + c.length, 0);
-  const buf = new ArrayBuffer(44 + n * 2);
-  const v = new DataView(buf);
-  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
-  v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, 'data'); v.setUint32(40, n * 2, true);
-  let o = 44;
-  for (const c of chunks) for (const x of c) { v.setInt16(o, Math.max(-1, Math.min(1, x)) * 0x7fff, true); o += 2; }
-  return new Uint8Array(buf);
-}
 function stopTalking() {
   talking = false;
   pill.classList.remove('listening');
-  if (!rec) return;
-  const { stream, ctx, chunks, timer } = rec;
-  rec = null;
-  clearTimeout(timer);
-  for (const t of stream.getTracks()) t.stop();
-  const rate = ctx.sampleRate;
-  ctx.close();
-  const samples = chunks.reduce((a, c) => a + c.length, 0);
-  if (samples > rate * 0.3) window.bar.voice(wavOf(chunks, rate)); // shorter than 0.3 s: a tap, not speech
+  const wav = recorder.stop();
+  if (wav) window.bar.voice(wav);
 }
 
 function renderAsk() {
@@ -314,8 +288,25 @@ function renderCard() {
 
 // Hold chips: "Delete 3 files · Codex · 0:42", approve or cancel; hold one to cancel them all.
 const clock = (ms) => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+// "Claude needs you" (reference 16): the agent the top waiting card is from. Hover shows the card stack without
+// taking focus (peek); a click opens it to answer, like the Inbox key.
+let peekedFor = null;
+function needsChip() {
+  const n = state.needs;
+  if (!n) { peekedFor = null; return null; }
+  const chip = el('button', { className: 'chip needs hit', title: `${n.title || 'Waiting for you'} · Click to answer · Ctrl+Shift+F11` },
+    `${n.agent} needs you`, n.count > 1 ? el('span', { className: 'more' }, `+${n.count - 1}`) : '');
+  chip.dataset.action = 'inbox';
+  chip.addEventListener('mouseenter', () => {
+    if (peekedFor === n.cardId) return; // once per card, so hovering back and forth doesn't flicker the stack
+    peekedFor = n.cardId;
+    window.bar.action('peek');
+  });
+  return chip;
+}
 function renderChips() {
-  $('chips').replaceChildren(...(state.holds ?? []).map((h) => {
+  const needs = state.ask || state.card ? null : needsChip(); // a question already on screen comes first
+  $('chips').replaceChildren(...(needs ? [needs] : []), ...(state.holds ?? []).map((h) => {
     const chip = el('div', { className: 'chip hit' }, el('span', {}, `${h.what} · ${h.agent}`), ' ', el('span', { className: 'time' }, clock(h.expiresAt - Date.now())));
     const ok = el('button', { className: 'ok', title: 'Approve' }, '✓');
     const no = el('button', { className: 'no', title: 'Cancel · Hold: cancel all' }, '✕');
@@ -396,7 +387,7 @@ document.addEventListener('pointerup', (e) => {
       if (brakeArmed?.name === name && Date.now() - brakeArmed.at < 2000) { brakeArmed = null; window.bar.action('brake-agent', name); }
       else { brakeArmed = { name, at: Date.now() }; setTimeout(renderAgentList, 2100); }
       renderAgentList();
-    } else if (tool) window.bar.action('talk');
+    } else if (tool) window.bar.action('talk', target.dataset.arg); // this row's agent, not the Router's pick
     else window.bar.action('agent-open', target.dataset.arg);
   }
   else if (!long && target && !target.disabled && LOCAL[target.id]) LOCAL[target.id]();

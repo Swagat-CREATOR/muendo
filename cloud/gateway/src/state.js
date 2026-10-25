@@ -18,6 +18,7 @@ import {
   newToken, newInviteCode, median,
 } from './gateway.js'
 
+const OPEN_PER_NETWORK = 5 // new devices a day from one network, without an invite
 const LATENCY_KEEP = 50 // enough for a stable median in /admin/status, small enough to write often
 const USAGE_KEEP_DAYS = 7
 
@@ -100,6 +101,25 @@ class State {
       [`token:${token}`]: { token, tester: invite.code, device, name, revoked: 0 },
     })
     return { token, tester: invite.code, device }
+  }
+
+  // No invite needed (the owner's decision, 13 Oct 2026): any copy of the app can get its own device token. Each
+  // device is its own "code" for the budget, so the day's total cap (the free Workers AI allowance) is what bounds
+  // everyone together; when it is spent, every device falls back to its rules and Windows' recognizer. A network
+  // (`who`, a hash of its address, never the address) gets at most OPEN_PER_NETWORK new devices a day.
+  async register({ who = 'unknown', now = Date.now() } = {}) {
+    const key = `reg:${utcDay(now)}:${who}`
+    const n = (await this.storage.get(key)) ?? 0
+    if (n >= OPEN_PER_NETWORK) throw { status: 429, message: 'too many new devices from this network today; try tomorrow' }
+    const count = ((await this.storage.get('open:count')) ?? 0) + 1
+    const token = this.newToken()
+    const device = `open-${count}`
+    await this.storage.put({
+      [key]: n + 1,
+      'open:count': count,
+      [`token:${token}`]: { token, tester: device, device, name: null, revoked: 0, open: 1 },
+    })
+    return { token, tester: device, device }
   }
 
   async revoke({ token } = {}) {

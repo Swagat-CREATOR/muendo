@@ -48,7 +48,9 @@ const sameTarget = (agent, target) => {
 //   cards:   the open cards, so a Done card still waiting is a reply window still open
 //   lanes:   [{ laneId, agentId }] from the core
 // via: 'voice' when it was dictated, 'key' when typed — it travels with the answer for the Receipt (§35).
-function deliver(target, { agents = [], cards = [], lanes = [], text = '', via = 'key' } = {}) {
+// canMessage: the core takes `agent.message` (it answers `agent.message.result`); an older core does not, and then
+// the last row is still "can't reach".
+function deliver(target, { agents = [], cards = [], lanes = [], text = '', via = 'key', canMessage = false } = {}) {
   const command = commandOf(target);
   if (command) {
     // Mewndo's own commands go through the v0 intent and its confirmation UI (§23.3): undo and freeze always show
@@ -66,10 +68,18 @@ function deliver(target, { agents = [], cards = [], lanes = [], text = '', via =
 
   // A Stop (Claude) or stop (Cursor) card still open means the agent's hook is still waiting for an answer: the
   // reply resolves that wait. The core turns it into `followup_message` for Cursor.
-  const open = cards.find((c) => c.kind === 'done' && c.state === 'open' && agent && c.agentId === agent.agentId);
+  // Codex's Done card never has a hook waiting behind it (its Stop can't wait), so it never takes this path.
+  const open = agent?.kind !== 'codex'
+    && cards.find((c) => c.kind === 'done' && c.state === 'open' && agent && c.agentId === agent.agentId);
   if (open && agent) {
     const how = agent.kind === 'cursor' ? 'followup' : 'reply';
     return { how, cardId: open.id, agent: agent.name, answer: { card_id: open.id, choice: null, text, via } };
+  }
+
+  // Otherwise the core is asked to get it there: at once to a hook that is waiting, or when the agent next stops.
+  // Whether it could is the core's answer (`agent.message.result`), shown by resultText() below.
+  if (canMessage && agent) {
+    return { how: 'message', agent: agent.name, agentId: agent.agentId, body: { agent_id: agent.agentId, text, via } };
   }
 
   // Anything else can't be reached: a card says so and offers the one thing that would work.
@@ -87,6 +97,48 @@ function deliver(target, { agents = [], cards = [], lanes = [], text = '', via =
   };
 }
 
+// What the Talk box says once the core has answered `agent.message` or `agent.type` (or hasn't). Never "sent" unless
+// the core said so: a reply that is late or that this app can't read says exactly that. options: what the box offers
+// next. A `confirm` also carries the exact text the core would type (preview) and the offer to name in `agent.type`.
+//   result: the `agent.message.result` body, or null when the core did not answer in time.
+function resultText(result, name = 'the agent') {
+  if (!result) {
+    return { tone: 'failed', text: `Mewndo did not hear back from the core, so it can't say whether ${name} got that.`, options: [] };
+  }
+  switch (result.delivered) {
+    case 'now': return { tone: 'sent', text: `Sent to ${name}.`, options: [] };
+    case 'queued': return { tone: 'queued', text: `Queued: ${name} gets it when it finishes this step.`, options: [] };
+    // The agent is idle at its prompt in a terminal its hook reported: the core can type the text there, but only
+    // once the user has seen exactly what and where (docs/decisions.md, "Typing into an idle agent's terminal").
+    // A confirm with no offer or no text to show is nothing the user could safely say yes to.
+    case 'confirm': {
+      const preview = String(result.preview ?? '');
+      if (!result.offer_id || !preview) break;
+      const reason = String(result.reason ?? '').trim() || `${name} is idle at its prompt. Type this into its terminal?`;
+      return { tone: 'confirm', text: reason, preview, offerId: String(result.offer_id), options: ['Type it', 'Cancel'] };
+    }
+    case 'typed': return { tone: 'sent', text: `Typed into ${name}'s terminal.`, options: [] };
+    case 'unsupported': {
+      const why = String(result.reason ?? '').trim().replace(/\.$/, '');
+      return {
+        tone: 'failed',
+        text: `Can't reach ${name}${why ? `: ${why}` : ''}.`,
+        body: 'A lane is a terminal Mewndo owns, so replies always reach it.',
+        options: ['Open a lane', 'Not now'],
+      };
+    }
+    default: break;
+  }
+  return { tone: 'failed', text: `The core answered in a way this app doesn't understand, so ${name} may not have it.`, options: [] };
+}
+
+// The agent a dictated message goes to without asking the Router: the one agent there is. Two or more, or none,
+// is the Router's call (and its chips when it isn't sure).
+function onlyAgent(agents = []) {
+  const live = agents.filter((a) => a?.agentId && a.status !== 'gone');
+  return live.length === 1 ? live[0] : null;
+}
+
 // The chip labels: "1 Claude · 2 Codex".
 function chipLabels(chips, { agents = [] } = {}) {
   return chips.map((target) => {
@@ -96,4 +148,4 @@ function chipLabels(chips, { agents = [] } = {}) {
   });
 }
 
-module.exports = { THRESHOLD, decide, deliver, chipLabels, commandOf, COMMANDS };
+module.exports = { THRESHOLD, decide, deliver, chipLabels, commandOf, COMMANDS, resultText, onlyAgent };

@@ -18,11 +18,20 @@ const { createDeskWindows } = require('./desk/windows');
 const { createFocus } = require('./desk/focus');
 const { createDesk } = require('./desk/desk');
 const { describe: describeCard } = require('./desk/cards');
+const { defaultFolder } = require('./desk/lanes');
 const { createBar } = require('./bar');
 const { place, beside } = require('./dock-place');
 const { DEFAULTS: SHORTCUT_DEFAULTS, pickShortcut } = require('./shortcuts');
 const { createSpeech } = require('./speech');
-const { parseIntent, describe: describeIntent } = require('../engine/voice'); // plain text only, no engine work
+const { createComputerUse } = require('./computer-main'); // computer use and Show Me (Settings, Skills)
+const { createIndicator } = require('./showme-indicator');
+const quiet = require('./quiet'); // Do not disturb and the card sound (Settings > Notifications)
+const habitsFile = require('./habits-file'); // Settings > Habits: the learned rules in rules.toml
+const connectors = require('./connectors'); // Connections: Gmail, Drive, Notion (Workers) and GitHub
+const connectorIpc = require('./connectors/ipc');
+const { windowsCredentials } = require('./connectors/credentials');
+const { ensureGateway } = require('./gateway-setup');
+const { parseIntent, classify, describe: describeIntent } = require('../engine/voice'); // plain text only, no engine work
 
 // Set up once the app is ready (the data folder depends on the profile). Until then, lines are dropped.
 let log = { info() {}, warn() {}, error() {}, file: null };
@@ -55,7 +64,8 @@ let storage = { at: 0, report: null };
 
 const settingsFile = () => path.join(app.getPath('userData'), 'app-settings.json');
 const send = (channel, payload) => { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); };
-const notify = (title, body) => { if (Notification.isSupported()) new Notification({ title, body }).show(); };
+// Quiet while Do not disturb is on (quiet.js): the window, the Inbox and the dock still say it.
+const notify = (title, body) => { if (Notification.isSupported() && quiet.notifies(settings)) new Notification({ title, body }).show(); };
 const folderName = (root) => path.basename(root) || root;
 const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 
@@ -195,13 +205,31 @@ const deskDir = () => (process.platform === 'win32' && process.env.LOCALAPPDATA
   ? path.join(process.env.LOCALAPPDATA, 'Mewndo')
   : path.join(app.getPath('userData'), 'desk'));
 
+// The user's rules.toml (spec §34.9 R1): the core reads it at start and writes accepted Habit cards into it (§34.7).
+const rulesFile = () => (process.platform === 'win32' && process.env.APPDATA
+  ? path.join(process.env.APPDATA, 'Mewndo', 'rules.toml')
+  : path.join(app.getPath('userData'), 'rules.toml'));
+
 function startCore() {
   core = createCore({
     binary: coreBinary(), runDir: app.getPath('userData'), logDir: path.dirname(log.file), log, onChange: stateChanged,
-    args: ['--desk', deskDir(), '--data', dataDir()],
+    args: () => ['--desk', deskDir(), '--data', dataDir(), '--rules', rulesFile(), ...computerUse.coreArgs()],
   });
   core.start();
 }
+
+// Computer use and Show Me (computer-main.js): Settings' Computer use section and the Skills screen. Off unless the
+// user turns it on; then the core is restarted with --computer-use.
+const computerUse = createComputerUse({
+  getSettings: () => settings, saveSettings: () => saveSettings(), log: { info: (...a) => log.info(...a), warn: (...a) => log.warn(...a) },
+  coreBinary: () => coreBinary(), deskDir: () => deskDir(), restartCore: () => core?.restart(), coreStatus: () => core?.status(),
+  notifySettings: (v) => { if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('settings:computer-changed', v); },
+  notifyMain: (channel, payload) => send(channel, payload),
+  indicator: createIndicator({ onEsc: () => computerUse.mainHandlers.skillStop(), log: { warn: (...a) => log.warn(...a) } }),
+  onRecordStart: () => win?.minimize(),
+  openSettings: (page) => openSettings(page),
+  onReview: () => { showWindow(); send('go', 'skills'); },
+});
 
 // --- The Agent Desk (spec §33): the Inbox cards, the Talk box and the agents, fed by the core's v2 pipe ---------
 
@@ -215,11 +243,13 @@ let rulesOnly = false; // the gateway says today's model budget is out (budget.s
 let dockAt = null; // the bar's last onPlaced
 const CARDS_SIZE = { width: 452, height: 600 }; // 420 px cards plus the shadow's room
 const TALK_SIZE = { width: 496, height: 96 }; // the 480 px box, two lines and the route chips
+const TALK_CONFIRM_SIZE = { width: 496, height: 220 }; // a typing offer: the reason, the whole text, Type it / Cancel
+let talkTall = false;
 function placeDeskWindows() {
   if (!deskWindows) return;
   const at = dockAt ?? { ...place(screen.getPrimaryDisplay(), undefined), workArea: screen.getPrimaryDisplay().workArea };
   deskWindows.place('cards', beside(at.bounds, at.edge, at.anchor, at.workArea, CARDS_SIZE));
-  deskWindows.place('talk', beside(at.bounds, at.edge, at.anchor, at.workArea, TALK_SIZE, 4));
+  deskWindows.place('talk', beside(at.bounds, at.edge, at.anchor, at.workArea, talkTall ? TALK_CONFIRM_SIZE : TALK_SIZE, 4));
 }
 
 // Undo on an Inbox card: put the folder back to the save point written when the answer was released (§33.4),
@@ -253,6 +283,16 @@ function deskCommand(command, plan) {
   return runIntent(plan.intent ?? { intent: command }).catch((e) => notify('Mewndo could not do that', e.message));
 }
 
+// The lanes window (§33.7), its "New lane" picker set to an agent (or none) and a folder: the protected folder that
+// changed last, or home. Every protected folder and home are offered.
+async function openLanes(program = null) {
+  if (!deskWindows) return;
+  const folders = await call('folders').catch(() => []);
+  const home = app.getPath('home');
+  deskWindows.showLanes();
+  deskWindows.send('lanes', 'lanes:pick', { program, cwd: defaultFolder(folders, home), folders: [...folders.map((f) => f.root), home] });
+}
+
 function startDesk() {
   const client = createCoreClient({
     dir: deskDir(), log,
@@ -270,6 +310,8 @@ function startDesk() {
     chip: (n) => desk?.handlers.chip(n),
     closeTalk: () => desk?.handlers.closeTalk(),
     lane: (a, id, arg) => desk?.handlers.lane(a, id, arg),
+    dictate: (id, wav) => cardDictation(id, wav),
+    hold: (id) => desk?.handlers.hold(id),
   };
   deskWindows = createDeskWindows({ log, on });
   placeDeskWindows();
@@ -283,6 +325,17 @@ function startDesk() {
     client, ui, focus: createFocus({ log }), log,
     commands: deskCommand,
     problem: (message) => notify('Mewndo', message),
+    // Do not disturb (quiet.js): a card still joins the Inbox and the dock's badge, but only a permission request
+    // pops up beside the dock. The sound plays in the main window, which stays loaded in the tray.
+    quiet: (card) => !quiet.popsUp(card, settings),
+    arrived: (card) => { const volume = quiet.chime(card, settings); if (volume !== null) send('chime', volume); },
+    dictation: () => speech?.available === true, // V on a card records with Mewndo's own mic
+    // A typing offer needs room for the whole text it would type; then the Talk box is one line again.
+    sizeTalk: (tall) => { if (talkTall !== tall) { talkTall = tall; placeDeskWindows(); } },
+    // Part H's "Can't reach Codex outside a lane" card, asked in the bar like Mewndo's own questions.
+    offerLane: (card) => (settings.barOff === true ? notify('Mewndo', `${card.title} ${card.body}`) : showAsk('', `${card.title} ${card.body}`, [
+      { label: 'Open a lane', run: () => openLanes(card.program) }, { label: 'Not now' },
+    ])),
     onBudget: (on) => {
       if (on === rulesOnly) return;
       rulesOnly = on;
@@ -291,6 +344,7 @@ function startDesk() {
     },
   });
   desk.start();
+  computerUse.attach(client); // Show Me's messages and the takeover pause
   if (!tryRegister(INBOX_KEY, () => desk.openInbox())) log.warn(`The Inbox key ${INBOX_KEY} is taken by another app`);
   if (!tryRegister(TALK_KEY, () => desk.openTalk())) log.warn(`The Talk key ${TALK_KEY} is taken by another app`);
 }
@@ -467,10 +521,34 @@ let speech = null; // speech to text for the bar's mic (speech.js)
 let ask = null; // a voice command waiting for the user: { id, heard, text, choices: [{ label, run }] }
 let hookStatus = { at: 0, guarded: {} }; // which agents have Mewndo's Guard hooks, re-read every 30 s
 
+// Connect agents (engine/agent-connect.js): the v1 hooks, which run mewndo-hook.exe from the installed Claude Code
+// plugin folder (from source: the repository's). Plain async file work, small enough for this process.
+const agentConnect = require('../engine/agent-connect');
+const connectOptions = () => ({ resourcesDir: app.isPackaged ? process.resourcesPath : null });
+function connectAgent(agent) {
+  if (!agentConnect.CONNECT_AGENTS.includes(agent)) throw new Error('unknown agent');
+  return agent;
+}
+// What the window may see of a plan or result: not the new file contents.
+const connectView = ({ changes, ...rest }) => rest;
+const connectPlan = async (agent) => connectView(await agentConnect.planConnect(connectAgent(agent), connectOptions()));
+async function connectInstall(agent) {
+  const result = connectView(await agentConnect.installConnect(connectAgent(agent), connectOptions()));
+  hookStatus.at = 0;
+  log.info(`Connected ${result.name}: Mewndo's v1 hooks${result.backup ? `, backup ${result.backup}` : ''}`);
+  return result;
+}
+async function connectRemove(agent) {
+  const result = await agentConnect.removeConnect(connectAgent(agent));
+  hookStatus.at = 0;
+  log.info(`Removed Mewndo's hooks from ${agent}: ${result.removed} entries`, { backups: result.backups });
+  return result;
+}
+
 // The up-arrow panel (spec §23.8), from local data only: agents and protected folders, and how sure Mewndo is.
 async function refreshHookStatus() {
   if (Date.now() - hookStatus.at > 30_000) {
-    const [claude, codex, cursor] = await Promise.all([call('claudeHooksPlan'), call('agentHooksPlan', 'codex'), call('agentHooksPlan', 'cursor')]
+    const [claude, codex, cursor] = await Promise.all(['claude', 'codex', 'cursor'].map(connectPlan)
       .map((p) => p.then((x) => x.installed === true, () => false)));
     hookStatus = { at: Date.now(), guarded: { 'Claude Code': claude, Codex: codex, Cursor: cursor } };
   }
@@ -478,6 +556,15 @@ async function refreshHookStatus() {
 }
 
 // Open cards per agent name, and in all, from the Agent Desk (empty while it isn't running).
+// The dock's "Claude needs you" chip (reference 16): the top card still waiting, who it is from, how many wait.
+function needsYou() {
+  const open = desk ? desk.cards().list().filter((c) => c.state === 'open') : [];
+  if (!open.length) return null;
+  const top = open[0];
+  const agent = desk.agents().find((a) => a.agentId === top.agentId)?.name ?? 'An agent';
+  return { cardId: top.id, agent, count: open.length, title: top.title };
+}
+
 function openCards() {
   const byName = new Map();
   if (!desk) return { total: 0, byName };
@@ -541,6 +628,29 @@ function cardFor(event, a) {
   };
 }
 
+// Connections (app/connectors): Gmail, Drive and Notion through the user's own Workers, GitHub directly. Secrets go
+// to Windows Credential Manager only. Confirmations (moving a branch back) are native dialogs from this process, so
+// the window can't skip them.
+let connections = null;
+function startConnections() {
+  connections = connectors.createConnections({
+    dataDir: dataDir(), credentials: windowsCredentials(), log,
+    openExternal: (url) => shell.openExternal(url),
+    async confirm(text) {
+      const opts = {
+        type: 'warning', title: 'Mewndo', message: text.split('\n')[0], detail: text.split('\n').slice(1).join('\n').trim() || undefined,
+        buttons: ['Undo', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+      };
+      const r = win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+      return r.response === 0;
+    },
+    activity: () => call('activity'),
+    onChange: () => send('connections-changed'),
+  });
+  connections.start().catch((e) => log.warn('Connections could not start', e.message));
+  app.on('will-quit', () => connections?.stop());
+}
+
 function startBar() {
   bar = createBar({
     positions: settings.barPositions ?? {},
@@ -581,15 +691,34 @@ function showAsk(heard, text, choices) {
   refreshBar();
 }
 
+// Free speech (§33.5, "press to talk, one routes the message to the right agent"): words that aren't a Mewndo
+// command (engine/voice.js classify) are a message. They show in the Talk box as heard and go to the one agent, or
+// to where the core's Router says (chips when it isn't sure); the box then says "Sent", "Queued" or why not. With
+// no core to route it, nothing is sent and nothing acts: Mewndo asks "did you mean", as before.
 async function voiceCommand(wav) {
   const heard = await speech.transcribe(wav);
-  const agents = [...new Set(['Claude Code', 'Codex', 'Cursor', ...((await call('agents').catch(() => [])).map((a) => a.name))])];
-  const intent = parseIntent(heard, { agents });
-  if (intent.intent === 'unclear') {
-    const choices = intent.suggestions.map((sug) => ({ label: describeIntent(sug), run: () => runIntent({ ...sug, heard }, true) }));
-    return showAsk(heard, heard ? 'Did you mean:' : "Mewndo didn't catch that. Hold the mic and try again.", [...choices, { label: 'Cancel' }]);
+  const running = (await call('agents').catch(() => [])).map((a) => a.name);
+  const agents = [...new Set(['Claude Code', 'Codex', 'Cursor', ...(desk?.agents() ?? []).map((a) => a.name), ...running])];
+  const said = classify(heard, { agents });
+  if (said.kind === 'command') return runIntent(said.intent, false);
+  if (said.kind === 'message' && desk?.say(said.text, { via: 'voice' })) {
+    if (ask?.heard) { ask = null; refreshBar(); } // an older "did you mean" is not what this answered
+    return undefined;
   }
-  return runIntent(intent, false);
+  const intent = said.intent ?? parseIntent(heard, { agents });
+  const suggestions = intent.intent === 'unclear' ? intent.suggestions : [intent]; // a misread never acts by itself
+  const choices = suggestions.map((sug) => ({ label: describeIntent(sug), run: () => runIntent({ ...sug, heard }, true) }));
+  const text = !heard ? "Mewndo didn't catch that. Hold the mic and try again."
+    : said.kind === 'message' ? 'No agent is connected to send that to. Did you mean:' : 'Did you mean:';
+  return showAsk(heard, text, [...choices, { label: 'Cancel' }]);
+}
+
+// A card's mic (V, or the mic in its reply box): the recording becomes text in that card's reply box, through the
+// same speech.js as the dock's mic (cloud first, Windows' recognizer as the fallback). Nothing is sent until the
+// user presses Enter. An empty result says "didn't catch that" in the box.
+async function cardDictation(cardId, wav) {
+  const text = wav && speech ? await speech.transcribe(wav).catch((e) => { log.info(`Card dictation failed: ${e.message}`); return ''; }) : '';
+  desk?.handlers.dictated(cardId, text);
 }
 
 // confirmed: the user already picked it from "did you mean" (undo and freeze still show their plan first).
@@ -685,6 +814,7 @@ function refreshBar() {
       voice: speech?.available === true, panel: panelOpen ? await panelData(folders ?? [], brakedNames) : null,
       agentList: agentsOpen ? (await panelData(folders ?? [], brakedNames)).agents : null,
       inbox: openCards().total,
+      needs: needsYou(),
       rulesOnly,
     });
   }, 30);
@@ -701,9 +831,10 @@ async function barAction(name, arg) {
     case 'agents-open': agentsOpen = true; hookStatus.at = 0; refreshBar(); break;
     case 'agents-close': agentsOpen = false; refreshBar(); break;
     // The capsules (design spec §11.8): the Inbox opens answer mode when there are cards, the main window otherwise.
-    case 'inbox': if (!desk?.openInbox?.()) await showScreen('inbox'); break;
+    case 'inbox': if (!desk?.openInbox?.() && !desk?.showEmptyInbox?.()) await showScreen('inbox'); break;
     case 'agent-open': if (openCards().byName.get(arg)) desk.openInbox(); else await showScreen('agents'); break;
-    case 'talk': desk?.openTalk?.(); break; // ponytail: the Talk box isn't aimed at one agent yet; the Router picks
+    case 'peek': desk?.peek?.(); break; // hovering the "needs you" chip: show the stack, keep the user's focus
+    case 'talk': desk?.openTalk?.(arg); break; // arg: an agent list row's agent; none from the dock, so the Router picks
     case 'undo': openUndo(); break;
     case 'undo-burst': openUndo(arg); break; // undo always shows what it will do first (spec §23.3)
     case 'diff': {
@@ -978,6 +1109,7 @@ async function burstAlert(root, { deleted, changed, agent: likely }) {
   const title = 'Mewndo: lots of changes at once';
   // show() is a no-op where notifications aren't supported. On Windows the toast is marked urgent: it stays on
   // screen until handled and may show during Do Not Disturb, if Windows allows urgent notifications for Mewndo.
+  if (!quiet.notifies(settings)) return; // Do not disturb: the window's toast above still says it
   const n = new Notification(process.platform === 'win32' ? { toastXml: urgentToast(title, body) } : { title, body });
   liveNotifications.add(n);
   const done = () => liveNotifications.delete(n);
@@ -1074,6 +1206,7 @@ async function updateTray() {
     { label: 'Open Window', click: showWindow },
     { label: 'Create Save Point', click: run(createSavePointEverywhere) },
     { label: 'Write a Brief', click: () => openBrief() },
+    { label: 'Lanes…', click: () => openLanes() },
     { label: 'Settings…', click: () => openSettings() },
     { label: "What Mewndo can and can't undo", click: () => openLimits() },
     { label: 'Undo Last', click: () => openUndo() },
@@ -1140,6 +1273,7 @@ const handlers = {
   },
   async unprotect(root, keepHistory) {
     await call('unprotect', str(root, 'folder'), { keepHistory: keepHistory !== false });
+    for (const [key, a] of alerts) if (a.folder && samePath(a.folder, root)) alerts.delete(key); // nothing left to warn about
     storage.at = 0;
     stateChanged();
   },
@@ -1204,7 +1338,8 @@ const handlers = {
     const err = await shell.openPath(p);
     if (err) throw new Error(err);
   },
-  claudeHooksPlan: () => call('claudeHooksPlan'),
+  // Connect agents: the v1 hooks (engine/agent-connect.js), shown first and added only when the user says so.
+  claudeHooksPlan: () => connectPlan('claude'),
   // The brief's safety rules: the user's own, or the defaults. Saving empty text (or null) resets them.
   safetyRules: () => ({ rules: safetyRules(), defaults: DEFAULT_SAFETY_RULES, edited: safetyRules() !== DEFAULT_SAFETY_RULES }),
   async setSafetyRules(text) {
@@ -1213,12 +1348,14 @@ const handlers = {
     await saveSettings();
     return { rules: safetyRules(), defaults: DEFAULT_SAFETY_RULES, edited: safetyRules() !== DEFAULT_SAFETY_RULES };
   },
-  agentHooksPlan: (agent) => call('agentHooksPlan', String(agent)),
-  agentHooksInstall: (agent) => call('agentHooksInstall', String(agent)),
-  claudeHooksInstall: () => call('claudeHooksInstall'),
+  agentHooksPlan: (agent) => connectPlan(agent),
+  agentHooksInstall: (agent) => connectInstall(agent),
+  claudeHooksInstall: () => connectInstall('claude'),
+  agentHooksRemove: (agent) => connectRemove(agent),
   openSettings: () => openSettings(),
   openLimits: () => openLimits(),
   dismissAlert(code, folder) { alerts.delete(alertKey(code, folder ?? undefined)); stateChanged(); },
+  openStorageSettings: () => openSettings('protection'), // a low-disk warning's button: the history budget
   // A round trip to the engine process and back; the responsiveness check uses it.
   ping: () => call('ping'),
 };
@@ -1243,7 +1380,10 @@ function openLimits() {
 
 let settingsWin = null;
 
-function openSettings() {
+// page: a section to open on (settings.js's data-page names), e.g. 'protection' from a low-disk warning.
+function openSettings(page = null) {
+  const hash = typeof page === 'string' && /^[a-z]+$/.test(page) ? page : null;
+  if (settingsWin && !settingsWin.isDestroyed() && hash) settingsWin.webContents.send('settings-page', hash);
   if (!settingsWin || settingsWin.isDestroyed()) {
     settingsWin = new BrowserWindow({
       width: 860, height: 600, minWidth: 720, minHeight: 480, show: false, title: 'Mewndo settings', icon: icon(),
@@ -1251,7 +1391,7 @@ function openSettings() {
       webPreferences: { preload: path.join(__dirname, 'settings-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     settingsWin.removeMenu();
-    settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+    settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'), hash ? { hash } : {});
     settingsWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     settingsWin.webContents.on('will-navigate', (e) => e.preventDefault());
     settingsWin.once('ready-to-show', () => settingsWin.show());
@@ -1280,11 +1420,30 @@ async function allSettings() {
     engine: engineChoice(),
     guardFailOpen: config.guardFailOpen === true,
     dataDir: dataDir(),
+    notify: { ...quiet.prefs(settings), quietNow: quiet.quietNow(settings) },
   };
 }
 
 const settingsHandlers = {
   getSettings: allSettings,
+
+  // Settings > Habits: the rules Mewndo learned from your answers, read from rules.toml (habits-file.js).
+  habits: () => habitsFile.readHabits(rulesFile()),
+  async removeHabit(rule) {
+    if (!rule || typeof rule !== 'object' || !['allow', 'deny'].includes(rule.list) || typeof rule.command !== 'string'
+      || !Number.isInteger(rule.line)) throw new Error('invalid rule');
+    const result = await habitsFile.removeHabit(rulesFile(), { list: rule.list, command: rule.command, line: rule.line });
+    log.info(`Habit removed from rules.toml: ${rule.list} ${rule.command}`);
+    return result;
+  },
+
+  // Settings > Notifications: Do not disturb and the card sound, saved with the other settings.
+  async setNotify(patch) {
+    if (!patch || typeof patch !== 'object') throw new Error('invalid notification settings');
+    settings = quiet.withPrefs(settings, { dnd: patch.dnd, sound: patch.sound });
+    await saveSettings();
+    return allSettings();
+  },
   version: () => app.getVersion(),
 
   // Typing a new shortcut shouldn't fire the old ones; they come back when capture ends (or Settings closes).
@@ -1402,7 +1561,7 @@ const settingsHandlers = {
   // Everything back to how Mewndo comes: shortcuts, alerts, budget, agents, every folder's settings, safety rules,
   // start at login. Protected folders and their history stay.
   async resetAll() {
-    for (const key of ['undoShortcut', 'briefShortcut', 'safetyRules', 'burst', 'budgetGB']) delete settings[key];
+    for (const key of ['undoShortcut', 'briefShortcut', 'safetyRules', 'burst', 'budgetGB', 'dnd', 'sound']) delete settings[key];
     settings.openAtLogin = true;
     await saveSettings();
     applyOpenAtLogin();
@@ -1421,8 +1580,10 @@ const settingsHandlers = {
 // --- Startup ---------------------------------------------------------------------------------------------------
 
 if (process.argv.includes('--remove-claude-hooks')) {
-  // Run by the uninstaller: take Mewndo's hooks out of Claude Code's settings, then exit. No window, no engine.
-  require('../engine/claude-hooks').removeClaudeHooks().catch(() => {}).finally(() => app.exit(0));
+  // Run by the uninstaller: take Mewndo's hooks out of Claude Code's settings, and the v1 hooks out of Codex's and
+  // Cursor's (with Codex's own notify put back), then exit. No window, no engine.
+  require('../engine/claude-hooks').removeClaudeHooks().catch(() => {})
+    .then(() => require('../engine/agent-connect').removeAllConnect()).catch(() => {}).finally(() => app.exit(0));
 } else if (!app.requestSingleInstanceLock()) {
   app.quit(); // another copy is running; it shows its window
 } else {
@@ -1442,9 +1603,16 @@ if (process.argv.includes('--remove-claude-hooks')) {
     app.on('will-quit', () => log.info('Mewndo quitting'));
     await loadSettings();
     if (settings.setupDone) applyOpenAtLogin(); // keeps the sign-in entry pointing at this copy of Mewndo
+    // Mewndo's gateway, no invite needed: its address and this PC's device token, before the core reads them.
+    await ensureGateway({ credentials: windowsCredentials(), log }).catch((e) => log.warn('Gateway setup failed', e.message));
     startCore(); // first: the engine connects to it
+    computerUse.init().catch((e) => log.warn('Computer use could not be checked', e.message));
     startEngine(); // re-protects saved folders and prunes, all inside the engine process
 
+    Object.assign(handlers, computerUse.mainHandlers);
+    Object.assign(settingsHandlers, computerUse.settingsHandlers);
+    Object.assign(handlers, connectorIpc.mainHandlers(() => connections));
+    Object.assign(settingsHandlers, connectorIpc.settingsHandlers(() => connections));
     for (const [name, fn] of Object.entries(handlers)) {
       ipcMain.handle(name, (event, ...args) => {
         if (event.sender !== win?.webContents) throw new Error('unknown sender');
@@ -1478,6 +1646,7 @@ if (process.argv.includes('--remove-claude-hooks')) {
     tray.on('click', showWindow);
     updateTray();
     startBar();
+    startConnections();
 
     createWindow(!(process.argv.includes('--hidden') && settings.setupDone));
   }).catch((e) => {

@@ -1,0 +1,10 @@
+/* The Show Me indicator: a dark pill with a red dot, always readable over any app. */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+.rec { box-sizing: border-box; height: 40px; margin: 2px; display: flex; align-items: center; gap: 10px; padding: 0 16px;
+  border-radius: 20px; background: var(--float-bg); color: var(--float-ink); border: 1px solid var(--float-border);
+  font: 600 13px/18px var(--font-ui); white-space: nowrap; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--float-stopped); animation: pulse 1.2s ease-in-out infinite; }
+.clock { margin-left: auto; color: var(--float-ink-2); font-variant-numeric: tabular-nums; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+@media (forced-colors: active) { .rec { border: 2px solid CanvasText; } .dot { background: Highlight; } }

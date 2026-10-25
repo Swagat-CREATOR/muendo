@@ -80,3 +80,21 @@ button:focus-visible { outline: 2px solid var(--float-done); outline-offset: 2px
 .who .logo[src$="/cursor.svg"], .who .logo[src$="/notion.svg"], .who .logo[src$="/github.svg"] { filter: invert(0.93); } /* ink logos on the dark float */
 .keylist .keyrow { display: flex; align-items: center; gap: 10px; font: var(--t-small); color: var(--float-ink-2); }
 .keylist .keycap { min-width: 44px; justify-content: center; }
+/* A Done card's next steps (reference 14): the heading, Stop agent in coral, Discard. */
+.steps { display: flex; align-items: center; gap: 6px; padding-top: 4px; border-top: 1px solid var(--float-border); }
+.steps .label { flex: 1; font: var(--t-small); color: var(--float-ink-2); }
+.chip.danger { color: var(--float-stopped); }
+.foot.armed { color: var(--float-stopped); }
+/* The reply box's mic: Mewndo's own recorder; coral while it listens. */
+.mic { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; color: var(--float-ink-2); }
+.mic svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.mic:hover { color: var(--float-ink); }
+.mic.on { background: var(--float-stopped); color: #121416; animation: mic-on 1s ease-in-out infinite alternate; }
+@keyframes mic-on { from { opacity: 0.7; } }
+@media (prefers-reduced-motion: reduce) { .mic.on { animation: none; } }
+.reply input[readonly] { color: var(--float-ink-2); }
+
+/* The empty Inbox beside the dock: "All clear." */
+.card.empty-inbox .empty-body { display: flex; gap: 16px; align-items: flex-start; padding: 6px 2px 4px; }
+.card.empty-inbox .empty-body b { display: block; font-size: 17px; margin-bottom: 4px; }
+.card.empty-inbox .empty-body p { margin: 0; opacity: 0.7; line-height: 1.4; }

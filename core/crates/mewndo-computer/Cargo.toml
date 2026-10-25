@@ -10,12 +10,25 @@ publish.workspace = true
 [dependencies]
 # --- already in [workspace.dependencies] at these versions, so asked for by name ------------------------------
 mewndo-proto.workspace = true
+# The desk pipe's location and connect (core.json), shared with the hook forwarder rather than written twice.
+mewndo-hook.workspace = true
+ulid.workspace = true                                   # the proxy's cua-driver session label
 mewndo-router.workspace = true
 mewndo-inbox.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true                                   # §36.6 U1: the pinned release's SHA-256
-windows-sys.workspace = true                            # §36.6 U6: the two low-level input hooks
+# §36.6 U6: the two low-level input hooks. The rest are Show Me's recording (record.rs): the key's character, the
+# window and program it went to, which display, and whether the input desktop is the user's.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_System_StationsAndDesktops",
+] }
 # rmcp is pinned in [workspace.dependencies] with ["server", "transport-io", "macros"]; the proxy is also an MCP
 # *client* of cua-driver, which it starts as a child process (§36.6 U3). Features are additive, so asking for the
 # two extra ones here cannot change the version the lock holds.
@@ -32,6 +45,13 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "
 # fixed-capacity lock-free queue is the whole requirement; `default-features = false` keeps `std` out of the
 # dependency and leaves nothing but the two queues.
 crossbeam-queue = { version = "0.3.12", default-features = false, features = ["alloc"] }
+
+# ponytail: like crossbeam-queue above, this belongs in [workspace.dependencies]. Show Me's recording (record.rs)
+# asks UI Automation what was clicked and whether the focused field is a password field; UI Automation is COM, and
+# the `windows` crate has the typed bindings windows-sys leaves out. 0.62.2 is the version Cargo.lock already holds
+# (rmcp's process-wrap uses it), so this adds no new crate to the build, only features. Windows only.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }

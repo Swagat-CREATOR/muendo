@@ -198,8 +198,10 @@ test('mewndo-savepoint: asks Mewndo for a save point, prints nothing, exits 0 qu
     const r = await runScript({ MEWNDO_DATA_DIR: dataDir }, hookInput);
     assert.deepStrictEqual([r.code, r.stdout], [0, '']);
     assert.ok(r.ms < 1000, `took ${r.ms} ms`);
-    await sleep(200);
-    const sp = (await journal.listSavePoints()).find((s) => s.trigger === 'hook');
+    // Under load the hook gives up waiting at its 0.7 s deadline and exits, and Mewndo finishes the save point a
+    // moment later (by design: a hook never holds the agent up). So wait for it to appear, not a fixed 200 ms.
+    let sp;
+    await until(async () => (sp = (await journal.listSavePoints()).find((s) => s.trigger === 'hook')), 5000);
     assert.deepStrictEqual([sp?.agent, sp?.label], ['Claude Code', 'Claude Code session started']);
   });
 });
@@ -303,6 +305,18 @@ test('Claude Code hooks: uninstalling removes only Mewndo\'s hooks, keeps everyt
   assert.strictEqual(fs.readFileSync(result.backup, 'utf8'), before);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')), own, 'exactly the user\'s own settings again');
   assert.deepStrictEqual(await removeClaudeHooks({ settingsPath }), { removed: 0, backup: null }, 'twice changes nothing');
+
+  // The v1 plugin's entries (integrations/claude-code/hooks/hooks.json, merged with absolute paths) go too: the
+  // uninstaller deletes the mewndo-hook.exe they run. A user's own hook that only mentions Mewndo stays.
+  const exe = 'C:/Users/Ana Maria/AppData/Local/Programs/Mewndo/resources/claude-code/bin/mewndo-hook.exe';
+  const withPlugin = { ...own, hooks: { ...own.hooks, Stop: [{ hooks: [
+    { type: 'command', command: `"${exe}" claude stop`, timeout: 130 },
+    { type: 'command', command: 'echo mewndo-hook-notes.txt' },
+  ] }] } };
+  fs.writeFileSync(settingsPath, JSON.stringify(withPlugin));
+  assert.strictEqual((await removeClaudeHooks({ settingsPath })).removed, 1);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).hooks.Stop,
+    [{ hooks: [{ type: 'command', command: 'echo mewndo-hook-notes.txt' }] }]);
 
   fs.writeFileSync(settingsPath, '{ not json');
   assert.deepStrictEqual(await removeClaudeHooks({ settingsPath }), { removed: 0, backup: null });

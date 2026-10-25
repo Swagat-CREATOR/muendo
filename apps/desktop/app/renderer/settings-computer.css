@@ -1,0 +1,11 @@
+/* Settings: the Computer use section (settings-computer.js). */
+.cu-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.cu-switch { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font: 600 13px/20px var(--font-ui); }
+.cu-agent { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--border); }
+.cu-agent:first-child { border-top: 0; }
+.cu-agent .cu-name { font: 600 13px/20px var(--font-ui); min-width: 110px; }
+.cu-agent .muted { flex: 1; }
+.cu-limits { margin: 0; padding-left: 18px; }
+.cu-limits li { margin: 4px 0; }
+#cu-progress { flex: 1; min-width: 160px; }
+#cu-mcp-preview { max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }

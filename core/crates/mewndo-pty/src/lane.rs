@@ -209,13 +209,9 @@ impl Lane {
             .map_err(|e| std::io::Error::other(e.to_string()))
     }
 
-    /// Has the child ended, without blocking?
+    /// The child's exit code once it has ended, without blocking. `None` while it runs.
     pub fn exit_code(&self) -> Option<u32> {
-        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
-        match child.try_wait() {
-            Ok(Some(status)) => Some(status.exit_code()),
-            _ => None,
-        }
+        exited(&self.child).flatten()
     }
 
     /// Close the input stream. A well-behaved agent sees end-of-input and exits; the replay buffer stays.
@@ -232,6 +228,13 @@ impl Lane {
     /// Block until the child ends. Tests use it; the core never does.
     pub fn wait(&self) -> std::io::Result<u32> {
         let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        // portable-pty's Windows `wait` returns early, on the exit code `exited` explains; wait for the process
+        // itself to be gone first.
+        #[cfg(windows)]
+        gone(
+            child.as_ref(),
+            windows_sys::Win32::System::Threading::INFINITE,
+        );
         child.wait().map(|s| s.exit_code())
     }
 }
@@ -385,6 +388,7 @@ pub fn start(
         ring.clone(),
         running.clone(),
         writer.clone(),
+        child.clone(),
         sink,
     );
     Ok(Lane {
@@ -404,9 +408,46 @@ fn ended() -> std::io::Error {
     std::io::Error::other("the lane's agent has ended")
 }
 
+/// `None` while the child runs; once it has ended, `Some` of its exit code (`Some(None)` if that could not be
+/// read).
+///
+/// Not `try_wait` alone. On Windows that is `GetExitCodeProcess`, which stops answering STILL_ACTIVE as soon
+/// as the child *calls* ExitProcess: before its DLLs have detached and before it has let go of its console.
+/// `watch_child` closes the pseudo-console the moment this says the child ended, and closing it while the
+/// child is still attached sends that child CTRL_CLOSE_EVENT. Windows CI caught exactly that: `cmd` told
+/// `exit 7` was reported as 0xC000013A (STATUS_CONTROL_C_EXIT), a code only a console control event gives.
+/// So on Windows the process handle must be signalled first; only then has the process really gone, and its
+/// exit code is final. On Unix `try_wait` is `waitpid`, which only answers for a child that has fully exited.
+fn exited(child: &Mutex<Box<dyn Child + Send + Sync>>) -> Option<Option<u32>> {
+    let mut child = child.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(windows)]
+    if !gone(child.as_ref(), 0) {
+        return None;
+    }
+    match child.try_wait() {
+        Ok(None) => None,
+        Ok(Some(status)) => Some(Some(status.exit_code())),
+        Err(_) => Some(None),
+    }
+}
+
+/// Is the child's process object signalled, waiting at most `timeout_ms`? A process is signalled only once it
+/// has fully terminated, unlike its exit code (see `exited`).
+#[cfg(windows)]
+fn gone(child: &(dyn Child + Send + Sync), timeout_ms: u32) -> bool {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    match child.as_raw_handle() {
+        // SAFETY: the child owns this process handle, and the caller holds the child for the whole call.
+        Some(handle) => unsafe { WaitForSingleObject(handle as _, timeout_ms) == WAIT_OBJECT_0 },
+        None => true,
+    }
+}
+
 /// ConPTY keeps its output pipe open after the child exits, until the pseudo-console itself is closed, so the
-/// reader would never see the end. This closes it (drops the master) once the child has ended. Harmless on Unix,
-/// where the pty already reports end of file.
+/// reader would never see the end. This closes it (drops the master) once the child has ended - really ended,
+/// see `exited`, or the closing would itself end the child, with the wrong exit code. Harmless on Unix, where
+/// the pty already reports end of file.
 /// ponytail: polls every 100 ms; a wait on the process handle would wake at once, if that ever matters.
 fn watch_child(
     id: &str,
@@ -416,11 +457,7 @@ fn watch_child(
     std::thread::Builder::new()
         .name(format!("mewndo-lane-watch-{id}"))
         .spawn(move || {
-            loop {
-                let done = child.lock().unwrap_or_else(|e| e.into_inner()).try_wait();
-                if !matches!(done, Ok(None)) {
-                    break;
-                }
+            while exited(&child).is_none() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             master.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -435,6 +472,7 @@ fn spawn_reader(
     ring: Arc<Mutex<Ring>>,
     running: Arc<AtomicBool>,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     sink: Arc<dyn LaneSink>,
 ) {
     std::thread::Builder::new()
@@ -470,8 +508,17 @@ fn spawn_reader(
                     Err(_) => break,
                 }
             }
+            // The end of the output is not quite the end of the agent: a ConPTY host can close the pipe while
+            // the child is still finishing its exit. `lane.closed` carries the agent's real exit code, so wait
+            // for it (see `exited`).
+            let code = loop {
+                if let Some(code) = exited(&child) {
+                    break code;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            };
             running.store(false, Ordering::SeqCst);
-            sink.closed(&id, None);
+            sink.closed(&id, code);
         })
         .expect("a lane reader thread");
 }

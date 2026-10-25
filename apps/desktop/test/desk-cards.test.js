@@ -24,8 +24,8 @@ function at(start = 1_000) {
   return { now: () => (t += 1_000) };
 }
 
-test('the five kinds of §33.2, and the longer names from the spec table', () => {
-  assert.deepStrictEqual(Object.keys(KEYS), ['permission', 'question', 'done', 'drift', 'receipt']);
+test('the five kinds of §33.2, the Habit card of §34.7, and the longer names from the spec table', () => {
+  assert.deepStrictEqual(Object.keys(KEYS), ['permission', 'question', 'done', 'drift', 'receipt', 'habit']);
   // The core sends the short names (mewndo-inbox CardKind::as_str); the aliases keep the spec's own wording working.
   for (const [sent, want] of [
     ['permission', 'permission'], ['needs-permission', 'permission'], ['needs_permission', 'permission'],
@@ -33,6 +33,7 @@ test('the five kinds of §33.2, and the longer names from the spec table', () =>
     ['done', 'done'], ['stop', 'done'],
     ['drift', 'drift'], ['hold', 'drift'], ['drift-hold', 'drift'],
     ['receipt', 'receipt'], ['receipt-warning', 'receipt'], ['receipt_warning', 'receipt'],
+    ['habit', 'habit'],
     ['PERMISSION', 'permission'],
   ]) {
     assert.strictEqual(normaliseKind(sent), want, sent);
@@ -293,4 +294,37 @@ test('an answered card remembers the option chosen, and taking it back forgets i
   cards.startAnswer('r', { choice: 0 });
   cards.takeBack('r');
   assert.strictEqual(describe(cards.get('r')).chosen, null);
+});
+
+test('a Habit card: 1 yes, 2 no, 3 never ask, and it leaves the stack once the core has the answer', () => {
+  const cards = createCards(at());
+  cards.apply(cardEvent({
+    id: 'h1', kind: 'habit', agent_id: 'claude', title: 'Always allow `npm test` in shop?',
+    body: 'You gave this answer 3 times.\nwhich applies in every project after a restart.',
+    options: ['yes', 'no', 'never ask'],
+  }));
+  const card = cards.get('h1');
+  assert.strictEqual(card.kind, 'habit');
+  assert.deepStrictEqual(describe(card).hints, ['1 yes', '2 no', '3 never ask']);
+  assert.deepStrictEqual(keyAction(card, '1'), { action: 'answer', choice: 0, label: 'Yes' });
+  assert.deepStrictEqual(keyAction(card, '3'), { action: 'answer', choice: 2, label: 'Never ask' });
+  assert.strictEqual(keyAction(card, 'u'), null, 'nothing to undo on a Habit card');
+  cards.startAnswer('h1', { choice: 0 });
+  assert.deepStrictEqual(cards.release('h1'), { card_id: 'h1', choice: 0, text: null, via: 'key' });
+  cards.apply(releaseEvent({ card_id: 'h1' }));
+  assert.strictEqual(cards.get('h1'), null);
+});
+
+test('a Done card\'s next steps: 1–3 pick the core\'s own options, and the hints say so', () => {
+  const card = { kind: 'done', options: ['Looks good, ship it', 'Show me the screens'] };
+  assert.deepStrictEqual(keyAction(card, '1'), { action: 'answer', choice: 0, label: 'Looks good, ship it' });
+  assert.deepStrictEqual(keyAction(card, '2'), { action: 'answer', choice: 1, label: 'Show me the screens' });
+  assert.strictEqual(keyAction(card, '3'), null, 'only the next steps the core sent');
+  // Space, V, U and E keep their meaning on a Done card with next steps.
+  assert.deepStrictEqual(keyAction(card, ' '), { action: 'text', hint: 'Reply' });
+  assert.deepStrictEqual(keyAction(card, 'v'), { action: 'voice', hint: VOICE_HINT });
+  assert.deepStrictEqual(keyAction(card, 'e'), { action: 'dismiss', label: 'Clear' });
+  assert.deepStrictEqual(keyAction({ ...card, state: 'open' }, 'Escape'), { action: 'leave' });
+  assert.deepStrictEqual(describe({ ...card, id: 'd' }).hints, ['1–2 next step', 'Space reply', 'V voice reply', 'U undo turn', 'E clear']);
+  assert.deepStrictEqual(describe({ kind: 'done', options: [], id: 'd' }).hints, ['Space reply', 'V voice reply', 'U undo turn', 'E clear']);
 });

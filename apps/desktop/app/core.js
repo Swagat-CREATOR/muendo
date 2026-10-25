@@ -16,7 +16,8 @@ const PROTOCOL_VERSION = 1;
 // onEvent(event): an event the core sends unasked: a change feed event for a watched folder ({ root, kind, path?,
 // dirs?, message?, at_ms }) or a restore's progress ({ root, kind: 'restore_progress', restore, ... }).
 // subscribe(fn) adds another listener and returns a function that removes it.
-// args: more arguments for the core, e.g. `--desk <folder>` for the Agent Desk pipe.
+// args: more arguments for the core, e.g. `--desk <folder>` for the Agent Desk pipe; or a function returning them,
+// asked at every start, so a restart picks up a changed setting (computer use's `--computer-use`).
 function createCore({
   binary, runDir, logDir, log, args = [], onChange = () => {}, onEvent = () => {},
   checkEveryMs = 10_000, answerWithinMs = 2_000, readyWithinMs = 10_000, restartAfterMs = 1_000,
@@ -116,7 +117,8 @@ function createCore({
     restartTimer = null;
     misses = 0;
     set({ state: 'starting', message: null, pid: null, uptimeMs: null });
-    const proc = spawn(binary, ['--socket', address, '--log-dir', logDir, ...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const extra = typeof args === 'function' ? args() : args;
+    const proc = spawn(binary, ['--socket', address, '--log-dir', logDir, ...extra], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     child = proc;
     const readyTimer = setTimeout(() => {
       log.error('mewndo-core did not start in time; restarting it');
@@ -183,8 +185,17 @@ function createCore({
     clearTimeout(kill);
   }
 
+  // Stop it and start it again on the same address (the engine and the desk reconnect by themselves), asking for
+  // `args` afresh: how a changed setting such as computer use reaches the core.
+  async function restart() {
+    await stop();
+    stopping = false;
+    crashes = [];
+    start();
+  }
+
   const subscribe = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
-  return { start, stop, status: () => status, request, subscribe, address };
+  return { start, stop, restart, status: () => status, request, subscribe, address };
 }
 
 module.exports = { createCore, PROTOCOL_VERSION };

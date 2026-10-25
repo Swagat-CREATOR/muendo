@@ -12,6 +12,7 @@
 // the happy path, a refused request, a missing core, a protected path in the deny cache -- is a value a test
 // can assert on. main.rs is the only place that touches stdout or the exit code.
 pub mod args;
+pub mod console;
 pub mod failopen;
 pub mod pipe;
 
@@ -91,6 +92,9 @@ pub fn request(args: &Args, payload: Value) -> HookRequest {
             .ok()
             .filter(|v| !v.is_empty()),
         payload,
+        // The agent's own process, so the core can type a message the user confirmed into its terminal while it
+        // sits idle at its prompt (console.rs). One Toolhelp32 snapshot on Windows; None everywhere else.
+        console_pid: console::console_pid(),
     }
 }
 
@@ -162,6 +166,12 @@ mod tests {
         assert_eq!(req.session_id.as_deref(), Some("s1"));
         assert_eq!(req.pid, Some(std::process::id()));
         assert!(req.cwd.is_some(), "the project folder the agent ran in");
+        if cfg!(not(windows)) {
+            assert_eq!(
+                req.console_pid, None,
+                "only Windows has a console to type into"
+            );
+        }
     }
 
     #[test]

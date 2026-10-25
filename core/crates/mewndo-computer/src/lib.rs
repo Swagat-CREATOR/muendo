@@ -42,14 +42,85 @@
 //     act flow is tested against a fake core.
 //   - **No screenshot and no crop.** U5.5's 400x240 WebP crop is the core's (`xcap` + `image`), for the same
 //     reason. This crate asks for a card; it never captures a pixel.
-//   - **No cursor drawing.** U5.6's `cursor.move` is a message to the core; the overlay is `mewndo-overlay`.
-//   - **No Show Me.** §36.6 U9 is not built. See the note at the end of `hooks.rs` for what it would need.
-//   - **No driver download.** `vendor.rs` holds the pinned version, the real SHA-256s and the verify-then-rename
-//     logic; the `download` feature is off by default, so a plain build has no HTTP client (plot.md rule 7).
-//   - **No unpacking.** The release is a `.zip`; verifying it is here, expanding it is the installer's step.
+//   - **No cursor drawing.** The core's overlay (`mewndo-overlay`) draws the agent cursor. This crate only switches
+//     cua-driver's own cursor off at start (U8, `proxy::hide_driver_cursor`) and, if that fails, tells the core
+//     with every action (`driver_cursor`) so the overlay labels the driver's cursor instead of adding a second.
+//   - **Show Me (U9) records and replays, in part.** `record.rs` turns the user's own clicks and typing into
+//     steps (never a password field's text) and `skill.rs` stores and plans them; `run_skill` replays them
+//     through this proxy's gate. Replay clicks recorded screen points; it does not find the element again.
+//   - **No driver download here.** The app downloads the pinned release after asking the user
+//     (apps/desktop/app/computer-use.js) and checks every file against the SHA-256s in `vendor.rs`; `run()`
+//     checks them again before it starts the driver. The `download` feature stays off, so this crate has no HTTP
+//     client (plot.md rule 7).
 //   - **No settings file.** §32.5 rule 8 puts computer use behind an off-by-default flag in v0 settings; reading
 //     that flag is the core's job and `run()` takes the answer as an argument.
 
 // The modules below arrive with U3 to U6 and U8; each is declared here when it exists, so the workspace keeps
 // building in between.
+pub mod classify;
+pub mod driver;
+pub mod hooks;
+pub mod link;
+pub mod proxy;
+pub mod record;
+pub mod redact;
+pub mod skill;
 pub mod vendor;
+
+use std::path::PathBuf;
+
+/// `mewndo-core mcp-computer --agent <name>`: the guarded proxy on stdio, for one agent, until it disconnects.
+///
+/// `driver_exe` is the pinned cua-driver (vendor.rs); `desk_dir` holds the running core's `core.json`. Whether
+/// computer use is switched on is the core's answer to every call, not this process's: with it off, or with no
+/// core, every call is refused (link.rs).
+pub async fn run(
+    driver_exe: PathBuf,
+    desk_dir: Option<PathBuf>,
+    agent: String,
+) -> Result<(), String> {
+    use rmcp::ServiceExt;
+    if !driver_exe.is_file() {
+        return Err(format!(
+            "cua-driver {} is not installed at {} (turn on computer use in Mewndo's settings to download it)",
+            vendor::VERSION,
+            driver_exe.display()
+        ));
+    }
+    // Never run a driver that is not byte for byte the pinned release.
+    let folder = driver_exe.parent().unwrap_or(std::path::Path::new("."));
+    vendor::verify_installed(folder, vendor::Arch::current()).map_err(|e| e.to_string())?;
+    let id = ulid::Ulid::new().to_string().to_lowercase();
+    let session = format!("mewndo-{agent}-{}", &id[id.len() - 8..]);
+    let driver = driver::McpDriver::start(&driver_exe).await?;
+    // U8: only Mewndo's cursor on screen. If the driver will not switch its own off, it stays, and the core's
+    // overlay draws the label chip beside it instead of a second arrow.
+    let driver_cursor = match proxy::hide_driver_cursor(&driver, &session).await {
+        Ok(()) => false,
+        Err(e) => {
+            eprintln!(
+                "mewndo-computer: cua-driver's own cursor stays on ({e}); Mewndo labels it instead of drawing its own"
+            );
+            true
+        }
+    };
+    let gate = link::CoreGate {
+        desk_dir,
+        agent,
+        wait: link::ANSWER_WAIT,
+        driver_cursor,
+    };
+    let skills = gate.desk_dir.as_deref().map(skill::dir);
+    let mut proxy = proxy::Proxy::new(driver, gate, session);
+    if let Some(dir) = skills {
+        proxy = proxy.with_skills(dir);
+    }
+    proxy
+        .serve(rmcp::transport::stdio())
+        .await
+        .map_err(|e| format!("the agent did not complete MCP initialize: {e}"))?
+        .waiting()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}

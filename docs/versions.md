@@ -38,9 +38,13 @@ caret range, so the exact build comes from `core/Cargo.lock`:
 | `rusqlite` (features: `bundled`) | `0.37.0` | caret |
 | `libc` | `0.2.177` | caret |
 | `windows-sys` | `0.61.2` | caret |
+| `windows` (features: `Win32_Foundation`, `Win32_System_Com`, `Win32_UI_Accessibility`; Windows only, pinned in `mewndo-computer`'s own Cargo.toml for now, like `crossbeam-queue`) | `0.62.2` | caret; the version Cargo.lock already held through rmcp, so no new crate |
+| cua-driver release (downloaded by the app after asking, never built) | `cua-driver-rs-v0.34.0`, SHA-256 per archive and per program in `vendor.rs` and `apps/desktop/app/computer-use.js` | **exact**; a test checks the two files agree |
 | `windows-link` | `0.2.1` | caret |
 | `ureq` (`default-features = false`, features: `native-tls`) | `2.12.1` | caret |
 | `native-tls` | `0.2.14` | caret |
+| `toml_edit` (`default-features = false`, features: `parse`, `display`) | `0.25.17` | caret |
+| `cua-cursor-motion` (only in the opt-in crate `core/optional/mewndo-cua-motion`, outside the workspace) | `git = "https://github.com/trycua/cua"`, `rev = "5a364bbe60e1f8a901ceacd889606b6367dc96ab"` | **exact commit**; fetched only when that crate is built, never by the workspace or CI |
 | `mewndo-proto` | `{ path = "crates/mewndo-proto" }` | local path, no version |
 
 Note on a caret in Cargo: `0.10.9` and `0.37.0` are pre-1.0, where a caret allows only patch updates

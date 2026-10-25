@@ -126,6 +126,7 @@ function render(s) {
   $('engine').value = s.engine;
   $('guard-fail-open').checked = s.guardFailOpen;
   $('data-dir').textContent = s.dataDir;
+  if (s.notify) renderNotify(s.notify);
 }
 
 function agentRow(a = { name: '', names: [], commandLine: [], notCommandLine: [] }) {
@@ -198,6 +199,113 @@ $('reset').onclick = async () => {
 
 api.get().then(render);
 
+// --- Habits: the rules Mewndo learned from your answers (app/habits-file.js reads and edits rules.toml) ------------
+
+const LIST_WORDS = { allow: 'Always allow', deny: 'Always deny' };
+const AGENT_WORDS = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor' };
+let habitsSeen = null; // the last list drawn, to redraw only when the file changed
+
+function renderHabits(result) {
+  const key = JSON.stringify(result);
+  if (key === habitsSeen) return;
+  habitsSeen = key;
+  $('habits-file').textContent = result.file ? `Rules file: ${result.file}` : '';
+  if (result.problem) return putIn($('habits'), h('p', { class: 'error' }, result.problem));
+  if (!result.rules.length) {
+    return putIn($('habits'), h('div', { class: 'habit-empty' },
+      h('p', {}, 'No learned rules yet.'),
+      h('p', { class: 'muted' }, 'Answer a permission card the same way three times for the same command in a project, and Mewndo '
+        + 'offers to remember it. Each rule you accept shows up here, with Remove.')));
+  }
+  putIn($('habits'), ...result.rules.map((r) => h('div', { class: 'habit-row' },
+    h('span', { class: `habit-chip ${r.list}` }, LIST_WORDS[r.list]),
+    h('div', { class: 'habit-what' },
+      h('div', { class: 'mono habit-command' }, r.command),
+      h('div', { class: 'muted' }, [
+        r.agent ? (AGENT_WORDS[r.agent] ?? r.agent) : 'Agent not recorded',
+        r.project ? `learned in ${r.project}` : 'project not recorded',
+        `on ${new Date(`${r.date}T12:00:00`).toLocaleDateString()}`,
+      ].join(' · '))),
+    h('button', { onclick: () => removeHabit(r), 'aria-label': `Remove the rule for ${r.command}` }, 'Remove'))));
+}
+
+const putIn = (el, ...children) => el.replaceChildren(...children.flat().filter((c) => c != null && c !== false));
+
+async function loadHabits() {
+  try { renderHabits(await api.habits()); } catch (e) { say($('habits-status'), plain(e), false); }
+}
+
+async function removeHabit(rule) {
+  const d = $('habit-dialog');
+  $('habit-dialog-text').textContent = `${LIST_WORDS[rule.list]}: ${rule.command}`;
+  d.returnValue = 'cancel';
+  d.showModal();
+  await new Promise((r) => d.addEventListener('close', r, { once: true }));
+  if (d.returnValue !== 'ok') return;
+  try {
+    renderHabits(await api.removeHabit(rule));
+    say($('habits-status'), 'Removed. It stops applying the next time Mewndo starts.');
+  } catch (e) {
+    say($('habits-status'), plain(e), false);
+    await loadHabits();
+  }
+}
+
+// The core writes the file when you accept a Habit card: while this page shows, look again every 2 seconds.
+setInterval(() => { if (!document.hidden && !$('habits').closest('.set-page').hidden) loadHabits(); }, 2000);
+
+// --- Notifications: Do not disturb and the card sound (app/quiet.js decides, main.js saves) -----------------------
+
+const dndClock = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+function renderNotify(n) {
+  for (const r of document.querySelectorAll('input[name=dnd]')) r.checked = r.value === n.dnd.mode;
+  if (document.activeElement !== $('dnd-from')) $('dnd-from').value = n.dnd.from;
+  if (document.activeElement !== $('dnd-to')) $('dnd-to').value = n.dnd.to;
+  $('dnd-now').textContent = {
+    off: 'Off. Cards pop up beside the dock as they arrive.',
+    hour: `On until ${dndClock(n.dnd.until)}.`,
+    tomorrow: `On until ${new Date(n.dnd.until).toLocaleString(undefined, { weekday: 'long', hour: 'numeric', minute: '2-digit' })}.`,
+    hours: `Every day from ${n.dnd.from} to ${n.dnd.to}. ${n.quietNow ? 'On right now.' : 'Off right now.'}`,
+  }[n.dnd.mode];
+  $('dnd-now').className = n.quietNow ? 'dnd-now on' : 'dnd-now';
+  $('sound-on').checked = n.sound.on;
+  $('sound-volume').value = Math.round(n.sound.volume * 100);
+  $('sound-volume-text').textContent = `${Math.round(n.sound.volume * 100)} %`;
+  $('sound-volume').disabled = !n.sound.on;
+}
+
+async function saveNotify(patch, status) {
+  try {
+    render(await api.setNotify(patch));
+    $(status).textContent = '';
+  } catch (e) {
+    if (current?.notify) renderNotify(current.notify); // back to what is saved
+    say($(status), plain(e), false);
+  }
+}
+const dndPatch = (mode) => ({ dnd: { mode, from: $('dnd-from').value, to: $('dnd-to').value } });
+for (const r of document.querySelectorAll('input[name=dnd]')) r.addEventListener('change', () => saveNotify(dndPatch(r.value), 'dnd-status'));
+for (const id of ['dnd-from', 'dnd-to']) {
+  $(id).addEventListener('change', () => {
+    if (current?.notify.dnd.mode === 'hours') saveNotify(dndPatch('hours'), 'dnd-status');
+  });
+}
+$('sound-on').onchange = (e) => saveNotify({ sound: { on: e.target.checked } }, 'sound-status');
+$('sound-volume').oninput = (e) => { $('sound-volume-text').textContent = `${e.target.value} %`; };
+$('sound-volume').onchange = (e) => saveNotify({ sound: { volume: Number(e.target.value) / 100 } }, 'sound-status');
+// Test plays the bundled sound here, at the slider's volume, whether or not the sound is on.
+const testSound = new Audio('../assets/sounds/card.wav');
+$('sound-test').onclick = () => {
+  testSound.volume = Number($('sound-volume').value) / 100;
+  testSound.currentTime = 0;
+  testSound.play().then(() => say($('sound-status'), testSound.volume ? 'Playing the card sound.' : 'The volume is at 0 %, so it is silent.'),
+    () => say($('sound-status'), "Mewndo couldn't play the sound. Check that this computer has a sound output.", false));
+};
+// A timed Do not disturb ends by itself: look again every minute while this page shows.
+setInterval(() => {
+  if (!document.hidden && !$('dnd-now').closest('.set-page').hidden) api.get().then(render, () => {});
+}, 60_000);
+
 // The section list (design spec §9): one page at a time, like Wispr's settings.
 function showPage(name) {
   for (const p of document.querySelectorAll('.set-page')) p.hidden = p.dataset.page !== name;
@@ -205,7 +313,35 @@ function showPage(name) {
     if (b.dataset.page === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
   document.querySelector('.set-main').scrollTop = 0;
+  if (name === 'habits') loadHabits();
 }
 for (const b of document.querySelectorAll('.set-nav-item')) b.addEventListener('click', () => showPage(b.dataset.page));
-showPage('general');
+// A section asked for: in the address (#protection) when the window opens, or later from Mewndo.
+const SETTINGS_PAGES = [...document.querySelectorAll('.set-page')].map((p) => p.dataset.page);
+showPage(SETTINGS_PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'general');
+api.onPage?.((page) => { if (SETTINGS_PAGES.includes(page)) showPage(page); });
 api.version().then((v) => { $('version').textContent = `Mewndo ${v}`; }, () => {});
+
+// --- Connections: where each Worker is (app/connectors). Addresses only; tokens never pass through this window. ----
+async function loadConnections() {
+  let s;
+  try { s = await api.connectionsSettings(); } catch (e) { say($('cx-workers-status'), plain(e), false); return; }
+  if (!s.credentials) say($('cx-workers-status'), s.credentialsWhy, false);
+  $('cx-workers').replaceChildren(...s.workers.map((w) => {
+    const box = h('input', { value: w.saved, placeholder: w.fromEnv ?? `https://mewndo-${w.id}.<you>.workers.dev`, 'aria-label': `${w.name} Worker address`, spellcheck: 'false' });
+    const save = h('button', {
+      onclick: async () => {
+        try {
+          await api.setConnectionUrl(w.id, box.value.trim());
+          say($('cx-workers-status'), box.value.trim() ? `${w.name} Worker saved. Connect it in the main window.` : `${w.name} Worker address cleared.`);
+        } catch (e) { say($('cx-workers-status'), plain(e), false); }
+      },
+    }, 'Save');
+    return h('div', { class: 'set-row' },
+      h('div', {}, h('h3', {}, w.name),
+        h('p', { class: 'muted' }, w.fromEnv && !w.saved ? `From ${w.env}: ${w.fromEnv}` : `Deploy from ${w.folder}, or set ${w.env}.`)),
+      h('div', { class: 'row' }, box, save));
+  }));
+  if (s.github.login) $('cx-github').textContent = `Connected as @${s.github.login}${s.github.repos.length ? `, journaling ${s.github.repos.join(', ')}` : ', no repos chosen yet'}. Change it in the main window's Connections screen.`;
+}
+loadConnections();

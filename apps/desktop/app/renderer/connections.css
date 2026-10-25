@@ -1,0 +1,29 @@
+/* The Connections screen (renderer/connections.js). The card frame itself (.cx-grid, .cx-card, .cx-head) is in shell.css. */
+.cx-name { display: flex; flex-direction: column; }
+.cx-account { font-weight: 400; font: var(--t-small); }
+.cx-setup { color: var(--ink); }
+.cx-busy { color: var(--working); }
+.cx-busy::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--working); animation: cx-pulse 1.2s ease-in-out infinite; }
+@keyframes cx-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .cx-busy::before { animation: none; } }
+.cx-notice { margin-top: 6px; }
+.cx-buttons { margin-top: 12px; gap: 8px; flex-wrap: wrap; }
+.cx-changes { margin-top: 12px; display: grid; gap: 8px; max-height: 360px; overflow: auto; }
+.cx-burst { border-top: 1px solid var(--border); padding-top: 8px; }
+.cx-burst-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: var(--t-small); color: var(--ink-2); }
+.cx-change { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
+.cx-what { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; font: var(--t-small); }
+.cx-what strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.cx-cant { font: var(--t-small); max-width: 45%; text-align: right; }
+.cx-note { flex-basis: 100%; }
+/* How sure Mewndo is (spec §23.8): solid for exact, outlined for likely, a grey "?" for unknown. */
+.cx-who { padding: 0 8px; border-radius: var(--r-pill); font: var(--t-small); }
+.cx-who.exact { background: var(--ink); color: var(--surface); }
+.cx-who.likely { border: 1px dashed var(--ink-2); color: var(--ink-2); }
+.cx-who.unknown { background: var(--surface-2); color: var(--ink-3); }
+.cx-limits { margin-top: 12px; font: var(--t-small); color: var(--ink-2); }
+.cx-limits ul { margin: 6px 0 0; padding-left: 18px; }
+.cx-checked { margin-top: 8px; }
+.cx-secret { width: 100%; box-sizing: border-box; font-family: var(--font-mono); }
+.cx-repos { display: grid; gap: 6px; max-height: 280px; overflow: auto; }
+@media (max-width: 900px) { .cx-grid { grid-template-columns: minmax(0, 1fr); } }

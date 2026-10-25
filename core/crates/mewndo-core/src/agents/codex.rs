@@ -5,7 +5,7 @@
 //   pre-tool     PreToolUse        Router -> deny, or nothing
 //   permission   PermissionRequest Router -> deny, or nothing (Codex's own approval flow then runs)
 //   post-tool    PostToolUse       recorded; never any output
-//   stop         Stop              a Done card; never any output, and never a reply window (see below)
+//   stop         Stop              a Done card; a queued agent.message is printed as a block (see below)
 //   notify       agent-turn-complete, carrying the last assistant message -> a Done card
 //
 // **The rule this file is built around: any deny wins, and this file never prints an allow.**
@@ -25,9 +25,12 @@
 //     build where it was unavoidable. Everything is read through a list of candidate spellings
 //     ([`TOOL_NAME_KEYS`] and friends) and a payload that matches none of them produces **no output and exit
 //     0** (§32.5 rule 7) rather than a guess at what the agent meant.
-//  2. *No reply window on `Stop`.* §33.6 makes it conditional: "Use the reply window only if the fake agent
-//     harness confirms Codex's `Stop` hook can continue a turn". It has not been confirmed, so `Stop` makes a
-//     Done card and returns nothing. Messaging Codex after it finishes works only in a Mewndo lane (§33.7,
+//  2. *No reply window on `Stop` by default.* §33.6 makes it conditional: "Use the reply window only if the fake
+//     agent harness confirms Codex's `Stop` hook can continue a turn". Codex's own schema says it can
+//     (`decision: "block"`, docs/decisions.md), but no real run has shown it, and the shipped `Stop` hook has a
+//     5 s timeout - so `Stop` makes a Done card and waits for nothing (`Codex::reply_window` is zero). What does
+//     work is a message queued while Codex is mid-turn (`agent.message`): the next `Stop` prints it as a block,
+//     which needs no waiting. Messaging Codex once it is idle at its prompt works only in a Mewndo lane (§33.7,
 //     Part G).
 //  3. *No real run.* Part F's "Done when" is "the card tests pass for Codex and Cursor in the harness, plus
 //     one real run with each". The harness half is here. The real run has not happened.
@@ -49,12 +52,18 @@
     )
 )]
 
-use mewndo_inbox::{Card, CardKind, Inbox, PermissionFacts};
+use super::mailbox::{self, Link, NextStep};
+use mewndo_inbox::{Card, CardKind, Inbox, Opt, PermissionFacts};
 use mewndo_proto::{HookRequest, HookResponse};
 use mewndo_router::{GuardInput, Mode, Router, Verdict};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// This agent's `kind` on `agent.status`, and what the dock calls it.
+pub const KIND: &str = "codex";
+pub const NAME: &str = "Codex";
 
 /// `argv[2]` for each event, as `integrations/codex/hooks.json` and `config.snippet.toml` spell it. The
 /// forwarder passes these through untouched (`mewndo-hook/src/args.rs`), and `mewndo-hook`'s own
@@ -205,6 +214,36 @@ fn silent() -> HookResponse {
     }
 }
 
+/// `Stop`'s carry-on answer, in Codex's own schema (`stop.command.output`: `decision: "block"` with a `reason`,
+/// and no other field, since the schema refuses unknown ones).
+pub fn block_json(reason: &str) -> String {
+    serde_json::json!({"decision": "block", "reason": reason}).to_string()
+}
+
+fn block(reason: &str) -> HookResponse {
+    HookResponse {
+        stdout: block_json(reason),
+        exit_code: 0,
+    }
+}
+
+/// The text a Done card's answer sends Codex: the user's own words, or the chosen next step.
+fn reply_of(card: &Card, answer: &mewndo_inbox::Answer, steps: &[NextStep]) -> Option<String> {
+    if let Some(text) = answer
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        return Some(text.to_string());
+    }
+    let label = &card.options.get(answer.choice?)?.label;
+    steps
+        .iter()
+        .find(|s| &s.label == label)
+        .map(|s| s.text.clone())
+}
+
 fn deny(event: &str, reason: &str) -> HookResponse {
     HookResponse {
         stdout: deny_json(event, reason),
@@ -251,6 +290,12 @@ pub struct Codex {
     pub router: Arc<Router>,
     pub inbox: Option<Inbox>,
     pub session: Session,
+    /// `agent.status` and `agent.message` (mailbox.rs).
+    pub link: Link,
+    /// How long `Stop` holds its Done card open for a reply. Zero, the default, is limit 2: no reply window,
+    /// because the shipped `Stop` hook has a 5 s timeout and no real run has shown Codex carrying a turn on.
+    /// A message queued while Codex works is still delivered at its next `Stop` - that needs no waiting.
+    pub reply_window: Duration,
 }
 
 impl Codex {
@@ -259,6 +304,8 @@ impl Codex {
             router,
             inbox,
             session: Session::default(),
+            link: Link::default(),
+            reply_window: Duration::ZERO,
         }
     }
 
@@ -268,14 +315,22 @@ impl Codex {
     /// Router that decided anything other than deny: all silence.
     pub async fn handle(&self, req: &HookRequest) -> HookResponse {
         match event_name(&req.event) {
-            Some(PRE_TOOL) | Some(PERMISSION) => self.guard(req),
+            Some(PRE_TOOL) => {
+                self.link.busy(&agent_id(req), KIND, NAME, "working");
+                self.guard(req)
+            }
+            // Codex's own approval prompt is about to ask the user, unless Mewndo denies first.
+            Some(PERMISSION) => {
+                self.link.busy(&agent_id(req), KIND, NAME, "needs-you");
+                self.guard(req)
+            }
             // §33.10 B5's reasoning in reverse: a deny after the fact is pointless. The event is worth
             // recording against the trace (§35) but there is nothing to say back.
-            Some(POST_TOOL) => silent(),
-            Some(STOP) => {
-                self.done(req, first_str(&req.payload, LAST_MESSAGE_KEYS))
-                    .await
+            Some(POST_TOOL) => {
+                self.link.busy(&agent_id(req), KIND, NAME, "working");
+                silent()
             }
+            Some(STOP) => self.stop(req).await,
             Some(NOTIFY) => self.notify(req).await,
             _ => silent(),
         }
@@ -359,11 +414,71 @@ impl Codex {
     /// §33.2's Done card. No reply window (limit 2): the receiver is dropped at once, so nothing waits on an
     /// answer that Codex could not be told about anyway.
     async fn done(&self, req: &HookRequest, message: Option<&str>) -> HookResponse {
+        let agent = agent_id(req);
+        self.link.mailbox.idle(&agent, NAME);
+        self.link
+            .status(&agent, KIND, NAME, "done", message.map(one_line));
         let Some(inbox) = self.inbox.as_ref() else {
             return silent();
         };
         inbox.create(self.done_card(req, message)).await;
         silent()
+    }
+
+    /// `Stop`. Codex's schema takes `{"decision":"block","reason":…}` (docs/decisions.md, "Codex hook output
+    /// schema"), so a message the user queued while Codex worked is printed here, at once, and Codex carries on
+    /// with it. With a reply window set, the Done card's reply (or a next step, or an `agent.message`) is too.
+    /// Without one - the default - this is the Done card and silence, exactly as before.
+    async fn stop(&self, req: &HookRequest) -> HookResponse {
+        let agent = agent_id(req);
+        if let Some(text) = self.link.mailbox.take_queued(&agent) {
+            self.link
+                .status(&agent, KIND, NAME, "working", Some(one_line(&text)));
+            return block(&text);
+        }
+        let message = first_str(&req.payload, LAST_MESSAGE_KEYS);
+        // A Stop that is only running because Mewndo blocked the last one gets no second window: the same
+        // loop guard as Claude Code's (§33.10 Part C step 4).
+        let carried_on = req.payload.get("stop_hook_active").and_then(Value::as_bool) == Some(true);
+        let (Some(inbox), false, false) =
+            (self.inbox.as_ref(), self.reply_window.is_zero(), carried_on)
+        else {
+            return self.done(req, message).await;
+        };
+        self.link
+            .status(&agent, KIND, NAME, "done", message.map(one_line));
+        let steps = mailbox::next_steps(None, None);
+        let mut card = self.done_card(req, message);
+        card.options = steps.iter().map(|s| Opt::new(s.label.clone())).collect();
+        card.deadline = Some(self.reply_window);
+        let (id, waiting) = inbox.create(card.clone()).await;
+        let window = self
+            .link
+            .mailbox
+            .open(&agent, NAME, id, self.reply_window, self.reply_window);
+        let ended = window.wait(waiting).await;
+        self.link.mailbox.close(&agent, id);
+        if ended.answer.is_none() {
+            inbox.expire(id).await;
+        }
+        let reply = ended
+            .answer
+            .as_ref()
+            .and_then(|a| reply_of(&card, a, &steps));
+        match mailbox::join(reply, ended.message) {
+            Some(text) => {
+                self.link.mailbox.resumed(&agent);
+                self.link
+                    .status(&agent, KIND, NAME, "working", Some(one_line(&text)));
+                block(&text)
+            }
+            None => {
+                self.link.mailbox.idle(&agent, NAME);
+                self.link
+                    .status(&agent, KIND, NAME, "idle", message.map(one_line));
+                silent()
+            }
+        }
     }
 
     /// The card itself, separated from `done` so a test can read it without running an Inbox actor.
@@ -1083,6 +1198,7 @@ mod tests {
             cwd: Some("/work/shop".into()),
             lane_id: None,
             payload,
+            console_pid: None,
         }
     }
 
@@ -1748,5 +1864,127 @@ model = \"gpt-5-codex\"
         let card = Card::permission("codex:1", "t", "b", 3, f);
         let answer = mewndo_inbox::choice(card.id, 2, Via::Key);
         assert_eq!(card.taught_by(&answer), Some(Verdict::Deny));
+    }
+
+    // --- agent.message and agent.status (mailbox.rs) -------------------------------------------------------------
+
+    #[derive(Default)]
+    struct Seen(std::sync::Mutex<Vec<mewndo_proto::AgentStatus>>);
+
+    impl crate::agents::claude::Events for Seen {
+        fn agent_status(&self, status: mewndo_proto::AgentStatus) {
+            self.0.lock().unwrap().push(status);
+        }
+    }
+
+    fn seen(codex: &mut Codex) -> Arc<Seen> {
+        let seen = Arc::new(Seen::default());
+        codex.link.events = seen.clone();
+        seen
+    }
+
+    #[tokio::test]
+    async fn a_message_queued_while_codex_works_is_printed_as_a_block_at_its_next_stop() {
+        let mut codex = handler();
+        codex.inbox = Some(inbox());
+        let seen = seen(&mut codex);
+        codex
+            .handle(&req(PRE_TOOL, sample("pre-tool-shell.json")))
+            .await;
+        let agent = "codex:0199b3d2-7c41-7e8a-b2d5-5f1c9a0e4477";
+        let first = seen.0.lock().unwrap()[0].clone();
+        assert_eq!(
+            (
+                first.agent_id.as_str(),
+                first.kind.as_str(),
+                first.status.as_str()
+            ),
+            (agent, KIND, "working"),
+            "Codex is on the agent list, so routing can target it"
+        );
+        assert_eq!(first.connection, "hooked");
+        let (delivered, reason) = codex.link.mailbox.offer(agent, "skip the e2e tests");
+        assert_eq!(delivered, mewndo_proto::Delivery::Queued, "{reason}");
+
+        let out = codex.handle(&req(STOP, sample("stop.json"))).await;
+        assert_eq!(
+            out.stdout, r#"{"decision":"block","reason":"skip the e2e tests"}"#,
+            "Codex's own schema: decision block with a reason and nothing else"
+        );
+        assert_eq!(out.exit_code, 0);
+
+        // The next Stop (with no reply window, the default) is the Done card and silence again, and an idle
+        // Codex can only be reached through a lane.
+        let mut stop = sample("stop.json");
+        stop["stop_hook_active"] = serde_json::json!(true);
+        assert_eq!(codex.handle(&req(STOP, stop)).await, silent());
+        let (delivered, reason) = codex.link.mailbox.offer(agent, "and the docs");
+        assert_eq!(delivered, mewndo_proto::Delivery::Unsupported);
+        assert!(reason.contains("lane"), "{reason}");
+        let statuses: Vec<String> = seen
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.status.clone())
+            .collect();
+        assert_eq!(statuses, ["working", "working", "done"]);
+    }
+
+    #[tokio::test]
+    async fn with_a_reply_window_a_next_step_or_a_message_carries_codex_on() {
+        let mut codex = handler();
+        codex.inbox = Some(inbox());
+        codex.reply_window = Duration::from_secs(5);
+        let codex = Arc::new(codex);
+        let mut events = codex.inbox.as_ref().unwrap().subscribe();
+        let stop = tokio::spawn({
+            let codex = codex.clone();
+            async move { codex.handle(&req(STOP, sample("stop.json"))).await }
+        });
+        let card = loop {
+            if let mewndo_inbox::Event::Card(c) = events.recv().await.unwrap() {
+                break c;
+            }
+        };
+        assert_eq!(
+            card.options,
+            [
+                "Looks good, carry on",
+                "Run the tests",
+                "Summarize what you changed"
+            ]
+        );
+        let id = card.id.parse().unwrap();
+        codex
+            .inbox
+            .as_ref()
+            .unwrap()
+            .answer(id, mewndo_inbox::choice(id, 1, Via::Key))
+            .await;
+        assert_eq!(
+            stop.await.unwrap().stdout,
+            r#"{"decision":"block","reason":"Run the tests"}"#
+        );
+
+        // An agent.message while the card waits is delivered now.
+        let stop = tokio::spawn({
+            let codex = codex.clone();
+            async move { codex.handle(&req(STOP, sample("stop.json"))).await }
+        });
+        loop {
+            if let mewndo_inbox::Event::Card(_) = events.recv().await.unwrap() {
+                break;
+            }
+        }
+        let (delivered, _) = codex.link.mailbox.offer(
+            "codex:0199b3d2-7c41-7e8a-b2d5-5f1c9a0e4477",
+            "now the changelog",
+        );
+        assert_eq!(delivered, mewndo_proto::Delivery::Now);
+        assert_eq!(
+            stop.await.unwrap().stdout,
+            r#"{"decision":"block","reason":"now the changelog"}"#
+        );
     }
 }

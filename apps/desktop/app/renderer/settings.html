@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="design/base.css">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="settings.css">
+  <link rel="stylesheet" href="settings-computer.css">
 </head>
 <body class="settings">
   <div class="set-shell">
@@ -129,25 +130,93 @@
   <div class="set-page" data-page="connections" hidden>
     <h1 class="set-title">Connections</h1>
     <section class="set-card">
-      <div class="set-row"><div><h3>Gmail, Google Drive, Notion, GitHub</h3><p class="muted">Accounts can't be connected yet. See Connections in the main window.</p></div></div>
+      <h2>Your Workers</h2>
+      <p class="muted">Gmail, Google Drive and Notion go through Cloudflare Workers you deploy to your own free account
+        (docs/connections-setup.md). Paste each one's address here, or set the environment variable shown.
+        Connect each account in the main window's Connections screen.</p>
+      <div id="cx-workers"></div>
+      <p id="cx-workers-status" role="status"></p>
+    </section>
+    <section class="set-card">
+      <div class="set-row"><div><h3>GitHub</h3><p class="muted" id="cx-github">No Worker needed: Mewndo talks to GitHub
+        from this computer with a token kept in Windows Credential Manager. Add it in the main window's Connections screen.</p></div></div>
     </section>
   </div>
   <div class="set-page" data-page="computer" hidden>
     <h1 class="set-title">Computer use</h1>
     <section class="set-card">
-      <div class="set-row"><div><h3>Computer use and Show Me</h3><p class="muted">Off, and not available yet. When they come they stay off until you turn them on.</p></div></div>
+      <div class="set-row cu-row">
+        <div><h3>Let agents use this computer</h3><p class="muted">Agents can click and type in your apps through Mewndo, and every action asks you first. Off until you turn it on.</p></div>
+        <label class="cu-switch"><input type="checkbox" id="cu-on" role="switch" aria-describedby="cu-status"> <span id="cu-on-label">Off</span></label>
+      </div>
+      <p id="cu-status" role="status"></p>
+      <div class="row" id="cu-resume-row" hidden><button id="cu-resume" class="primary">Resume</button></div>
+    </section>
+    <section class="set-card">
+      <h2>cua-driver</h2>
+      <p class="muted" id="cu-driver-text"></p>
+      <div class="row"><button id="cu-download" hidden>Download…</button><progress id="cu-progress" max="1" value="0" hidden></progress></div>
+      <p id="cu-driver-status" role="status"></p>
+    </section>
+    <section class="set-card">
+      <h2>Connect an agent</h2>
+      <p class="muted">Adds Mewndo's guarded computer tools to the agent as an MCP server, running <span class="mono" id="cu-command"></span>. You see exactly what is added first, and a backup of the agent's settings is saved.</p>
+      <div id="cu-agents"></div>
+    </section>
+    <section class="set-card">
+      <h2>Show Me</h2>
+      <p class="muted">Record a workflow on the Skills screen in the main window. Agents run it with the run_skill tool, and every step still asks you. It needs computer use on.</p>
+    </section>
+    <section class="set-card">
+      <h2>What it can't do</h2>
+      <ul id="cu-limits" class="cu-limits muted"></ul>
     </section>
   </div>
   <div class="set-page" data-page="habits" hidden>
     <h1 class="set-title">Habits</h1>
     <section class="set-card">
-      <div class="set-row"><div><h3>Learned rules</h3><p class="muted">None yet. Rules Mewndo learns from your answers will be listed here, each with Remove.</p></div></div>
+      <h2>Learned rules</h2>
+      <p class="muted">When you give an agent the same answer three times in a project, Mewndo offers a Habit card: "Always allow
+        this?" Yes writes a rule into your rules file, and the agent isn't asked about that command again.</p>
+      <div id="habits" class="habit-list" aria-live="polite"></div>
+      <p id="habits-status" role="status"></p>
+      <p class="muted">What it can't do: Mewndo reads the rules file when it starts, so a removed rule stops applying the next
+        time Mewndo starts. A rule applies in every project, not only the one it was learned in. "Never ask" answers aren't
+        written to the file, so they're forgotten when Mewndo restarts and aren't listed. Rules you wrote yourself aren't
+        listed here: edit the file for those.</p>
+      <p class="muted mono" id="habits-file"></p>
     </section>
   </div>
   <div class="set-page" data-page="notifications" hidden>
     <h1 class="set-title">Notifications</h1>
     <section class="set-card">
-      <div class="set-row"><div><h3>Sounds and Do not disturb</h3><p class="muted">Not available yet. Cards never make a sound and never take focus.</p></div></div>
+      <h2>Do not disturb</h2>
+      <p class="muted">While it's on, cards still arrive in the Inbox and on the dock's badge, but none pops up beside the dock and
+        Mewndo shows no Windows notifications. Permission requests from your own agents still show: the agent is waiting for you.</p>
+      <div class="dnd-modes" role="radiogroup" aria-label="Do not disturb">
+        <label class="inline"><input type="radio" name="dnd" value="off"> Off</label>
+        <label class="inline"><input type="radio" name="dnd" value="hour"> For 1 hour</label>
+        <label class="inline"><input type="radio" name="dnd" value="tomorrow"> Until 8:00 tomorrow</label>
+        <label class="inline"><input type="radio" name="dnd" value="hours"> Every day from
+          <input id="dnd-from" type="time" aria-label="Quiet from"> to <input id="dnd-to" type="time" aria-label="Quiet until"></label>
+      </div>
+      <p id="dnd-now" class="dnd-now"></p>
+      <p id="dnd-status" role="status"></p>
+      <p class="muted">What it can't do: this is Mewndo's own setting. It doesn't read or change Windows' Do not disturb, and
+        warnings still show inside Mewndo's window.</p>
+    </section>
+    <section class="set-card">
+      <h2>Sound</h2>
+      <label><input type="checkbox" id="sound-on"> Play a soft sound when a card arrives</label>
+      <div class="row">
+        <label class="inline" for="sound-volume">Volume</label>
+        <input id="sound-volume" type="range" min="0" max="100" step="5" aria-describedby="sound-volume-text">
+        <span id="sound-volume-text" class="muted"></span>
+        <button id="sound-test">Test</button>
+      </div>
+      <p id="sound-status" role="status"></p>
+      <p class="muted">Off unless you turn it on. Cards never take focus, and during Do not disturb only a permission request
+        makes the sound. The sound plays through Mewndo's window, so it follows Windows' volume for Mewndo.</p>
     </section>
   </div>
   <div class="set-page" data-page="account" hidden>
@@ -198,6 +267,19 @@
     </main>
   </div>
 
+  <dialog id="habit-dialog">
+    <form method="dialog">
+      <h2>Remove this rule?</h2>
+      <p id="habit-dialog-text"></p>
+      <p class="muted">It's taken out of your rules file; the rest of the file stays exactly as it is. It stops applying the next
+        time Mewndo starts, and after that the agent asks you again.</p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Remove</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="reset-dialog">
     <form method="dialog">
       <h2>Reset all settings?</h2>
@@ -210,6 +292,40 @@
     </form>
   </dialog>
 
+  <dialog id="cu-download-dialog">
+    <form method="dialog">
+      <h2>Download cua-driver?</h2>
+      <p>Computer use needs cua-driver, Cua's open-source program that clicks and types for agents. Mewndo downloads one
+        pinned release and checks it before anything runs.</p>
+      <p><strong>Size:</strong> <span id="cu-dl-size"></span></p>
+      <p><strong>From:</strong> <span id="cu-dl-url" class="mono"></span></p>
+      <p><strong>SHA-256:</strong> <span id="cu-dl-sha" class="mono"></span></p>
+      <p><strong>Into:</strong> <span id="cu-dl-dir" class="mono"></span></p>
+      <p class="muted">If the bytes don't match the pinned SHA-256, nothing is installed.</p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Download</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="cu-mcp-dialog">
+    <form method="dialog">
+      <h2 id="cu-mcp-title"></h2>
+      <p id="cu-mcp-about"></p>
+      <p><strong>File:</strong> <span id="cu-mcp-file" class="mono"></span></p>
+      <p id="cu-mcp-note"></p>
+      <p><strong>Exactly this will be added:</strong></p>
+      <pre id="cu-mcp-preview"></pre>
+      <p id="cu-mcp-error" class="error" role="alert"></p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="ok" id="cu-mcp-ok" class="primary">Add</button>
+      </menu>
+    </form>
+  </dialog>
+
   <script src="settings.js"></script>
+  <script src="settings-computer.js"></script>
 </body>
 </html>

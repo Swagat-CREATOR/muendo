@@ -3,7 +3,8 @@
 //   shell      beforeShellExecution  Router -> allow, deny, or **wait for the card** and then allow or deny
 //   mcp        beforeMCPExecution    the same
 //   response   afterAgentResponse    recorded; never any output
-//   stop       stop                  a Done card with a 15 s reply window; a reply becomes followup_message
+//   stop       stop                  a Done card with a 15 s reply window (held up to 25 s); a reply, a next
+//                                    step or an agent.message becomes followup_message
 //
 // **Cursor is the one agent where Mewndo blocks on its own card.** §33.10 Part F step 5: "Cursor's own 'ask'
 // opens a prompt that Mewndo can't answer. So for Cursor, when the Router says ask, the hook waits for the
@@ -49,6 +50,7 @@
     )
 )]
 
+use super::mailbox::{self, Link, NextStep};
 use mewndo_inbox::{Answer, Card, CardKind, Inbox, Opt};
 use mewndo_proto::{HookRequest, HookResponse};
 use mewndo_router::{GuardInput, Mode, Router, Verdict};
@@ -77,6 +79,15 @@ pub const ASK_WAIT: Duration = Duration::from_secs(25);
 pub const REPLY_WINDOW: Duration = Duration::from_secs(15);
 /// The settable range of the reply window (§33.6, Claude Code row; the same setting serves Cursor).
 pub const REPLY_WINDOW_MAX: Duration = Duration::from_secs(120);
+/// The most `inbox.hold` stretches the window while the user is replying: the 30 s `hooks.json` asks for, less
+/// 5 s - the same margin as [`ASK_WAIT`], for the same reason (the timeout field itself is a guess).
+pub const REPLY_WINDOW_HELD: Duration = Duration::from_secs(25);
+
+/// This agent's `kind` on `agent.status`, and what the dock calls it.
+pub const KIND: &str = "cursor";
+pub const NAME: &str = "Cursor";
+/// The Done card's last option: read, nothing to send.
+const SEEN: &str = "Seen";
 
 // --- the guessed field names, all in one place --------------------------------------------------------------------
 
@@ -158,6 +169,8 @@ pub struct Cursor {
     pub ask_wait: Duration,
     /// §33.2's 0-120 s. Zero means no reply window: `stop` makes its card and returns at once.
     pub reply_window: Duration,
+    /// `agent.status` and `agent.message` (mailbox.rs).
+    pub link: Link,
 }
 
 impl Cursor {
@@ -168,17 +181,28 @@ impl Cursor {
             session: Session::default(),
             ask_wait: ASK_WAIT,
             reply_window: REPLY_WINDOW,
+            link: Link::default(),
         }
     }
 
     /// One hook event in, one thing to print out. Never panics; never prints an allow the Router did not give.
     pub async fn handle(&self, req: &HookRequest) -> HookResponse {
+        let busy = || self.link.busy(&agent_id(req), KIND, NAME, "working");
         match event_name(&req.event) {
-            Some(SHELL) => self.guard(req, Pre::Shell).await,
-            Some(MCP) => self.guard(req, Pre::Mcp).await,
+            Some(SHELL) => {
+                busy();
+                self.guard(req, Pre::Shell).await
+            }
+            Some(MCP) => {
+                busy();
+                self.guard(req, Pre::Mcp).await
+            }
             // Recorded against the trace (§35); there is nothing to say back to a response that has already
             // been written.
-            Some(RESPONSE) => silent(),
+            Some(RESPONSE) => {
+                busy();
+                silent()
+            }
             Some(STOP) => self.stop(req).await,
             _ => silent(),
         }
@@ -270,34 +294,62 @@ impl Cursor {
     ///
     /// This is the one place Mewndo can message Cursor after a turn, which is why §33.6's Cursor row promises
     /// it: "the `stop` hook returns `followup_message` with the reply, and Cursor sends it as the next
-    /// message".
+    /// message". A message the user queued while Cursor worked (`agent.message`) goes the same way, at once,
+    /// without waiting for the card; so does one sent while the card waits, and a chosen next step.
     async fn stop(&self, req: &HookRequest) -> HookResponse {
+        let agent = agent_id(req);
+        if let Some(text) = self.link.mailbox.take_queued(&agent) {
+            self.link
+                .status(&agent, KIND, NAME, "working", Some(one_line(&text)));
+            return out(followup_json(&text));
+        }
+        let said = first_str(&req.payload, TEXT_KEYS).map(one_line);
         let Some(inbox) = self.inbox.as_ref() else {
+            self.link.mailbox.idle(&agent, NAME);
+            self.link.status(&agent, KIND, NAME, "idle", said);
             return silent();
         };
-        let (_, waiting) = inbox.create(self.done_card(req)).await;
+        self.link.status(&agent, KIND, NAME, "done", said.clone());
+        let steps = mailbox::next_steps(None, None);
+        let card = self.done_card(req, &steps);
+        let (id, waiting) = inbox.create(card.clone()).await;
         if self.reply_window.is_zero() {
+            self.link.mailbox.idle(&agent, NAME);
             return silent();
         }
-        match tokio::time::timeout(self.reply_window, waiting).await {
-            // Typed or spoken text (§33.5) is the reply. A bare option index on a Done card is "seen", not
-            // something to send Cursor.
-            Ok(Ok(answer)) => match answer
-                .text
-                .as_deref()
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-            {
-                Some(reply) => out(followup_json(reply)),
-                None => silent(),
-            },
+        let held = REPLY_WINDOW_HELD.max(self.reply_window);
+        let window = self
+            .link
+            .mailbox
+            .open(&agent, NAME, id, self.reply_window, held);
+        let ended = window.wait(waiting).await;
+        self.link.mailbox.close(&agent, id);
+        if ended.answer.is_none() {
             // The window closed with no reply. Not an error: §33.2 says the window closes and that is that.
-            Ok(Err(_)) | Err(_) => silent(),
+            inbox.expire(id).await;
+        }
+        // Typed or spoken text (§33.5) is the reply, and so is a next step. "Seen" is an answer, not a reply.
+        let reply = ended
+            .answer
+            .as_ref()
+            .and_then(|a| reply_of(&card, a, &steps));
+        match mailbox::join(reply, ended.message) {
+            Some(reply) => {
+                self.link.mailbox.resumed(&agent);
+                self.link
+                    .status(&agent, KIND, NAME, "working", Some(one_line(&reply)));
+                out(followup_json(&reply))
+            }
+            None => {
+                self.link.mailbox.idle(&agent, NAME);
+                self.link.status(&agent, KIND, NAME, "idle", said);
+                silent()
+            }
         }
     }
 
-    /// The Done card. `Space` types a reply and `1` dismisses, so the options say which is which.
-    fn done_card(&self, req: &HookRequest) -> Card {
+    /// The Done card. Its next steps are keys 1-3, then `Seen`; `Space` types a reply.
+    fn done_card(&self, req: &HookRequest, steps: &[NextStep]) -> Card {
         let mut card = Card::new(
             CardKind::Done,
             agent_id(req),
@@ -307,9 +359,19 @@ impl Cursor {
                 .trim(),
         );
         card.risk = 1;
-        card.options = vec![Opt::new("Seen"), Opt::new("Reply")];
+        card.options = steps
+            .iter()
+            .map(|s| Opt::new(s.label.clone()))
+            .chain([Opt::new(SEEN)])
+            .collect();
         card.trace_id = first_str(&req.payload, GENERATION_KEYS).map(str::to_string);
-        card.deadline = Some(self.reply_window);
+        // The Inbox's own timer is the longest this hook may wait (a held window); the short window is the
+        // handler's, and it expires the card itself when that ends.
+        card.deadline = Some(if self.reply_window.is_zero() {
+            Duration::ZERO
+        } else {
+            REPLY_WINDOW_HELD.max(self.reply_window)
+        });
         card
     }
 
@@ -398,6 +460,23 @@ fn slug(s: &str) -> String {
     } else {
         out
     }
+}
+
+/// The text a Done card's answer sends Cursor: the user's own words, or the chosen next step.
+fn reply_of(card: &Card, answer: &Answer, steps: &[NextStep]) -> Option<String> {
+    if let Some(text) = answer
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        return Some(text.to_string());
+    }
+    let label = &card.options.get(answer.choice?)?.label;
+    steps
+        .iter()
+        .find(|s| &s.label == label)
+        .map(|s| s.text.clone())
 }
 
 /// What the chosen option means, through the card's own options so that "always allow here" and "allow once"
@@ -629,6 +708,7 @@ mod tests {
             cwd: Some("/work/shop".into()),
             lane_id: None,
             payload,
+            console_pid: None,
         }
     }
 
@@ -732,6 +812,7 @@ mod tests {
                 session: cursor.session.clone(),
                 ask_wait: cursor.ask_wait,
                 reply_window: cursor.reply_window,
+                link: cursor.link.clone(),
             };
             async move { cursor.handle(&r).await }
         });
@@ -739,7 +820,16 @@ mod tests {
         let card = next_card(&mut events).await;
         assert_eq!(card.kind, "done");
         assert_eq!(card.agent_id, "cursor:conv_01K6Y2M4Q8ZT3NB7V0JX");
-        assert_eq!(card.options, vec!["Seen".to_string(), "Reply".to_string()]);
+        // The next steps are keys 1-3 (mailbox.rs), and "Seen" is still there, last. Space types the reply.
+        assert_eq!(
+            card.options,
+            vec![
+                "Looks good, carry on".to_string(),
+                "Run the tests".to_string(),
+                "Summarize what you changed".to_string(),
+                "Seen".to_string()
+            ]
+        );
 
         // The user types a reply (§33.5's Space, or V through Wispr Flow).
         let id = card.id.parse().unwrap();
@@ -785,13 +875,15 @@ mod tests {
                 session,
                 ask_wait: cursor.ask_wait,
                 reply_window: cursor.reply_window,
+                link: cursor.link.clone(),
             };
             async move { c.handle(&r).await }
         });
         let card = next_card(&mut events).await;
         let id = card.id.parse().unwrap();
+        let seen = card.options.iter().position(|o| o == "Seen").unwrap();
         inbox
-            .answer(id, mewndo_inbox::choice(id, 0, Via::Key))
+            .answer(id, mewndo_inbox::choice(id, seen, Via::Key))
             .await;
         assert_eq!(handle.await.unwrap(), silent());
 
@@ -826,6 +918,7 @@ mod tests {
                 session,
                 ask_wait: cursor.ask_wait,
                 reply_window: cursor.reply_window,
+                link: cursor.link.clone(),
             };
             async move { c.handle(&r).await }
         });
@@ -1019,6 +1112,7 @@ mod tests {
             session: cursor.session.clone(),
             ask_wait: Duration::from_millis(40),
             reply_window: Duration::from_millis(40),
+            link: cursor.link.clone(),
         };
         cursor.session.mode = Mode::Active;
         for event in [SHELL, MCP, RESPONSE, STOP] {
@@ -1130,6 +1224,119 @@ mod tests {
             mcp_tool_name(&Value::Null, "mcp__x__y"),
             "mcp__x__y",
             "an already-prefixed name is left alone"
+        );
+    }
+
+    // --- agent.message, inbox.hold and agent.status (mailbox.rs) ---------------------------------------------
+
+    #[derive(Default)]
+    struct Seen(std::sync::Mutex<Vec<mewndo_proto::AgentStatus>>);
+
+    impl crate::agents::claude::Events for Seen {
+        fn agent_status(&self, status: mewndo_proto::AgentStatus) {
+            self.0.lock().unwrap().push(status);
+        }
+    }
+
+    const AGENT: &str = "cursor:conv_01K6Y2M4Q8ZT3NB7V0JX";
+
+    fn shell_in_conversation() -> Value {
+        serde_json::json!({
+            "conversation_id": "conv_01K6Y2M4Q8ZT3NB7V0JX",
+            "cwd": "/work/shop",
+            "command": "npm test -- checkout",
+        })
+    }
+
+    #[tokio::test]
+    async fn a_message_queued_while_cursor_works_becomes_the_followup_at_once() {
+        let mut cursor = handler();
+        let seen = Arc::new(Seen::default());
+        cursor.link.events = seen.clone();
+        cursor.handle(&req(SHELL, shell_in_conversation())).await;
+        let first = seen.0.lock().unwrap()[0].clone();
+        assert_eq!(
+            (
+                first.agent_id.as_str(),
+                first.kind.as_str(),
+                first.status.as_str()
+            ),
+            (AGENT, KIND, "working")
+        );
+        assert_eq!(
+            cursor.link.mailbox.offer(AGENT, "also update the README").0,
+            mewndo_proto::Delivery::Queued
+        );
+        let mut events = cursor.inbox.as_ref().unwrap().subscribe();
+        let out = cursor.handle(&req(STOP, sample("stop.json"))).await;
+        assert_eq!(
+            out.stdout,
+            r#"{"followup_message":"also update the README"}"#
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "no Done card for a turn that carries on"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_while_the_card_waits_and_a_held_window_both_reach_cursor() {
+        let mut cursor = handler();
+        cursor.reply_window = Duration::from_millis(100);
+        let seen = Arc::new(Seen::default());
+        cursor.link.events = seen.clone();
+        let cursor = Arc::new(cursor);
+        let mut events = cursor.inbox.as_ref().unwrap().subscribe();
+
+        let stop = tokio::spawn({
+            let cursor = cursor.clone();
+            async move { cursor.handle(&req(STOP, sample("stop.json"))).await }
+        });
+        let card = next_card(&mut events).await;
+        assert!(
+            cursor.link.mailbox.hold(&card.id, true),
+            "the user is typing"
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            cursor
+                .link
+                .mailbox
+                .offer(AGENT, "convert the checkout page too")
+                .0,
+            mewndo_proto::Delivery::Now,
+            "the hold kept the hook waiting past its 100 ms"
+        );
+        assert_eq!(
+            stop.await.unwrap().stdout,
+            r#"{"followup_message":"convert the checkout page too"}"#
+        );
+        let statuses: Vec<String> = seen
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.status.clone())
+            .collect();
+        assert_eq!(statuses, ["done", "working"]);
+        assert!(REPLY_WINDOW_HELD < Duration::from_millis(HOOK_TIMEOUT_MS));
+
+        // A next step is a followup like a typed reply.
+        let stop = tokio::spawn({
+            let cursor = cursor.clone();
+            async move { cursor.handle(&req(STOP, sample("stop.json"))).await }
+        });
+        let card = next_card(&mut events).await;
+        let id = card.id.parse().unwrap();
+        cursor
+            .inbox
+            .as_ref()
+            .unwrap()
+            .answer(id, mewndo_inbox::choice(id, 2, Via::Key))
+            .await;
+        assert_eq!(
+            stop.await.unwrap().stdout,
+            r#"{"followup_message":"Summarize what you changed"}"#
         );
     }
 }

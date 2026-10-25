@@ -37,33 +37,42 @@ and a Pub/Sub topic Gmail can publish to that pushes to a Worker URL.
 ## 4. OAuth client (so Mewndo can sign you in)
 1. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
 2. Application type **Web application** (the hosted Worker handles the redirect).
-3. Authorized redirect URI: your Worker's callback, e.g.
-   `https://mewndo-google.<you>.workers.dev/oauth/callback`.
+3. Authorized redirect URIs: each Worker's callback (you get the addresses when you deploy them,
+   docs/connections-setup.md §2–3), e.g.
+   `https://mewndo-gmail.<you>.workers.dev/oauth/callback` and
+   `https://mewndo-drive.<you>.workers.dev/oauth/callback`.
 4. **Create**. Copy the **Client ID** and **Client secret**.
-   - Store them as Worker secrets later: `wrangler secret put GOOGLE_CLIENT_ID` /
-     `GOOGLE_CLIENT_SECRET`. **Do not commit them.**
+   - Store them as Worker secrets in both `cloud/gmail` and `cloud/drive`:
+     `npx wrangler@3 secret put GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (you type them). **Do not commit them.**
 
-## 5. Pub/Sub topic Gmail pushes to
+## 5. Pub/Sub topic Gmail pushes to (optional)
+
+> Google asks for a **billing account (a payment card)** before it turns Pub/Sub on, though the first 10 GB a
+> month are free. Skip this section to stay card-free: Mewndo then asks the Gmail Worker to check every 3 minutes,
+> and the Gmail card says "Push is off".
+
 1. **Pub/Sub → Topics → Create topic**. Id `mewndo-gmail`. **Create**.
 2. Give Gmail permission to publish: open the topic → **Permissions / Add principal** →
    principal `gmail-api-push@system.gserviceaccount.com` → role **Pub/Sub Publisher** → **Save**.
 3. Create a **push** subscription: topic `mewndo-gmail` → **Create subscription** →
    id `mewndo-gmail-push` → Delivery type **Push** → endpoint URL =
-   `https://mewndo-google.<you>.workers.dev/gmail/push` → **Create**.
+   `https://mewndo-gmail.<you>.workers.dev/gmail/push` → **Create**.
    - If the console demands endpoint domain verification, verify the Worker domain in
      **Search Console**, or use a verified custom domain for the Worker.
-4. (P6.2 calls `users.watch` with `topicName =
-   projects/mewndo/topics/mewndo-gmail`; the daily scheduled trigger renews it.)
+4. Put your project id into `GOOGLE_PUBSUB_TOPIC` in `cloud/gmail/wrangler.toml`
+   (`projects/<your-project-id>/topics/mewndo-gmail`) and run `npx wrangler@3 deploy` again. The Worker calls
+   `users.watch` when you connect and renews it daily.
 
 ## 6. What you give the Workers (P6.2/P6.3), as secrets — never committed
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_PUBSUB_TOPIC = projects/mewndo/topics/mewndo-gmail`
-- the redirect URI above
+- optional: `GOOGLE_PUBSUB_TOPIC = projects/<your-project-id>/topics/mewndo-gmail` (a `[vars]` line in
+  `cloud/gmail/wrangler.toml`, not a secret)
+- the redirect URIs above
 
 ## 7. Done check
 - Consent screen in Testing with you as a test user.
 - Gmail, Drive and Pub/Sub APIs enabled.
 - An OAuth client (id + secret saved to Worker secrets, not the repo).
-- A `mewndo-gmail` topic with a push subscription to your Worker URL.
+- Optional: a `mewndo-gmail` topic with a push subscription to your Gmail Worker.
 
-Tell me the Worker subdomain you'll use and I'll fill the exact URLs into P6.2/P6.3.
+Then continue with docs/connections-setup.md (deploy the Workers and connect from Mewndo).

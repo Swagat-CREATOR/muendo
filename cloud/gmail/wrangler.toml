@@ -16,6 +16,8 @@ new_sqlite_classes = ["GmailUser"]
 [triggers]
 crons = ["17 4 * * *"]
 
-# Secrets (NOT stored here): wrangler secret put GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# Secrets (NOT stored here): npx wrangler@3 secret put GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# Optional: Gmail push through Pub/Sub. Put your Google Cloud project id in place of YOUR-PROJECT-ID
+# (docs/google-setup.md §5). Left as is, push is off and the app's sync every few minutes does the work.
 [vars]
-GOOGLE_PUBSUB_TOPIC = "projects/mewndo/topics/mewndo-gmail"
+GOOGLE_PUBSUB_TOPIC = "projects/YOUR-PROJECT-ID/topics/mewndo-gmail"

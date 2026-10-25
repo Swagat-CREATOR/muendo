@@ -32,6 +32,9 @@ function createCoreClient({
   let backoff = firstBackoffMs;
   let stopped = true;
   let seq = 0;
+  // Message types this core refused with "unknown message type X" (an older core): speaks(X) is then false until
+  // the next connection, which may be to a newer core.
+  const refused = new Set();
   // Nothing is happening until start() is called, and saying 'connecting' before then would make the first real
   // 'connecting' invisible to onStatus (set() drops a status that hasn't changed).
   let status = { state: 'stopped', message: null };
@@ -139,9 +142,12 @@ function createCoreClient({
       hello = null;
       backoff = firstBackoffMs; // a working connection: the next drop starts the backoff again at 100 ms
       if (envelope.type === 'error') return drop(envelope.body?.message ?? 'the core refused hello');
+      refused.clear();
       set('connected');
       return emit('connected', { type: 'connected' });
     }
+    const unknown = envelope.type === 'error' && /unknown message type (\S+)/.exec(String(envelope.body?.message ?? ''));
+    if (unknown) refused.add(unknown[1]);
     return emit(envelope.type, { type: envelope.type, id: envelope.id, body: envelope.body ?? {} });
   }
 
@@ -192,6 +198,8 @@ function createCoreClient({
     },
     status: () => status,
     connected: () => status.state === 'connected',
+    // Whether the connected core takes this message type, as far as the app can tell: yes until it refuses it.
+    speaks: (type) => status.state === 'connected' && !refused.has(type),
   };
 }
 

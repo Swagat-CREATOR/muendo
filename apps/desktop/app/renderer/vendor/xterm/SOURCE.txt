@@ -1,0 +1,8 @@
+Vendored unchanged from the npm registry (`npm pack`), so the lanes window loads nothing from the internet.
+
+@xterm/xterm 5.5.0      lib/xterm.js, css/xterm.css, LICENSE -> LICENSE-xterm.txt (MIT)
+  tarball sha256 bd954fa721872170188cc5d7e83e88db3c83c9a18a4e8d24c2783d26491f59d2
+@xterm/addon-fit 0.10.0 lib/addon-fit.js, LICENSE -> LICENSE-addon-fit.txt (MIT)
+  tarball sha256 917ac44972453d5eed52edc1e50260c76398ce48cf2290c2e60671102bba0b33
+
+The source maps the last lines name are not vendored.

@@ -167,3 +167,59 @@ test('deliver with nothing at all does not throw', () => {
   assert.strictEqual(out.how, 'unreachable');
   assert.match(out.card.body, /""/, 'an empty message is shown as empty, not as undefined');
 });
+
+const { resultText, onlyAgent } = require('../app/desk/routing');
+
+test('no lane and no open reply window: a core that takes agent.message delivers it', () => {
+  const out = deliver('Codex', { agents: [CODEX], text: 'run the tests', via: 'voice', canMessage: true });
+  assert.deepStrictEqual(out, { how: 'message', agent: 'Codex', agentId: 'a2', body: { agent_id: 'a2', text: 'run the tests', via: 'voice' } });
+  // A lane and an open reply window still come first: they reach the agent for certain.
+  assert.strictEqual(deliver('Claude Code', { agents: [CLAUDE], lanes: [{ laneId: 'l', agentId: 'a1' }], text: 'hi', canMessage: true }).how, 'lane');
+  assert.strictEqual(deliver('Claude Code', { agents: [CLAUDE], cards: [doneCard('a1')], text: 'hi', canMessage: true }).how, 'reply');
+  // An agent Mewndo doesn't know has no id to send to: still "can't reach", never a guess.
+  assert.strictEqual(deliver('Manus', { agents: [CODEX], text: 'hi', canMessage: true }).how, 'unreachable');
+});
+
+test('the result says exactly what the core said, and silence is never "sent"', () => {
+  assert.deepStrictEqual(resultText({ agent_id: 'a1', delivered: 'now' }, 'Claude Code'), { tone: 'sent', text: 'Sent to Claude Code.', options: [] });
+  assert.deepStrictEqual(resultText({ delivered: 'queued' }, 'Claude Code'),
+    { tone: 'queued', text: 'Queued: Claude Code gets it when it finishes this step.', options: [] });
+  const no = resultText({ delivered: 'unsupported', reason: 'Codex has no hook that can take a message.' }, 'Codex');
+  assert.strictEqual(no.tone, 'failed');
+  assert.strictEqual(no.text, "Can't reach Codex: Codex has no hook that can take a message.");
+  assert.deepStrictEqual(no.options, ['Open a lane', 'Not now']);
+  assert.strictEqual(resultText({ delivered: 'unsupported' }, 'Codex').text, "Can't reach Codex.", 'no reason is not "undefined"');
+  assert.match(resultText(null, 'Codex').text, /did not hear back from the core, so it can't say whether Codex got that/);
+  assert.strictEqual(resultText({ delivered: 'maybe' }, 'Codex').tone, 'failed', 'an answer this app cannot read is not a success');
+  assert.match(resultText(null).text, /the agent/);
+});
+
+test('an idle agent: the core offers to type, and the box shows its reason, the exact text and Type it / Cancel', () => {
+  const offer = resultText({ agent_id: 'a1', delivered: 'confirm', offer_id: 'o1', preview: 'use UTC everywhere',
+    reason: 'Claude Code is idle at its prompt. Type this into its terminal?' }, 'Claude Code');
+  assert.deepStrictEqual(offer, {
+    tone: 'confirm', text: 'Claude Code is idle at its prompt. Type this into its terminal?', preview: 'use UTC everywhere',
+    offerId: 'o1', options: ['Type it', 'Cancel'],
+  });
+  assert.strictEqual(resultText({ delivered: 'confirm', offer_id: 'o1', preview: 'hi' }, 'Codex').text,
+    'Codex is idle at its prompt. Type this into its terminal?', 'no reason: the same question in the app\'s words');
+  // Nothing the user could safely say yes to: no offer to name, or no text to show.
+  assert.strictEqual(resultText({ delivered: 'confirm', preview: 'hi' }, 'Codex').tone, 'failed');
+  assert.strictEqual(resultText({ delivered: 'confirm', offer_id: 'o1', preview: '' }, 'Codex').tone, 'failed');
+  assert.deepStrictEqual(resultText({ agent_id: 'a1', delivered: 'typed' }, 'Claude Code'),
+    { tone: 'sent', text: "Typed into Claude Code's terminal.", options: [] });
+});
+
+test('a dictated message goes straight to the one agent there is; two or none is the Router\'s call', () => {
+  assert.strictEqual(onlyAgent([CLAUDE]), CLAUDE);
+  assert.strictEqual(onlyAgent([CLAUDE, CODEX]), null);
+  assert.strictEqual(onlyAgent([]), null);
+  assert.strictEqual(onlyAgent([CLAUDE, { ...CODEX, status: 'gone' }]), CLAUDE);
+  assert.strictEqual(onlyAgent(), null);
+});
+
+test('an open Codex Done card is not a reply window: nothing waits behind it, so the core is asked instead', () => {
+  const codexDone = { ...doneCard('a2') };
+  assert.strictEqual(deliver('Codex', { agents: [CODEX], cards: [codexDone], text: 'run the tests', canMessage: true }).how, 'message');
+  assert.strictEqual(deliver('Codex', { agents: [CODEX], cards: [codexDone], text: 'run the tests' }).how, 'unreachable');
+});

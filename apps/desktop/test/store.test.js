@@ -254,3 +254,33 @@ test('the hot cache keeps small gzipped content uncompressed for a day; remove t
   await store.remove(other);
   assert.ok(!fs.existsSync(hot(other)));
 });
+
+test('after a crash, an object stamped a moment before "since" is still checked: file times are coarser than the clock', async () => {
+  // Linux stamps files a few ms behind Date.now(), and FAT/exFAT round down to 2 s, so an object damaged right after
+  // Mewndo started can carry a time from just before it. This failed about once in eight runs before the fix.
+  const dir = tempDir();
+  const store = createStore(path.join(dir, 'store'));
+  const file = path.join(dir, 'a.txt');
+  fs.writeFileSync(file, 'content a');
+  const hash = await store.put(file);
+  const object = path.join(dir, 'store', 'objects', objectFiles(path.join(dir, 'store'))[0]);
+  fs.writeFileSync(object, ''); // cut short by a power loss
+  const since = Date.now();
+  const stamped = new Date(since - 1000); // the file system's time says it was written before Mewndo started
+  fs.utimesSync(object, stamped, stamped);
+  assert.deepStrictEqual(await store.verifySince(since), [hash], 'still checked, and removed');
+  assert.ok(!fs.existsSync(object));
+});
+
+test('objects written well before "since" are still left alone after a crash', async () => {
+  const dir = tempDir();
+  const store = createStore(path.join(dir, 'store'));
+  const file = path.join(dir, 'a.txt');
+  fs.writeFileSync(file, 'content a');
+  await store.put(file);
+  const object = path.join(dir, 'store', 'objects', objectFiles(path.join(dir, 'store'))[0]);
+  fs.writeFileSync(object, '');
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  fs.utimesSync(object, old, old);
+  assert.deepStrictEqual(await store.verifySince(Date.now()), [], 'an hour old: written before the run, not re-checked');
+});

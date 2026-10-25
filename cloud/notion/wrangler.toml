@@ -14,3 +14,8 @@ new_sqlite_classes = ["NotionUser"]
 # Webhooks alone miss changes, so poll every minute as well.
 [triggers]
 crons = ["* * * * *"]
+
+# How many Notion workspaces this Worker will poll (POST /notion/connect needs no sign-in, so this caps what a
+# stranger who finds the URL could make it do). The integration secret is never in this file: the app sends it once.
+[vars]
+MAX_ACCOUNTS = "3"

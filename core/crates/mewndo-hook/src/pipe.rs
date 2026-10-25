@@ -32,7 +32,7 @@ const ERROR_PIPE_BUSY: i32 = 231;
 #[cfg(windows)]
 const PIPE_BUSY_WAIT_MS: u32 = 2000;
 
-// WaitNamedPipeW is the only Win32 call in this crate, so it is declared here instead of pulling in
+// WaitNamedPipeW is declared here (as console.rs declares its Toolhelp32 calls) instead of pulling in
 // windows-sys: that crate exports nothing without the right feature flags, and the forwarder's whole point
 // is to start fast and carry nothing it does not need.
 #[cfg(windows)]

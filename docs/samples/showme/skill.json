@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "name": "Send the weekly report",
+  "description": "Opens a new mail in Outlook and fills in the address. Made up for the tests: core/crates/mewndo-computer/src/skill.rs and apps/desktop/test/skills.test.js both read it.",
+  "created_ms": 1791700000000,
+  "updated_ms": 1791700000000,
+  "steps": [
+    { "kind": "focus", "app": "OUTLOOK.EXE", "window": "Inbox - Outlook" },
+    { "kind": "click", "x": 412, "y": 230, "button": "left", "count": 1, "element": { "name": "New mail", "control_type": "Button" }, "app": "OUTLOOK.EXE", "on_primary": true },
+    { "kind": "type", "text": "boss@example.com" },
+    { "kind": "type", "secret": true },
+    { "kind": "key", "key": "Enter" },
+    { "kind": "key", "key": "s", "modifiers": ["ctrl"] }
+  ]
+}

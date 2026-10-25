@@ -1,0 +1,86 @@
+/* The lanes window (spec §33.7): the float set, because a terminal is dark whatever the app theme. Tabs along the
+   top, one terminal below, the New lane picker in its place when it is open. Colour only for status. */
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; background: #121416; color: var(--float-ink); font: var(--t-body); }
+button { font: inherit; }
+[hidden] { display: none !important; } /* the classes below set display, which would beat the attribute */
+button:focus-visible, input:focus-visible { outline: 2px solid var(--float-done); outline-offset: 2px; }
+
+/* --- tabs --- */
+.bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px 0; border-bottom: 1px solid var(--float-border); }
+.tabs { display: flex; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tab {
+  all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 8px 0 10px;
+  max-width: 240px; border-radius: 10px 10px 0 0; color: var(--float-ink-2); cursor: pointer; flex: none;
+}
+.tab:hover { background: var(--float-raised); color: var(--float-ink); }
+.tab[aria-selected="true"] { background: var(--float-raised); color: var(--float-ink); box-shadow: inset 0 -2px 0 var(--float-done); }
+.tab:focus-visible { outline: 2px solid var(--float-done); outline-offset: -2px; }
+.tab .logo { flex: none; }
+.tab .logo.initial { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; font: 700 9px/1 var(--font-ui);
+  background: var(--float-keycap); color: var(--float-ink); }
+.tab .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab .state { font: var(--t-small); white-space: nowrap; }
+.tab .state::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; vertical-align: 1px;
+  background: var(--float-working); }
+.tab.ended .state::before { background: transparent; border: 1.5px solid var(--float-edited); width: 4px; height: 4px; }
+.tab.ended .state { color: var(--float-ink-2); }
+
+.new, .quiet, .primary {
+  all: unset; box-sizing: border-box; display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border-radius: var(--r-button);
+  cursor: pointer; font: 600 13px/1 var(--font-ui); white-space: nowrap;
+}
+.new { margin-bottom: 4px; background: var(--float-raised); color: var(--float-ink); }
+.new:hover, .quiet:hover { background: #24282C; color: var(--float-ink); }
+.quiet { color: var(--float-ink-2); }
+.primary { background: var(--float-done); color: #08241F; }
+.primary:hover { filter: brightness(1.08); }
+.primary[disabled] { opacity: 0.5; cursor: default; }
+.new:focus-visible, .quiet:focus-visible, .primary:focus-visible { outline: 2px solid var(--float-done); outline-offset: 2px; }
+
+.offline { padding: 8px 14px; font: var(--t-small); color: var(--float-needs); background: rgba(242, 176, 74, 0.08);
+  border-bottom: 1px solid var(--float-border); }
+
+/* --- terminals: one per lane, only the selected one shown --- */
+.views { position: relative; flex: 1; min-height: 0; }
+.term { position: absolute; inset: 0; padding: 8px 4px 4px 10px; }
+.term.off { visibility: hidden; }
+.term .xterm { height: 100%; }
+.term .xterm-viewport { scrollbar-width: thin; scrollbar-color: #2C3134 transparent; }
+
+.tools { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-top: 1px solid var(--float-border); }
+.where { flex: 1; min-width: 0; font: var(--t-mono); color: var(--float-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#close.armed { color: var(--float-stopped); }
+
+/* --- the New lane picker --- */
+.picker { position: absolute; inset: 0; overflow-y: auto; padding: 28px 32px; background: #121416; }
+.picker .title { margin: 0 0 6px; font-variation-settings: var(--display-axes); }
+.lede, .limits { max-width: 560px; margin: 0 0 18px; color: var(--float-ink-2); }
+.limits { margin-top: 22px; font: var(--t-small); }
+.picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; max-width: 640px; margin-bottom: 18px; }
+.pick {
+  all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 14px; cursor: pointer;
+  background: var(--float-raised); border: 1px solid var(--float-border);
+}
+.pick:hover { border-color: rgba(238, 241, 236, 0.18); }
+.pick[aria-checked="true"] { border-color: var(--float-done); box-shadow: inset 0 0 0 1px var(--float-done); }
+.pick[aria-disabled="true"] { cursor: default; opacity: 0.6; }
+.pick:focus-visible { outline: 2px solid var(--float-done); outline-offset: 2px; }
+.pick .top { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.pick .cmd { font: var(--t-mono); color: var(--float-ink-2); }
+.pick .why { font: var(--t-small); color: var(--float-ink-2); }
+.pick .logo.initial { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; font: 700 10px/1 var(--font-ui);
+  background: var(--float-keycap); color: var(--float-ink); }
+.field { display: flex; flex-direction: column; gap: 6px; max-width: 640px; font: var(--t-small); color: var(--float-ink-2); }
+.field input {
+  height: 36px; padding: 0 12px; border-radius: var(--r-button); border: 1px solid var(--float-border); background: var(--float-raised);
+  color: var(--float-ink); font: var(--t-mono);
+}
+.note { min-height: 18px; margin: 10px 0; max-width: 640px; font: var(--t-small); color: var(--float-ink-2); }
+.note.error { color: var(--float-stopped); }
+.actions { display: flex; gap: 8px; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Cursor's logo is black: on this dark window it is drawn light. */
+img.logo[src$="/cursor.svg"] { filter: invert(1); }
