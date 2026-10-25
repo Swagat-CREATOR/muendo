@@ -6,7 +6,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  planConnect, installConnect, removeConnect, removeAllConnect, claudeHooks, codexHooks, cursorHooks, mergeNotify, removeNotify,
+  planConnect, installConnect, removeConnect, removeAllConnect, isMewndoHook, claudeHooks, codexHooks, cursorHooks, mergeNotify, removeNotify,
   notifyLine, EXE_PLACEHOLDER,
 } = require('../engine/agent-connect');
 const { removeClaudeHooks } = require('../engine/claude-hooks');
@@ -57,9 +57,31 @@ test('the Codex and Cursor hooks are the shipped integrations files, with the re
   assert.ok(snippet.includes(`${notifyLine(EXE_PLACEHOLDER)}\n`), 'the notify line is the one config.snippet.toml shows');
 });
 
+test('on Windows every Claude Code hook runs in PowerShell, so it works without Git Bash', () => {
+  const exe = 'C:\\Users\\Ana Maria\\AppData\\Local\\Programs\\Mewndo\\resources\\claude-code\\bin\\mewndo-hook.exe';
+  const template = readJson(PLUGIN_HOOKS);
+  const win = claudeHooks(template, exe, { windows: true }).hooks;
+  const plain = claudeHooks(template, exe, { windows: false }).hooks;
+  const hooks = Object.values(win).flat().flatMap((g) => g.hooks);
+  assert.strictEqual(hooks.length, 8);
+  for (const h of hooks) {
+    assert.strictEqual(h.shell, 'powershell');
+    assert.match(h.command, /^& "C:\/Users\/Ana Maria\/[^"]+\/mewndo-hook\.exe" claude [a-z-]+$/);
+  }
+  // Same events, matchers and timeouts as the plugin's file; only the shell and the `& ` differ.
+  for (const [event, groups] of Object.entries(plain)) {
+    groups.forEach((g, i) => {
+      assert.strictEqual(win[event][i].matcher, g.matcher);
+      g.hooks.forEach((h, j) => assert.strictEqual(win[event][i].hooks[j].timeout, h.timeout));
+    });
+  }
+  // Remove still recognises them as Mewndo's.
+  for (const h of hooks) assert.ok(isMewndoHook(h), h.command);
+});
+
 test('a path with a space is quoted whole in every command, for every agent', () => {
   const exe = 'C:\\Users\\Ana Maria\\AppData\\Local\\Programs\\Mewndo\\resources\\claude-code\\bin\\mewndo-hook.exe';
-  const claude = commands(claudeHooks(readJson(PLUGIN_HOOKS), exe).hooks);
+  const claude = commands(claudeHooks(readJson(PLUGIN_HOOKS), exe, { windows: false }).hooks);
   assert.strictEqual(claude.length, 8);
   for (const c of claude) assert.match(c, /^"C:\/Users\/Ana Maria\/AppData\/Local\/Programs\/Mewndo\/resources\/claude-code\/bin\/mewndo-hook\.exe" claude [a-z-]+$/);
   for (const c of commands(codexHooks(exe).hooks)) assert.match(c, /^"C:\\Users\\Ana Maria\\[^"]+\\mewndo-hook\.exe" codex [a-z-]+$/);

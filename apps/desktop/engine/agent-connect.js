@@ -110,7 +110,10 @@ async function findHookExe(options) {
 // Claude Code: the plugin's own hooks.json, with ${CLAUDE_PLUGIN_ROOT}/bin/mewndo-hook.exe replaced by the real path.
 // Forward slashes, as the v0 hooks use (claude-hooks.js): they work in every shell Claude Code runs hooks in,
 // including Git Bash, where a backslash inside quotes can escape the next character. The plugin already quotes it.
-function claudeHooks(template, exe) {
+// On Windows Claude Code runs command hooks in Git Bash unless a hook names its shell, and many people don't have
+// Git Bash, so every hook then fails. There each hook says "shell": "powershell" and starts with `& `, PowerShell's
+// way to run a quoted path.
+function claudeHooks(template, exe, { windows = process.platform === 'win32' } = {}) {
   const real = exe.replace(/\\/g, '/');
   const hooks = structuredClone(template?.hooks);
   if (!hooks || typeof hooks !== 'object') throw new Error("The Claude Code plugin's hooks file has no hooks, so nothing was changed.");
@@ -118,6 +121,10 @@ function claudeHooks(template, exe) {
     for (const h of groups.flatMap((g) => g.hooks)) {
       if (!String(h.command).includes(PLUGIN_ROOT)) throw new Error(`The Claude Code plugin's hooks file runs something other than ${EXE}, so nothing was changed.`);
       h.command = h.command.split(PLUGIN_ROOT).join(real);
+      if (windows) {
+        h.shell = 'powershell';
+        h.command = `& ${h.command}`;
+      }
     }
   }
   return { hooks };
